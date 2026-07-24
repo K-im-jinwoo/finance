@@ -864,7 +864,9 @@ Make a temporary copy outside the repository workflow directory and run the CLI 
 ```powershell
 $caseDir = Join-Path $env:TEMP 'stock-automation-invalid-workflow'
 New-Item -ItemType Directory -Force -Path $caseDir | Out-Null
-Set-Content -LiteralPath (Join-Path $caseDir 'active.json') -Encoding UTF8 -Value '{"name":"active","active":true,"nodes":[],"connections":{}}'
+$path = Join-Path $caseDir 'active.json'
+$value = '{"name":"active","active":true,"nodes":[],"connections":{}}'
+[System.IO.File]::WriteAllText($path, $value, (New-Object System.Text.UTF8Encoding($false)))
 node scripts/audit-workflows.mjs $caseDir
 ```
 
@@ -936,10 +938,28 @@ Run:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 git status --short
-git log -6 --oneline
+$requiredSubjects = @(
+    'docs: define stock automation harness design',
+    'docs: plan stock automation harness foundation',
+    'docs: add stock automation repository baseline',
+    'feat: add tested n8n export sanitizer',
+    'chore: add sanitized n8n workflow exports',
+    'test: enforce safe inactive workflow exports',
+    'test: add stock automation verification entrypoint',
+    'fix: use portable Node test discovery',
+    'fix: use Windows npm command shim',
+    'fix: use cmd shim for workflow audit'
+)
+$historySubjects = @(git log --format='%s')
+foreach ($subject in $requiredSubjects) {
+    if ($historySubjects -notcontains $subject) {
+        throw "Required commit subject missing from history: $subject"
+    }
+}
+git log --oneline
 ```
 
-Expected: verification exits `0`; `git status --short` is empty; the last six commits contain the design commit and the five foundation implementation commits.
+Expected: verification exits `0`; `git status --short` is empty; the actual history is listed; and the design, plan, all five foundation task commits, and approved fix commits are present by subject without assuming a fixed commit count.
 
 ## Plan Completion Boundary
 

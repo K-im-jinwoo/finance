@@ -12,7 +12,7 @@
 
 - Full verification: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1`
 - Node tests: `npm.cmd test`
-- Workflow audit: `npm run audit:workflows`
+- Workflow audit: `npm.cmd run audit:workflows`
 
 ## Rules
 

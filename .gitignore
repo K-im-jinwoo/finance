@@ -1,2 +1,11 @@
 .worktrees/
 .superpowers/
+.env
+.env.*
+!.env.example
+node_modules/
+coverage/
+logs/
+tmp/
+*.log
+*.local.json

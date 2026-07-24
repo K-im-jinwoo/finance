@@ -457,7 +457,7 @@ Run:
 node --test tests/sanitize-n8n-export.test.mjs
 ```
 
-Expected: 5 tests pass and 0 tests fail.
+Expected: all discovered sanitizer tests pass and 0 tests fail.
 
 - [ ] **Step 6: Commit the sanitizer**
 
@@ -809,7 +809,7 @@ node --test tests/audit-workflows.test.mjs
 npm.cmd run audit:workflows
 ```
 
-Expected: 4 tests pass, then the committed workflow directory audit exits `0`.
+Expected: all discovered audit tests pass with 0 failures, then the committed workflow directory audit exits `0`.
 
 - [ ] **Step 6: Commit workflow auditing**
 
@@ -891,17 +891,8 @@ Run:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 ```
 
-Expected:
-
-```text
-tests 9
-pass 9
-fail 0
-Workflow audit passed:
-Verification passed.
-```
-
-Node may print additional timing lines. The required evidence is exit code `0`, 9 passing tests, 0 failing tests, and both final success messages.
+Expected: exit code `0`, all discovered Node tests passing with 0 failures,
+plus both `Workflow audit passed:` and `Verification passed.` messages.
 
 - [ ] **Step 4: Check documentation links and Git whitespace**
 

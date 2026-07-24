@@ -36,6 +36,21 @@ function sampleWorkflow() {
   };
 }
 
+function knownSecretSamples() {
+  return {
+    github: ["gh", "p_", "A".repeat(36)].join(""),
+    slack: ["xo", "xb-", "1".repeat(12), "-", "A".repeat(24)].join(""),
+    pem: [
+      "-----BEGIN ",
+      "PRIVATE KEY",
+      "-----\nsynthetic\n-----END ",
+      "PRIVATE KEY",
+      "-----",
+    ].join(""),
+    aws: ["AK", "IA", "A".repeat(16)].join(""),
+  };
+}
+
 test("sanitizer removes workflow and node credential metadata", () => {
   const result = sanitizeWorkflow(sampleWorkflow());
 
@@ -90,6 +105,72 @@ test("sanitizer replaces recursively nested direct sensitive keys", () => {
     authorization: "={{ $env.AUTHORIZATION }}",
     tokenizer: "not-sensitive",
   });
+});
+
+test("sanitizer recognizes bounded secret aliases across naming styles", () => {
+  const source = sampleWorkflow();
+  source.nodes[0].parameters.aliases = {
+    accessToken: "literal",
+    refresh_token: "literal",
+    "bearer-token": "literal",
+    authToken: "literal",
+    id_token: "literal",
+    "session-token": "literal",
+    passwordHash: "literal",
+    password_value: "literal",
+    privateKey: "literal",
+    ssh_private_key: "literal",
+    "signing-key": "literal",
+    clientSecret: "literal",
+    signing_secret: "literal",
+    "webhook-secret": "literal",
+    tokenization: "not-sensitive",
+    keyValue: "not-sensitive",
+  };
+
+  const aliases = sanitizeWorkflow(source).nodes[0].parameters.aliases;
+
+  assert.deepEqual(aliases, {
+    accessToken: "={{ $env.ACCESS_TOKEN }}",
+    refresh_token: "={{ $env.REFRESH_TOKEN }}",
+    "bearer-token": "={{ $env.BEARER_TOKEN }}",
+    authToken: "={{ $env.AUTH_TOKEN }}",
+    id_token: "={{ $env.ID_TOKEN }}",
+    "session-token": "={{ $env.SESSION_TOKEN }}",
+    passwordHash: "={{ $env.PASSWORD_HASH }}",
+    password_value: "={{ $env.PASSWORD_VALUE }}",
+    privateKey: "={{ $env.PRIVATE_KEY }}",
+    ssh_private_key: "={{ $env.SSH_PRIVATE_KEY }}",
+    "signing-key": "={{ $env.SIGNING_KEY }}",
+    clientSecret: "={{ $env.CLIENT_SECRET }}",
+    signing_secret: "={{ $env.SIGNING_SECRET }}",
+    "webhook-secret": "={{ $env.WEBHOOK_SECRET }}",
+    tokenization: "not-sensitive",
+    keyValue: "not-sensitive",
+  });
+});
+
+test("sanitizer fails closed on known secret signatures under neutral keys", () => {
+  for (const [label, value] of Object.entries(knownSecretSamples())) {
+    const source = sampleWorkflow();
+    source.nodes[0].parameters.metadata = { [label]: value };
+
+    assert.throws(
+      () => sanitizeWorkflow(source),
+      /Known secret signature at .* cannot be sanitized/,
+    );
+  }
+});
+
+test("sanitizer does not inspect known-secret signatures inside n8n expressions", () => {
+  const source = sampleWorkflow();
+  const expression = `={{ "${knownSecretSamples().aws}" }}`;
+  source.nodes[0].parameters.computedValue = expression;
+
+  assert.equal(
+    sanitizeWorkflow(source).nodes[0].parameters.computedValue,
+    expression,
+  );
 });
 
 test("sanitizer replaces non-environment expressions in sensitive values", () => {

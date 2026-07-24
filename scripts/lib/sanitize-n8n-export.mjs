@@ -1,5 +1,6 @@
 import {
   environmentName,
+  hasKnownSecretSignature,
   isDirectSensitiveKey,
   isEnvironmentExpression,
   isSensitiveHeaderName,
@@ -36,10 +37,18 @@ function sanitizeObject(value, path = "$") {
   }
 
   if (value === null || typeof value !== "object") {
+    if (hasKnownSecretSignature(value)) {
+      throw new TypeError(
+        `Known secret signature at ${path} cannot be sanitized without an explicit environment name`,
+      );
+    }
     return value;
   }
 
   const result = {};
+  const hasSensitiveHeaderValue =
+    isSensitiveHeaderName(value.name) &&
+    Object.hasOwn(value, "value");
   for (const [key, child] of Object.entries(value)) {
     if (key === "credentials") {
       continue;
@@ -50,6 +59,10 @@ function sanitizeObject(value, path = "$") {
         `${path}.${key}`,
         key,
       );
+      continue;
+    }
+    if (hasSensitiveHeaderValue && key === "value") {
+      result[key] = child;
       continue;
     }
     result[key] = sanitizeObject(child, `${path}.${key}`);

@@ -22,6 +22,21 @@ function validWorkflow() {
   };
 }
 
+function knownSecretSamples() {
+  return {
+    github: ["gh", "p_", "A".repeat(36)].join(""),
+    slack: ["xo", "xb-", "1".repeat(12), "-", "A".repeat(24)].join(""),
+    pem: [
+      "-----BEGIN ",
+      "PRIVATE KEY",
+      "-----\nsynthetic\n-----END ",
+      "PRIVATE KEY",
+      "-----",
+    ].join(""),
+    aws: ["AK", "IA", "A".repeat(16)].join(""),
+  };
+}
+
 test("valid inactive workflow has no findings", () => {
   assert.deepEqual(auditWorkflow(validWorkflow(), "valid.json"), []);
 });
@@ -92,6 +107,80 @@ test("audit reports direct sensitive keys and non-environment expressions withou
   ]);
   assert.equal(JSON.stringify(findings).includes("do-not-print-direct"), false);
   assert.equal(JSON.stringify(findings).includes("do_not_print_header"), false);
+});
+
+test("audit recognizes bounded secret aliases across naming styles", () => {
+  const workflow = validWorkflow();
+  workflow.nodes[0].parameters = {
+    accessToken: "literal",
+    refresh_token: "literal",
+    "bearer-token": "literal",
+    passwordHash: "literal",
+    password_value: "literal",
+    privateKey: "literal",
+    ssh_private_key: "literal",
+    "signing-key": "literal",
+    signingSecret: "literal",
+    webhook_secret: "literal",
+    tokenization: "not-sensitive",
+    keyValue: "not-sensitive",
+  };
+
+  const findings = auditWorkflow(workflow, "aliases.json");
+
+  assert.equal(findings.length, 10);
+  assert.equal(
+    findings.every((item) => item.code === "LITERAL_SENSITIVE_VALUE"),
+    true,
+  );
+  assert.equal(
+    findings.some((item) => item.detail.endsWith(".tokenization")),
+    false,
+  );
+  assert.equal(
+    findings.some((item) => item.detail.endsWith(".keyValue")),
+    false,
+  );
+});
+
+test("audit detects known secret signatures by path without exposing values", () => {
+  const workflow = validWorkflow();
+  const samples = knownSecretSamples();
+  workflow.nodes[0].parameters.metadata = {
+    githubCredential: samples.github,
+    slackCredential: samples.slack,
+    privateMaterial: samples.pem,
+    awsCredential: samples.aws,
+    computedValue: `={{ "${samples.aws}" }}`,
+  };
+
+  const findings = auditWorkflow(workflow, "known.json");
+
+  assert.deepEqual(findings, [
+    {
+      file: "known.json",
+      code: "KNOWN_SECRET_SIGNATURE",
+      detail: "Known secret signature found at $.nodes[0].parameters.metadata.githubCredential",
+    },
+    {
+      file: "known.json",
+      code: "KNOWN_SECRET_SIGNATURE",
+      detail: "Known secret signature found at $.nodes[0].parameters.metadata.slackCredential",
+    },
+    {
+      file: "known.json",
+      code: "KNOWN_SECRET_SIGNATURE",
+      detail: "Known secret signature found at $.nodes[0].parameters.metadata.privateMaterial",
+    },
+    {
+      file: "known.json",
+      code: "KNOWN_SECRET_SIGNATURE",
+      detail: "Known secret signature found at $.nodes[0].parameters.metadata.awsCredential",
+    },
+  ]);
+  for (const value of Object.values(samples)) {
+    assert.equal(JSON.stringify(findings).includes(value), false);
+  }
 });
 
 test("audit rejects array connections and malformed nodes", () => {
@@ -166,7 +255,8 @@ test("audit CLI exits 1, prints categories, and never prints secret values", asy
   const directory = await mkdtemp(join(tmpdir(), "workflow-audit-cli-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const workflow = validWorkflow();
-  workflow.nodes[0].parameters.apiKey = "cli-secret-must-not-print";
+  const synthesizedSecret = knownSecretSamples().github;
+  workflow.nodes[0].parameters.metadata = synthesizedSecret;
   await writeFile(
     join(directory, "secret.json"),
     JSON.stringify(workflow),
@@ -182,6 +272,6 @@ test("audit CLI exits 1, prints categories, and never prints secret values", asy
   const output = `${result.stdout}${result.stderr}`;
 
   assert.equal(result.status, 1);
-  assert.match(output, /\[LITERAL_SENSITIVE_VALUE\]/);
-  assert.equal(output.includes("cli-secret-must-not-print"), false);
+  assert.match(output, /\[KNOWN_SECRET_SIGNATURE\]/);
+  assert.equal(output.includes(synthesizedSecret), false);
 });

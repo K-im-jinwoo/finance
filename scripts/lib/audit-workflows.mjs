@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
+  hasKnownSecretSignature,
   isDirectSensitiveKey,
   isEnvironmentExpression,
   isSensitiveHeaderName,
@@ -104,6 +105,9 @@ export function auditWorkflow(workflow, fileName) {
       );
     }
 
+    const hasSensitiveHeaderValue =
+      isSensitiveHeaderName(object.name) &&
+      Object.hasOwn(object, "value");
     for (const [key, value] of Object.entries(object)) {
       if (
         isDirectSensitiveKey(key) &&
@@ -116,12 +120,22 @@ export function auditWorkflow(workflow, fileName) {
             `Sensitive value must use an environment expression at ${path}.${key}`,
           ),
         );
+      } else if (
+        !(hasSensitiveHeaderValue && key === "value") &&
+        hasKnownSecretSignature(value)
+      ) {
+        findings.push(
+          finding(
+            fileName,
+            "KNOWN_SECRET_SIGNATURE",
+            `Known secret signature found at ${path}.${key}`,
+          ),
+        );
       }
     }
 
     if (
-      isSensitiveHeaderName(object.name) &&
-      Object.hasOwn(object, "value") &&
+      hasSensitiveHeaderValue &&
       !isEnvironmentExpression(object.value)
     ) {
       findings.push(

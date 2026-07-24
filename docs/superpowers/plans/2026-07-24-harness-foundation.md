@@ -176,7 +176,7 @@ Create `package.json`:
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tests",
+    "test": "node --test",
     "audit:workflows": "node scripts/audit-workflows.mjs workflows/n8n",
     "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1"
   }

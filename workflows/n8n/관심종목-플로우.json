@@ -1,0 +1,248 @@
+{
+  "name": "관심종목 플로우",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "a9de4b17-bd2e-47c0-b0a6-0c8a4aaa871f",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  symbol, \n  stock_name, \n  sector,\n  CASE \n    WHEN sector = '조선기자재' THEN stock_name || '+(실적|수주|공시|LNG|계약)'\n    WHEN sector = '반도체기반' THEN stock_name || '+(실적|공시|엔비디아|HBM|개발|반도체)'\n    ELSE stock_name || '+(실적|공시|계약)'\n  END as search_query\nFROM watchlist;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        208,
+        0
+      ],
+      "id": "17882678-90b9-4529-9b20-6cdd5823a918",
+      "name": "Execute a SQL query"
+    },
+    {
+      "parameters": {
+        "options": {
+          "reset": false
+        }
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        416,
+        0
+      ],
+      "id": "b927cf32-02a3-470e-9fba-fb6176b51656",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "amount": 1.5
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        640,
+        16
+      ],
+      "id": "2ee81b27-c7b0-4e29-b1c9-48148d02ba5f",
+      "name": "Wait",
+      "webhookId": "46084347-fc27-45d3-8416-15ddd1f18430"
+    },
+    {
+      "parameters": {
+        "url": "=https://openapi.naver.com/v1/search/news.json?query={{ $json.search_query }}&display=10&start=1&sort=sim",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Naver-Client-Id",
+              "value": "={{ $env.X_NAVER_CLIENT_ID }}"
+            },
+            {
+              "name": "X-Naver-Client-Secret",
+              "value": "={{ $env.X_NAVER_CLIENT_SECRET }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        848,
+        16
+      ],
+      "id": "1eca339d-c490-45c7-9808-0443b91ff1f0",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=분석 기준일(오늘): {{ $now.format('YYYY-MM-DD') }}\n대상 종목: {{ $('Loop Over Items').item.json.stock_name }} ({{ $('Loop Over Items').item.json.symbol }})\n수집된 뉴스 목록: {{ JSON.stringify($json.items) }}\n\n위의 데이터를 활용하여 시스템 가이드라인에 맞춘 보고서 작성을 시작하십시오.",
+        "options": {
+          "systemMessage": "=당신은 계량 분석 및 대체 데이터를 결합하여 알파를 발굴하는 전문 퀀트 애널리스트입니다. 아래의 조건과 양식을 철저하게 준수하여 보고서를 작성하십시오.\n\n[뉴스 필터링 가이드라인]\n1. 입력된 뉴스 데이터 중, 단순 나열식 기사나 투자와 무관한 일상 뉴스(마케팅, 단순 사양 소개 등)는 무시하십시오.\n2. 해당 기업의 주가나 펀더멘탈에 직접적 영향을 미칠 만한 '최신 주요 이벤트(실적, 공급, 신기술 개발, 주요 공시, 투자 유치 등)'가 본문에 포함되어 있다면 적극 반영하여 브리핑을 작성하십시오.\n- 뉴스 목록에 쓸만한 주요 모멘텀이 단 하나도 없다면 그때만 아래의 문장을 정직하게 출력하십시오:\n  \"최근 수집된 뉴스 중 주가 촉매(Catalyst)가 될 만한 핵심 모멘텀 기사가 확인되지 않습니다.\"\n3. 만약 수집된 뉴스 리스트 중 오늘 기준 최근 3일 이내에 발행된 뉴스가 단 하나도 없다면, 보고서를 생성하지 말고 아래 문장만을 정직하게 반환하십시오:\n   \"{{ $('Loop Over Items').item.json.stock_name }} 최근 3일 내 새로운 실적, 수주 관련 주요 모멘텀 기사가 확인되지 않습니다.\"\n4. 최근 3일 이내의 유의미한 뉴스가 존재한다면, 다음의 양식에 맞춰 감성 점수와 가격 전략을 수립하십시오.\n\n[출력 포맷 요구사항]\n- 반드시 Slack의 mrkdwn 문법을 준수하여 작성하십시오. (예: 굵은 글씨는 *텍스트*, 목록은 - 사용)\n- 감성 분석 결과는 정량적인 수치(Sentiment Score, -1.00 ~ +1.00)로 변환해 소수점 둘째 자리까지 제시하십시오.\n- 현재 주가를 기준으로 리스크 관리를 위한 최적의 목표가(Target Price)와 손절가(Stop Loss)를 논리적 근거와 함께 원화(KRW) 단위로 제시하십시오.\n\n보고서 템플릿:\n*📈 [종목명 / 종목코드] 데일리 퀀트 브리핑*\n- *기준일:* [오늘 날짜]\n- *감성 점수 (Sentiment Score):* [스코어]\n- *주요 요약 및 모멘텀:* [핵심 수주/실적 뉴스 1-2줄 요약]\n- *가격 전략:* \n  • 목표가: [금액]원 (근거 서술)\n  • 손절가: [금액]원 (근거 서술)nt"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        784,
+        208
+      ],
+      "id": "b5f84a93-1f7a-4125-9078-c6900f392e80",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        784,
+        416
+      ],
+      "id": "c3be7008-735c-4dd9-982a-e801707adec3",
+      "name": "Google Gemini Chat Model"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0BHB4DKT8D",
+          "mode": "id"
+        },
+        "text": "={{ $json.output }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        1168,
+        208
+      ],
+      "id": "c130ce50-5330-4de8-b2ca-52dcdaa44be9",
+      "name": "Send a message",
+      "webhookId": "97bcde18-1e6c-447c-bfda-2591ea56fa64"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "timezone": "Asia/Seoul",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "nodeGroups": []
+}

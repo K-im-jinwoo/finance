@@ -61,7 +61,7 @@ This foundation is followed by separate, independently reviewable plans:
 
 **Interfaces:**
 - Consumes: approved design at `docs/superpowers/specs/2026-07-24-stock-automation-harness-design.md`.
-- Produces: `npm test`, `npm run audit:workflows`, and `npm run verify` command contracts used by every later task.
+- Produces: `npm.cmd test`, `npm run audit:workflows`, and `npm run verify` command contracts used by every later task.
 
 - [ ] **Step 1: Create the repository agent map**
 
@@ -81,7 +81,7 @@ Create `AGENTS.md` with this exact content:
 ## Commands
 
 - Full verification: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1`
-- Node tests: `npm test`
+- Node tests: `npm.cmd test`
 - Workflow audit: `npm run audit:workflows`
 
 ## Rules
@@ -826,7 +826,7 @@ git commit -m "test: enforce safe inactive workflow exports"
 - Create: `scripts/verify.ps1`
 
 **Interfaces:**
-- Consumes: `npm test` and `npm run audit:workflows`.
+- Consumes: `npm.cmd test` and `npm run audit:workflows`.
 - Produces: one PowerShell command that exits `0` only if both checks pass.
 
 - [ ] **Step 1: Create the PowerShell verification wrapper**
@@ -840,7 +840,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $projectRoot
 
 try {
-    & npm test
+    & npm.cmd test
     if ($LASTEXITCODE -ne 0) {
         throw "Node tests failed with exit code $LASTEXITCODE."
     }

@@ -11,7 +11,7 @@
 ## Commands
 
 - Full verification: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1`
-- Node tests: `npm test`
+- Node tests: `npm.cmd test`
 - Workflow audit: `npm run audit:workflows`
 
 ## Rules

@@ -61,7 +61,7 @@ This foundation is followed by separate, independently reviewable plans:
 
 **Interfaces:**
 - Consumes: approved design at `docs/superpowers/specs/2026-07-24-stock-automation-harness-design.md`.
-- Produces: `npm.cmd test`, `npm.cmd run audit:workflows`, and `npm run verify` command contracts used by every later task.
+- Produces: `npm.cmd test`, `npm.cmd run audit:workflows`, and `npm.cmd run verify` command contracts used by every later task.
 
 - [ ] **Step 1: Create the repository agent map**
 

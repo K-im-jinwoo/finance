@@ -1,3 +1,10 @@
+import {
+  environmentName,
+  isDirectSensitiveKey,
+  isEnvironmentExpression,
+  isSensitiveHeaderName,
+} from "./workflow-security.mjs";
+
 const REMOVED_TOP_LEVEL_KEYS = new Set([
   "id",
   "versionId",
@@ -11,20 +18,21 @@ const REMOVED_TOP_LEVEL_KEYS = new Set([
   "triggerCount",
 ]);
 
-const SENSITIVE_NAME_PATTERN =
-  /(authorization|client[-_ ]?id|client[-_ ]?secret|api[-_ ]?key|password|token)/i;
-
-function envName(name) {
-  return String(name)
-    .trim()
-    .replace(/[^A-Za-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toUpperCase();
+function sanitizeSensitiveValue(value, path, name) {
+  if (typeof value !== "string") {
+    throw new TypeError(`Sensitive value at ${path} must be a string`);
+  }
+  if (isEnvironmentExpression(value)) {
+    return value;
+  }
+  return `={{ $env.${environmentName(name)} }}`;
 }
 
-function sanitizeObject(value) {
+function sanitizeObject(value, path = "$") {
   if (Array.isArray(value)) {
-    return value.map(sanitizeObject);
+    return value.map((child, index) =>
+      sanitizeObject(child, `${path}[${index}]`),
+    );
   }
 
   if (value === null || typeof value !== "object") {
@@ -36,16 +44,26 @@ function sanitizeObject(value) {
     if (key === "credentials") {
       continue;
     }
-    result[key] = sanitizeObject(child);
+    if (isDirectSensitiveKey(key)) {
+      result[key] = sanitizeSensitiveValue(
+        child,
+        `${path}.${key}`,
+        key,
+      );
+      continue;
+    }
+    result[key] = sanitizeObject(child, `${path}.${key}`);
   }
 
   if (
-    typeof result.name === "string" &&
-    SENSITIVE_NAME_PATTERN.test(result.name) &&
-    typeof result.value === "string" &&
-    !result.value.trim().startsWith("={{")
+    isSensitiveHeaderName(result.name) &&
+    Object.hasOwn(result, "value")
   ) {
-    result.value = `={{ $env.${envName(result.name)} }}`;
+    result.value = sanitizeSensitiveValue(
+      result.value,
+      `${path}.value`,
+      result.name,
+    );
   }
 
   return result;

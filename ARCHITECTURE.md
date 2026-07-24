@@ -30,3 +30,8 @@ Naver news
 - Full verification command: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1`
 
 Production n8n state and production PostgreSQL state remain external and must be revalidated before any operational change.
+
+> **Safety boundary:** The files under `workflows/n8n/` are sanitized, inactive
+> repository snapshots, not production-ready workflows. Date handling, empty-news
+> behavior, Gemini error handling, and price-proposal hardening remain follow-up
+> work and must be verified before activation.

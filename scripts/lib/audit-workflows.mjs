@@ -1,11 +1,22 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const SENSITIVE_NAME_PATTERN =
-  /(authorization|client[-_ ]?id|client[-_ ]?secret|api[-_ ]?key|password|token)/i;
+import {
+  isDirectSensitiveKey,
+  isEnvironmentExpression,
+  isSensitiveHeaderName,
+} from "./workflow-security.mjs";
 
 function finding(file, code, detail) {
   return { file, code, detail };
+}
+
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function walk(value, path, visit) {
@@ -29,12 +40,9 @@ export function auditWorkflow(workflow, fileName) {
   const findings = [];
 
   if (
-    workflow === null ||
-    typeof workflow !== "object" ||
-    Array.isArray(workflow) ||
+    !isPlainObject(workflow) ||
     !Array.isArray(workflow.nodes) ||
-    workflow.connections === null ||
-    typeof workflow.connections !== "object"
+    !isPlainObject(workflow.connections)
   ) {
     return [
       finding(
@@ -56,7 +64,23 @@ export function auditWorkflow(workflow, fileName) {
   }
 
   const seenNames = new Set();
-  for (const node of workflow.nodes) {
+  for (const [index, node] of workflow.nodes.entries()) {
+    if (
+      !isPlainObject(node) ||
+      typeof node.name !== "string" ||
+      node.name.trim() === "" ||
+      typeof node.type !== "string" ||
+      node.type.trim() === ""
+    ) {
+      findings.push(
+        finding(
+          fileName,
+          "INVALID_NODE_SHAPE",
+          `Node at index ${index} requires a plain object with non-empty name and type`,
+        ),
+      );
+      continue;
+    }
     if (seenNames.has(node.name)) {
       findings.push(
         finding(
@@ -80,12 +104,25 @@ export function auditWorkflow(workflow, fileName) {
       );
     }
 
+    for (const [key, value] of Object.entries(object)) {
+      if (
+        isDirectSensitiveKey(key) &&
+        !isEnvironmentExpression(value)
+      ) {
+        findings.push(
+          finding(
+            fileName,
+            "LITERAL_SENSITIVE_VALUE",
+            `Sensitive value must use an environment expression at ${path}.${key}`,
+          ),
+        );
+      }
+    }
+
     if (
-      typeof object.name === "string" &&
-      SENSITIVE_NAME_PATTERN.test(object.name) &&
-      typeof object.value === "string" &&
-      object.value.trim() !== "" &&
-      !object.value.trim().startsWith("={{")
+      isSensitiveHeaderName(object.name) &&
+      Object.hasOwn(object, "value") &&
+      !isEnvironmentExpression(object.value)
     ) {
       findings.push(
         finding(

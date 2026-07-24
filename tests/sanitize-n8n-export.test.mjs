@@ -66,6 +66,66 @@ test("sanitizer replaces sensitive literal headers with environment expressions"
   ]);
 });
 
+test("sanitizer replaces recursively nested direct sensitive keys", () => {
+  const source = sampleWorkflow();
+  source.nodes[0].parameters.authentication = {
+    clientId: "literal-client-id",
+    client_secret: "literal-client-secret",
+    "api-key": "literal-api-key",
+    password: "literal-password",
+    token: "literal-token",
+    authorization: "Bearer literal-token",
+    tokenizer: "not-sensitive",
+  };
+
+  const authentication =
+    sanitizeWorkflow(source).nodes[0].parameters.authentication;
+
+  assert.deepEqual(authentication, {
+    clientId: "={{ $env.CLIENT_ID }}",
+    client_secret: "={{ $env.CLIENT_SECRET }}",
+    "api-key": "={{ $env.API_KEY }}",
+    password: "={{ $env.PASSWORD }}",
+    token: "={{ $env.TOKEN }}",
+    authorization: "={{ $env.AUTHORIZATION }}",
+    tokenizer: "not-sensitive",
+  });
+});
+
+test("sanitizer replaces non-environment expressions in sensitive values", () => {
+  const source = sampleWorkflow();
+  source.nodes[0].parameters.apiKey = "={{ $json.secret }}";
+  source.nodes[0].parameters.headers = [
+    { name: "Authorization", value: "={{ $json.authorization }}" },
+  ];
+
+  const parameters = sanitizeWorkflow(source).nodes[0].parameters;
+
+  assert.equal(parameters.apiKey, "={{ $env.API_KEY }}");
+  assert.equal(
+    parameters.headers[0].value,
+    "={{ $env.AUTHORIZATION }}",
+  );
+});
+
+test("sanitizer fails closed for non-string sensitive values", () => {
+  const directKey = sampleWorkflow();
+  directKey.nodes[0].parameters.token = { source: "literal" };
+  assert.throws(
+    () => sanitizeWorkflow(directKey),
+    /Sensitive value at .*token must be a string/,
+  );
+
+  const header = sampleWorkflow();
+  header.nodes[0].parameters.headers = [
+    { name: "Authorization", value: ["literal"] },
+  ];
+  assert.throws(
+    () => sanitizeWorkflow(header),
+    /Sensitive value at .*value must be a string/,
+  );
+});
+
 test("sanitizer does not mutate the source workflow", () => {
   const source = sampleWorkflow();
   sanitizeWorkflow(source);

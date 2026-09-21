@@ -13,5 +13,6 @@ hermes profile create stock-risk --description "반대논증, 희석, 경영진�
 
 Copy only the matching `SOUL.md` into each profile. Set every profile's `terminal.cwd` to the deployed stock-assistant directory. Do not copy provider OAuth credentials between profiles; official Hermes documentation requires each profile to own its credentials.
 
-The profiles may use the read-only stock API or CLI. They must not receive brokerage order tools or a general WIKI writer. The CIO alone may request a journal preview; a separate approval service must consume the one-time approval before any WIKI write.
+Copy the common `hermes/skills/stock-research` directory into each profile's skills directory. Install the matching `tool-policy.json` beside the profile configuration as a review artifact. The policy file documents intent; the stock API enforces the boundary with a different role token for every profile. Give a profile only its own token file, never the server's complete role-secret JSON.
 
+The profiles may use the read-only stock API or CLI. They must not receive brokerage order tools or a general WIKI writer. The CIO alone may request a journal preview; a separate approval service must consume the one-time approval before any WIKI write.

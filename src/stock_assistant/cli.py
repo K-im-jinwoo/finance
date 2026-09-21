@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
+from .client import StockClient, StockClientError
 from .http_api import serve
+from .presentation import render_candidate_report
 
 
 def _project_root() -> Path:
@@ -36,6 +39,15 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument("--port", type=int, default=9120)
     serve_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
     serve_parser.add_argument("--secret-file", type=Path)
+    serve_parser.add_argument("--role-secret-file", type=Path)
+    report_parser = subparsers.add_parser("report")
+    report_parser.add_argument("report_id")
+    report_parser.add_argument("--base-url", default=os.getenv("STOCK_API_BASE_URL", "http://127.0.0.1:9120"))
+    report_parser.add_argument("--token-file", type=Path)
+    report_parser.add_argument("--format", choices=("json", "text"), default="text")
+    holdings_parser = subparsers.add_parser("holdings")
+    holdings_parser.add_argument("--base-url", default=os.getenv("STOCK_API_BASE_URL", "http://127.0.0.1:9120"))
+    holdings_parser.add_argument("--token-file", type=Path)
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -54,11 +66,41 @@ def main(argv: list[str] | None = None) -> int:
         secret_file = args.secret_file
         if secret_file is None and os.getenv("STOCK_API_SHARED_SECRET_FILE"):
             secret_file = Path(os.environ["STOCK_API_SHARED_SECRET_FILE"])
-        serve(host=args.host, port=args.port, database_path=args.database, secret_file=secret_file)
+        role_secret_file = args.role_secret_file
+        if role_secret_file is None and os.getenv("STOCK_API_ROLE_SECRET_FILE"):
+            role_secret_file = Path(os.environ["STOCK_API_ROLE_SECRET_FILE"])
+        serve(
+            host=args.host,
+            port=args.port,
+            database_path=args.database,
+            secret_file=secret_file,
+            role_secret_file=role_secret_file,
+        )
         return 0
+    if args.command in {"report", "holdings"}:
+        token_file = args.token_file
+        if token_file is None and os.getenv("STOCK_API_ROLE_TOKEN_FILE"):
+            token_file = Path(os.environ["STOCK_API_ROLE_TOKEN_FILE"])
+        if token_file is None:
+            print(json.dumps({"error": "role token file is required"}), file=sys.stderr)
+            return 2
+        client = StockClient(args.base_url, token_file)
+        try:
+            if args.command == "holdings":
+                print(json.dumps({"holdings": client.list_holdings()}, ensure_ascii=False, indent=2))
+                return 0
+            report = client.get_report(args.report_id)
+            if args.format == "json":
+                print(json.dumps({"report": report}, ensure_ascii=False, indent=2))
+            else:
+                print("\n\n".join(render_candidate_report(report)))
+            return 0
+        except (StockClientError, ValueError) as exc:
+            status = exc.status if isinstance(exc, StockClientError) else None
+            print(json.dumps({"error": str(exc), "status": status}, ensure_ascii=False), file=sys.stderr)
+            return 1
     raise AssertionError("unreachable")
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

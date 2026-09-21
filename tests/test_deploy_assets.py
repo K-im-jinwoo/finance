@@ -11,9 +11,9 @@ class DeployAssetTests(unittest.TestCase):
     def test_compose_keeps_api_private_and_secret_out_of_environment(self) -> None:
         compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
         self.assertIn('profiles: ["candidate"]', compose)
-        self.assertIn("expose:\n      - \"9120\"", compose)
-        self.assertNotIn("ports:", compose)
-        self.assertIn("/run/secrets/stock-api-key", compose)
+        self.assertIn('ports:\n      - "127.0.0.1:9120:9120"', compose)
+        self.assertNotIn('"0.0.0.0:9120:9120"', compose)
+        self.assertIn("/run/secrets/stock-api-roles", compose)
         self.assertNotIn("STOCK_API_SHARED_SECRET:", compose)
         self.assertIn("read_only: true", compose)
 
@@ -33,4 +33,3 @@ class DeployAssetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

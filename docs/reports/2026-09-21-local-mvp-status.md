@@ -10,7 +10,9 @@
 
 - 구현 브랜치: `codex/hermes-stock-mvp`
 - 국내 보통주와 일반 ETF 계약, 재무·재료·기술 신호 스크리닝, 상위 5개 후보, point-in-time 이벤트 스터디, 통합 수동 포트폴리오, 매수 논리 카드, 보유/부분매도/전량매도 시나리오를 구현했다.
-- HTTP API는 `/health`, 인증된 보유정보·저널 미리보기, `/v1/screen`, `/v1/candidates`를 제공한다.
+- HTTP API는 `/health`, 인증된 보유정보·저널 미리보기, `/v1/screen`, `/v1/candidates`, 저장된 `/v1/reports/{report_id}` 조회를 제공한다.
+- CIO·시장·재무·위험·스케줄러에 서로 다른 토큰을 부여하며 전문 프로필의 보유정보·저널 접근은 서버에서 차단한다.
+- Desktop과 Telegram은 저장된 같은 보고서 ID를 다시 읽고 동일한 사실·추론·가정·확인 불가 구획으로 표시할 수 있다.
 - 모든 주문 경로는 `403`으로 차단하고 `orders_enabled=false`를 상태 응답에 고정했다.
 - WIKI 작성기는 승인된 `wiki/20_Areas/Investments/*.md` 경로와 일회성 승인 토큰만 허용한다.
 - 08:30 평일, 20:00 평일, 토요일 12:00 KST 스케줄 판정과 중복/쿨다운 알림 상태를 구현했다.
@@ -19,9 +21,9 @@
 ## 실행한 검증
 
 - Node 테스트: 27/27 통과
-- Python 테스트: 52/52 통과
+- Python 테스트: 62/62 통과
 - 비활성 n8n 워크플로 보안 감사: 통과
-- Docker Compose 정적 구성 검증: 통과
+- Docker Compose 정적 구성 검증: 통과. API는 Oracle의 `127.0.0.1:9120`에만 게시하도록 제한했다.
 - Python compileall, JSON fixture, 비밀정보 스캔, `git diff --check`: 통과
 - 로컬 HTTP 스모크: `GET /health`가 `status=ok`, `orders_enabled=false` 반환
 
@@ -53,4 +55,3 @@
 - KRX·OpenDART 키 등록
 - 네 개 프로필의 ChatGPT/Codex OAuth 수행
 - 실제 WIKI 첫 기록 승인
-

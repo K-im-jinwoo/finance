@@ -37,7 +37,21 @@ class RepositoryTests(unittest.TestCase):
                 count = connection.execute("SELECT COUNT(*) FROM screening_results").fetchone()[0]
             self.assertEqual(count, 1)
 
+    def test_full_report_is_idempotent_and_retrievable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = StockRepository(Path(directory) / "stock.sqlite3")
+            report_id = "R-20260921T0000Z-ABCDEF12"
+            payload = {"report_id": report_id, "candidates": [], "fact_summary": ["공식 공시"]}
+            repository.save_report(report_id, "2026-09-21T00:00:00+00:00", payload)
+            repository.save_report(report_id, "2026-09-21T00:00:00+00:00", payload)
+            self.assertEqual(repository.get_report(report_id), payload)
+            with self.assertRaisesRegex(ValueError, "different content"):
+                repository.save_report(
+                    report_id,
+                    "2026-09-21T00:00:00+00:00",
+                    {"report_id": report_id, "candidates": ["changed"]},
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
-

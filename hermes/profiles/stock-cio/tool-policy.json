@@ -1,0 +1,12 @@
+{
+  "role": "cio",
+  "allowed": [
+    "GET /v1/holdings",
+    "POST /v1/holdings",
+    "POST /v1/screen",
+    "POST /v1/candidates",
+    "GET /v1/reports/{report_id}",
+    "POST /v1/journal/preview"
+  ],
+  "forbidden": ["/v1/orders", "direct WIKI write", "broker credentials"]
+}

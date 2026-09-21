@@ -12,6 +12,8 @@ Hermes Desktop과 Telegram이 함께 사용할 수 있는 채널 중립적 국�
 - 매수 논리 카드와 보유·부분매도·전량매도 검토 시나리오
 - 일회성 승인 토큰과 WIKI 투자일지 미리보기
 - 인증된 private API와 주문 경로 강제 차단
+- 역할별 API 토큰과 저장된 보고서 ID 재조회
+- Desktop·Telegram 공통 보고서 렌더링과 Hermes stock-research skill
 - Hermes 네 개 profile용 SOUL 템플릿
 
 ## 검증
@@ -38,4 +40,3 @@ $env:PYTHONPATH='src'
 - Telegram 전달과 실제 WIKI 저장
 
 이 항목들은 credential과 운영 변경 승인을 받은 후 별도로 검증합니다.
-

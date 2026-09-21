@@ -29,10 +29,24 @@ class JournalDraft:
     payload: dict
 
 
-def make_report_id(as_of: datetime, results: list[ScreeningResult]) -> str:
+def make_report_id(
+    as_of: datetime,
+    results: list[ScreeningResult],
+    *,
+    facts: tuple[str, ...] = (),
+    inferences: tuple[str, ...] = (),
+    assumptions: tuple[str, ...] = (),
+    unavailable: tuple[str, ...] = (),
+) -> str:
     timestamp = as_of.astimezone(timezone.utc).strftime("%Y%m%dT%H%MZ")
     identity = json.dumps(
-        [(item.symbol, str(item.score), item.decision.value) for item in results],
+        {
+            "results": [(item.symbol, str(item.score), item.decision.value) for item in results],
+            "facts": facts,
+            "inferences": inferences,
+            "assumptions": assumptions,
+            "unavailable": unavailable,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -52,7 +66,17 @@ def build_candidate_report(
     if as_of.tzinfo is None:
         raise ValueError("as_of must be timezone-aware")
     return CandidateReport(
-        "1.0", make_report_id(as_of, results), as_of.astimezone(timezone.utc), tuple(results),
+        "1.0",
+        make_report_id(
+            as_of,
+            results,
+            facts=facts,
+            inferences=inferences,
+            assumptions=assumptions,
+            unavailable=unavailable,
+        ),
+        as_of.astimezone(timezone.utc),
+        tuple(results),
         facts, inferences, assumptions, unavailable,
     )
 
@@ -116,4 +140,3 @@ def build_journal_draft(
 
 def report_to_dict(report: CandidateReport) -> dict:
     return to_json_value(report)
-

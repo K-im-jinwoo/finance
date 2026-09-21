@@ -23,7 +23,13 @@ class ReportTests(unittest.TestCase):
             unavailable=("장중 데이터",),
         )
         second = build_candidate_report(datetime(2026, 9, 21, tzinfo=UTC), [result])
-        self.assertEqual(first.report_id, second.report_id)
+        self.assertNotEqual(first.report_id, second.report_id)
+        repeated = build_candidate_report(
+            datetime(2026, 9, 21, tzinfo=UTC), [result],
+            facts=("DART 공시",), inferences=("실적 모멘텀",), assumptions=("업황 지속",),
+            unavailable=("장중 데이터",),
+        )
+        self.assertEqual(first.report_id, repeated.report_id)
         self.assertEqual(first.fact_summary, ("DART 공시",))
         self.assertEqual(first.unavailable, ("장중 데이터",))
 
@@ -49,4 +55,3 @@ class ReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

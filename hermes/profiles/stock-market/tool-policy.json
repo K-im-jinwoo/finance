@@ -1,0 +1,9 @@
+{
+  "role": "market",
+  "allowed": [
+    "POST /v1/screen",
+    "POST /v1/candidates",
+    "GET /v1/reports/{report_id}"
+  ],
+  "forbidden": ["holdings", "journal", "orders", "broker credentials"]
+}

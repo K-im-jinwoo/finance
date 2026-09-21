@@ -16,16 +16,16 @@ services:
       - "9120"
       - --database
       - /var/lib/stock/stock-assistant.sqlite3
-      - --secret-file
-      - /run/secrets/stock-api-key
-    expose:
-      - "9120"
+      - --role-secret-file
+      - /run/secrets/stock-api-roles
+    ports:
+      - "127.0.0.1:9120:9120"
     volumes:
       - type: bind
         source: "${STOCK_STATE_HOST_DIR:-/srv/stock-assistant/state}"
         target: /var/lib/stock
     secrets:
-      - stock-api-key
+      - stock-api-roles
     tmpfs:
       - /tmp:size=32m,noexec,nosuid
     networks:
@@ -47,11 +47,10 @@ services:
         max-file: "3"
 
 secrets:
-  stock-api-key:
-    file: "${STOCK_API_SHARED_SECRET_HOST_FILE:?required}"
+  stock-api-roles:
+    file: "${STOCK_API_ROLE_SECRET_HOST_FILE:?required}"
 
 networks:
   n8n-private:
     external: true
     name: "${N8N_DOCKER_NETWORK:-n8n-infra_default}"
-

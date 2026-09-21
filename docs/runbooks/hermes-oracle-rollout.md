@@ -13,13 +13,13 @@ Status: prepared, not executed
 
 ## Gate 2 - Stock API candidate
 
-Deploy `deploy/compose.yaml` without host port publishing. Join the existing private Docker network and verify the candidate smoke gate in `deploy/README.md`.
+Deploy `deploy/compose.yaml` with port 9120 published only to Oracle loopback. Keep the existing private Docker network for future internal consumers and verify the candidate smoke gate in `deploy/README.md`. Give each Hermes profile only its own role-token file; never mount the complete role-secret JSON into Hermes.
 
 Rollback: stop and remove only the `stock-assistant` candidate container. Preserve `/srv/stock-assistant/state` for diagnosis.
 
 ## Gate 3 - Official Hermes
 
-Install the official Hermes runtime as a separate service. Do not replace the existing custom Telegram gateway. Start an authenticated dashboard/serve backend on a Tailscale address or through the official OAuth registration path. Do not expose username/password authentication directly to the public internet.
+Install the official Hermes runtime as a separate service. Do not replace the existing custom Telegram gateway. Prefer Desktop's SSH connection to a loopback `hermes serve` backend for the first validation. If a remote URL is later exposed through Tailscale or the public internet, apply the official authentication guidance; never expose username/password authentication directly to the public internet.
 
 Verify `/api/status`, one normal chat, reconnect after restart, and Desktop session continuity before adding profiles.
 
@@ -45,4 +45,3 @@ Mount or connect the personal WIKI only after preview and one-time approval test
 - production Telegram cutover
 - live n8n workflow import or activation
 - automatic rule changes based on backtest output
-

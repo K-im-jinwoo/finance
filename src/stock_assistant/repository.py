@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -8,7 +9,8 @@ from pathlib import Path
 from .models import Holding, ScreeningResult, ThesisCard, to_json_value
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+_REPORT_ID = re.compile(r"^R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8}$")
 
 
 class StockRepository:
@@ -42,6 +44,11 @@ class StockRepository:
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY (report_id, symbol)
                 );
+                CREATE TABLE IF NOT EXISTS reports (
+                    report_id TEXT PRIMARY KEY,
+                    as_of TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS holdings (
                     broker TEXT NOT NULL,
                     symbol TEXT NOT NULL,
@@ -74,6 +81,33 @@ class StockRepository:
                     "ON CONFLICT(report_id, symbol) DO UPDATE SET as_of=excluded.as_of, payload_json=excluded.payload_json",
                     (report_id, result.symbol, result.as_of.isoformat(), payload),
                 )
+
+    def save_report(self, report_id: str, as_of: str, payload: dict) -> None:
+        if not _REPORT_ID.fullmatch(report_id):
+            raise ValueError("report_id has an invalid format")
+        if payload.get("report_id") != report_id:
+            raise ValueError("report payload id does not match report_id")
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT payload_json FROM reports WHERE report_id = ?", (report_id,),
+            ).fetchone()
+            if existing is not None and existing["payload_json"] != serialized:
+                raise ValueError("report_id already exists with different content")
+            connection.execute(
+                "INSERT INTO reports(report_id, as_of, payload_json) VALUES (?, ?, ?) "
+                "ON CONFLICT(report_id) DO NOTHING",
+                (report_id, as_of, serialized),
+            )
+
+    def get_report(self, report_id: str) -> dict | None:
+        if not _REPORT_ID.fullmatch(report_id):
+            raise ValueError("report_id has an invalid format")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM reports WHERE report_id = ?", (report_id,),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row is not None else None
 
     def replace_holding(self, holding: Holding) -> None:
         with self._connect() as connection:

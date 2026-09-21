@@ -35,6 +35,7 @@ The repository also keeps sanitized, inactive snapshots of the legacy n8n news w
 - The WIKI writer accepts only approved journal payloads and never receives arbitrary paths.
 - Brokerage order APIs are outside the MVP.
 - Gemini, when retained for news sentiment, cannot calculate entry, target, or stop prices.
+- Oracle binds the stock API to host loopback only. Native Hermes profiles call that loopback endpoint with separate role-token files; the complete role-token map remains available only to the stock service.
 
 ## Data Freshness
 
@@ -64,4 +65,3 @@ The n8n snapshots still require separate fixes for hard-coded dates, empty-news 
 ## Completion Claims
 
 Local tests prove deterministic behavior against fixtures and workflow safety checks. They do not prove live KRX/DART collection, production PostgreSQL state, Desktop connectivity, Telegram/Slack delivery, WIKI persistence, n8n execution, or scheduled Oracle operation.
-

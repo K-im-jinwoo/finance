@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from stock_assistant.http_api import StockApi
+from stock_assistant.http_api import StockApi, load_role_secrets
 from stock_assistant.models import AssetType, CompanyKind, FinancialSnapshot, Market, Security, to_json_value
 from stock_assistant.repository import StockRepository
 from tests.helpers import make_bars
@@ -106,6 +106,12 @@ class HttpApiTests(unittest.TestCase):
         self.assertEqual(len(first.body["report"]["candidates"]), 5)
         self.assertEqual(first.body["report"]["report_id"], second.body["report"]["report_id"])
         self.assertEqual(first.body["report"]["unavailable"], ["실시간 데이터"])
+        report_id = first.body["report"]["report_id"]
+        fetched = self.api.dispatch(
+            "GET", f"/v1/reports/{report_id}", headers=headers,
+        )
+        self.assertEqual(fetched.status, 200)
+        self.assertEqual(fetched.body["report"], first.body["report"])
 
     def test_candidate_endpoint_rejects_empty_items(self) -> None:
         response = self.api.dispatch(
@@ -113,6 +119,31 @@ class HttpApiTests(unittest.TestCase):
             body=b'{"items":[]}',
         )
         self.assertEqual(response.status, 422)
+
+    def test_specialist_role_can_analyze_but_cannot_read_holdings(self) -> None:
+        secret = "m" * 32
+        api = StockApi(
+            self.api.repository,
+            role_secrets={"market": secret, "cio": "c" * 32},
+        )
+        headers = {"Authorization": f"Bearer {secret}"}
+        screened = api.dispatch(
+            "POST", "/v1/screen", headers=headers,
+            body=json.dumps(screen_payload()).encode("utf-8"),
+        )
+        self.assertEqual(screened.status, 200)
+        denied = api.dispatch("GET", "/v1/holdings", headers=headers)
+        self.assertEqual(denied.status, 403)
+
+    def test_role_secret_file_rejects_duplicates_and_short_values(self) -> None:
+        path = Path(self.temp.name) / "roles.json"
+        path.write_text(json.dumps({"cio": "short"}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "at least 32"):
+            load_role_secrets(path)
+        shared = "x" * 32
+        path.write_text(json.dumps({"cio": shared, "market": shared}), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unique"):
+            load_role_secrets(path)
 
 
 if __name__ == "__main__":

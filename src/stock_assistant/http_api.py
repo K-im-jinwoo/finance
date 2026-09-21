@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -27,16 +28,43 @@ class ApiResponse:
 
 
 class StockApi:
-    def __init__(self, repository: StockRepository, *, shared_secret: str | None = None) -> None:
+    SPECIALIST_ROLES = frozenset({"market", "fundamentals", "risk"})
+    _REPORT_ROUTE = re.compile(r"^/v1/reports/(R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8})$")
+
+    def __init__(
+        self,
+        repository: StockRepository,
+        *,
+        shared_secret: str | None = None,
+        role_secrets: dict[str, str] | None = None,
+    ) -> None:
         self.repository = repository
         self.shared_secret = shared_secret
+        self.role_secrets = dict(role_secrets or {})
 
-    def _authorized(self, headers: dict[str, str]) -> bool:
-        if self.shared_secret is None:
-            return True
+    def _principal(self, headers: dict[str, str]) -> str | None:
+        if self.shared_secret is None and not self.role_secrets:
+            return "cio"
         provided = headers.get("authorization", "")
-        expected = f"Bearer {self.shared_secret}"
-        return hmac.compare_digest(provided, expected)
+        if self.shared_secret is not None and hmac.compare_digest(provided, f"Bearer {self.shared_secret}"):
+            return "cio"
+        for role, secret in self.role_secrets.items():
+            if hmac.compare_digest(provided, f"Bearer {secret}"):
+                return role
+        return None
+
+    def _allowed(self, role: str, method: str, route: str) -> bool:
+        if role == "cio":
+            return True
+        if role in self.SPECIALIST_ROLES:
+            return (method == "POST" and route in {"/v1/screen", "/v1/candidates"}) or (
+                method == "GET" and self._REPORT_ROUTE.fullmatch(route) is not None
+            )
+        if role == "scheduler":
+            return (method == "POST" and route == "/v1/candidates") or (
+                method == "GET" and self._REPORT_ROUTE.fullmatch(route) is not None
+            )
+        return False
 
     def dispatch(
         self,
@@ -50,10 +78,13 @@ class StockApi:
         route = urlparse(path).path
         if route == "/health" and method == "GET":
             return ApiResponse(200, {"status": "ok", "service": "stock-assistant", "orders_enabled": False})
-        if not self._authorized(headers):
+        role = self._principal(headers)
+        if role is None:
             return ApiResponse(401, {"error": "unauthorized"})
         if "/order" in route.casefold():
             return ApiResponse(403, {"error": "brokerage orders are outside this service"})
+        if not self._allowed(role, method, route):
+            return ApiResponse(403, {"error": "route is not allowed for this role"})
 
         try:
             payload = json.loads(body.decode("utf-8")) if body else {}
@@ -94,8 +125,16 @@ class StockApi:
                     assumptions=_string_tuple(payload.get("assumptions"), "assumptions"),
                     unavailable=_string_tuple(payload.get("unavailable"), "unavailable"),
                 )
+                report_payload = report_to_dict(report)
                 self.repository.save_screening_results(report.report_id, selected)
-                return ApiResponse(200, {"report": report_to_dict(report)})
+                self.repository.save_report(report.report_id, report.as_of.isoformat(), report_payload)
+                return ApiResponse(200, {"report": report_payload})
+            report_match = self._REPORT_ROUTE.fullmatch(route)
+            if report_match is not None and method == "GET":
+                report = self.repository.get_report(report_match.group(1))
+                if report is None:
+                    return ApiResponse(404, {"error": "report not found"})
+                return ApiResponse(200, {"report": report})
         except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
             return ApiResponse(422, {"error": str(exc)})
         return ApiResponse(404, {"error": "route not found"})
@@ -158,11 +197,38 @@ def load_secret(secret_file: Path | None) -> str | None:
     return secret
 
 
-def serve(*, host: str, port: int, database_path: Path, secret_file: Path | None = None) -> None:
+def load_role_secrets(secret_file: Path | None) -> dict[str, str]:
+    if secret_file is None:
+        return {}
+    try:
+        payload = json.loads(secret_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("role-secret file must contain valid UTF-8 JSON") from exc
+    allowed_roles = {"cio", "market", "fundamentals", "risk", "scheduler"}
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError("role-secret file must be a non-empty object")
+    if any(role not in allowed_roles for role in payload):
+        raise ValueError("role-secret file contains an unsupported role")
+    if any(not isinstance(secret, str) or len(secret) < 32 for secret in payload.values()):
+        raise ValueError("every role secret must contain at least 32 characters")
+    if len(set(payload.values())) != len(payload):
+        raise ValueError("role secrets must be unique")
+    return dict(payload)
+
+
+def serve(
+    *,
+    host: str,
+    port: int,
+    database_path: Path,
+    secret_file: Path | None = None,
+    role_secret_file: Path | None = None,
+) -> None:
     secret = load_secret(secret_file)
-    if host not in {"127.0.0.1", "::1", "localhost"} and secret is None:
-        raise ValueError("a shared secret is required for non-loopback binding")
-    api = StockApi(StockRepository(database_path), shared_secret=secret)
+    role_secrets = load_role_secrets(role_secret_file)
+    if host not in {"127.0.0.1", "::1", "localhost"} and secret is None and not role_secrets:
+        raise ValueError("authentication secrets are required for non-loopback binding")
+    api = StockApi(StockRepository(database_path), shared_secret=secret, role_secrets=role_secrets)
 
     class Handler(BaseHTTPRequestHandler):
         def _handle(self) -> None:

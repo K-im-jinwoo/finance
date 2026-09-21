@@ -1,0 +1,15 @@
+{
+  "OutBlock_1": [
+    {
+      "BAS_DD": "20260918",
+      "ISU_SRT_CD": "005930",
+      "ISU_NM": "삼성전자",
+      "TDD_CLSPRC": "82,000",
+      "TDD_OPNPRC": "81,000",
+      "TDD_HGPRC": "82,500",
+      "TDD_LWPRC": "80,500",
+      "ACC_TRDVOL": "12,345,678"
+    }
+  ]
+}
+

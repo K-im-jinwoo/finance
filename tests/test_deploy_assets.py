@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class DeployAssetTests(unittest.TestCase):
     def test_compose_keeps_api_private_and_secret_out_of_environment(self) -> None:
         compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
+        candidate_env = (ROOT / "deploy" / "candidate.env.example").read_text(encoding="utf-8")
+        self.assertIn("COMPOSE_PROJECT_NAME=stock-assistant", candidate_env)
         self.assertIn('profiles: ["candidate"]', compose)
         self.assertIn('ports:\n      - "127.0.0.1:9120:9120"', compose)
         self.assertNotIn('"0.0.0.0:9120:9120"', compose)

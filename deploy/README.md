@@ -1,6 +1,7 @@
 # Candidate Deployment
 
 This Compose service is an inactive candidate. It publishes port 9120 only on Oracle loopback and also joins the existing private Docker network. It contains no brokerage order endpoint. A native Hermes process on Oracle uses `http://127.0.0.1:9120`; no public firewall opening is required.
+The candidate uses the dedicated Compose project name `stock-assistant`, so it cannot become part of the existing `deploy` project that owns the Telegram and WIKI containers.
 
 ## Host inputs
 

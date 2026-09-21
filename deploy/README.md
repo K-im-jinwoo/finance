@@ -45,4 +45,6 @@ Run only after deployment approval:
 7. Confirm a CIO-created report is retrievable by the same report ID through the specialist read route.
 8. Confirm no WIKI, Telegram, n8n, or brokerage state changed.
 
+The first seven checks are implemented by `deploy/smoke_candidate.py`; it reads role tokens from the mounted host file and never prints them.
+
 KRX and OpenDART key-file mounts are included in the inactive candidate, but live calls are not yet validated. Toss credentials and brokerage connectivity remain outside this candidate.

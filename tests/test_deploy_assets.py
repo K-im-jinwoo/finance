@@ -39,6 +39,15 @@ class DeployAssetTests(unittest.TestCase):
         self.assertNotIn("/v1/orders", script)
         self.assertNotIn("TELEGRAM_BOT_TOKEN", script)
 
+    def test_candidate_smoke_is_reproducible_and_does_not_embed_secrets(self) -> None:
+        smoke = (ROOT / "deploy" / "smoke_candidate.py").read_text(encoding="utf-8")
+        self.assertIn("unauthenticated_holdings_401", smoke)
+        self.assertIn("specialist_holdings_403", smoke)
+        self.assertIn("specialist_same_report", smoke)
+        self.assertIn("orders_403", smoke)
+        self.assertNotIn("TELEGRAM_BOT_TOKEN", smoke)
+        self.assertNotIn("crtfc_key", smoke)
+
     def test_rollout_keeps_production_gateway_and_orders_out_of_scope(self) -> None:
         runbook = (ROOT / "docs" / "runbooks" / "hermes-oracle-rollout.md").read_text(encoding="utf-8")
         self.assertIn("Do not replace the existing custom Telegram gateway", runbook)

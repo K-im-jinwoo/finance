@@ -11,6 +11,7 @@ class PresentationTests(unittest.TestCase):
         report = {
             "report_id": report_id,
             "as_of": "2026-09-21T00:00:00+00:00",
+            "ruleset_version": "2026-09-21.1",
             "fact_summary": ["DART 공시 확인"],
             "inference_summary": ["실적 모멘텀 가능성"],
             "assumptions": ["업황 지속"],
@@ -21,10 +22,17 @@ class PresentationTests(unittest.TestCase):
                     "name": f"회사-{index}",
                     "decision": "CANDIDATE",
                     "score": "80",
+                    "market": "KOSPI",
+                    "asset_type": "COMMON",
+                    "strategy": "MOMENTUM_CONTINUATION",
+                    "expected_holding_period": "SEVERAL_DAYS",
                     "metrics": {"dilution_count_5y": 2, "max_dilution_ratio_pct_5y": "12.5"},
                     "reasons": ["OCF_POSITIVE"],
                     "warnings": ["과열 여부 재확인"],
                     "checks": ["다음 공시 확인"],
+                    "invalidation_conditions": ["20일선 이탈 시 재검토"],
+                    "catalyst_states": ["CONTRACT:PARTIAL:2026-09-01"],
+                    "evidence_urls": ["https://dart.fss.or.kr/example"],
                 }
                 for index in range(1, 6)
             ],
@@ -38,6 +46,9 @@ class PresentationTests(unittest.TestCase):
         self.assertIn("추론\n- 실적 모멘텀 가능성", combined)
         self.assertIn("확인 불가\n- 장중 체결 데이터", combined)
         self.assertIn("회사-1 (000001)", combined)
+        self.assertIn("규칙 버전: 2026-09-21.1", combined)
+        self.assertIn("전략/예상 기간: MOMENTUM_CONTINUATION / SEVERAL_DAYS", combined)
+        self.assertIn("근거 출처:\n- https://dart.fss.or.kr/example", combined)
         self.assertIn("5년 최대 잠재 희석률(%): 12.5", combined)
 
     def test_invalid_or_oversized_report_fails_closed(self) -> None:

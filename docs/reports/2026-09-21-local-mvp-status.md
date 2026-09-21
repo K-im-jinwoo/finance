@@ -29,7 +29,7 @@
 ## 실행한 검증
 
 - Node 테스트: 27/27 통과
-- Python 테스트: 99/99 통과
+- Python 테스트: 105/105 통과
 - 비활성 n8n 워크플로 보안 감사: 통과
 - Docker Compose 정적 구성 검증: 통과. API는 Oracle의 `127.0.0.1:9120`에만 게시하도록 제한했다.
 - Python compileall, JSON fixture, 비밀정보 스캔, `git diff --check`: 통과
@@ -46,6 +46,9 @@
 - Oracle 배포, 공식 Hermes 프로필 생성, ChatGPT/Codex OAuth, Desktop 원격 연결, 테스트 Telegram Bot, 실제 WIKI 기록은 실행하지 않았다.
 - 공식 Hermes 문서상 OpenAI Codex는 ChatGPT OAuth를 지원하지만, 구독 등급별 사용 한도 산정 방식은 문서화되어 있지 않다. 각 프로필의 인증 상태도 독립적으로 검증해야 한다.
 - 현재 성과는 구조·테스트 검증이며 실제 투자 수익률을 입증하지 않는다.
+- 각 후보 보고서는 `ruleset_version`을 포함하며, 다음 거래일 시가 진입과 왕복 비용을 적용한 5·20·60거래일 가상성과를 전용 DB에 누적한다.
+- 완료되지 않은 성과는 `PENDING_ENTRY` 또는 `PENDING_HORIZON`으로 남고, 완료된 결과는 이후 원천 데이터 정정으로 덮어쓰지 않는다.
+- 보고서 계약 1.1은 시장·자산유형, 선정 전략, 예상 보유기간, 재료 상태, 무효화 조건과 공식 근거 URL을 후보별로 보존한다.
 
 ## 운영 전환 권고안
 

@@ -20,6 +20,7 @@
 - `src/stock_assistant/disclosures.py`: conservative DART title-level catalyst and risk classification
 - `src/stock_assistant/screening.py`: filters, scores, reason codes, top-five selection
 - `src/stock_assistant/backtest.py`: point-in-time event-study replay
+- `src/stock_assistant/performance.py`: immutable 5·20·60-session virtual performance and ruleset comparison
 - `src/stock_assistant/portfolio.py`: holdings, thesis cards, scenarios
 - `src/stock_assistant/approvals.py`: one-time bounded approval tokens
 - `src/stock_assistant/repository.py`: SQLite schema and idempotent persistence
@@ -46,10 +47,11 @@
 4. 필수 재무조건, 반복 희석, 경영진 위험, 재료 상태
 5. 같은 입력의 동일 top-five와 이유 코드
 6. 미래정보 누수 거부, 다음 거래일 체결, 거래비용 반영
-7. 보유정보 통합, 추가매수 재검토, 매도 시나리오
-8. 승인 만료·재사용·다른 사용자·허용 경로 이탈
-9. HTTP API malformed JSON, unknown route, health, read-only enforcement
-10. 이수페타시스 수동 사례가 확인된 사실과 미확인 정보를 구분하는지 확인
+7. 미성숙 성과의 pending 유지, 완료 성과 동결과 전략·규칙 버전별 집계
+8. 보유정보 통합, 추가매수 재검토, 매도 시나리오
+9. 승인 만료·재사용·다른 사용자·허용 경로 이탈
+10. HTTP API malformed JSON, unknown route, health, read-only enforcement
+11. 이수페타시스 수동 사례가 확인된 사실과 미확인 정보를 구분하는지 확인
 
 ## 검증 명령
 

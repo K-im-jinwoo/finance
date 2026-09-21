@@ -4,7 +4,7 @@ import hmac
 import json
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .models import Holding, to_json_value
+from .performance import evaluate_report_performance, summarize_performance
 from .contract_io import parse_screen_request
 from .repository import StockRepository
 from .reports import build_candidate_report, build_journal_draft, report_to_dict
@@ -30,6 +31,7 @@ class ApiResponse:
 class StockApi:
     SPECIALIST_ROLES = frozenset({"market", "fundamentals", "risk"})
     _REPORT_ROUTE = re.compile(r"^/v1/reports/(R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8})$")
+    _PERFORMANCE_ROUTE = re.compile(r"^/v1/performance/(R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8})$")
 
     def __init__(
         self,
@@ -58,11 +60,17 @@ class StockApi:
             return True
         if role in self.SPECIALIST_ROLES:
             return (method == "POST" and route in {"/v1/screen", "/v1/candidates"}) or (
-                method == "GET" and self._REPORT_ROUTE.fullmatch(route) is not None
+                method == "GET" and (
+                    self._REPORT_ROUTE.fullmatch(route) is not None
+                    or self._PERFORMANCE_ROUTE.fullmatch(route) is not None
+                )
             )
         if role == "scheduler":
-            return (method == "POST" and route == "/v1/candidates") or (
-                method == "GET" and self._REPORT_ROUTE.fullmatch(route) is not None
+            return (method == "POST" and route in {"/v1/candidates", "/v1/performance/evaluate"}) or (
+                method == "GET" and (
+                    self._REPORT_ROUTE.fullmatch(route) is not None
+                    or self._PERFORMANCE_ROUTE.fullmatch(route) is not None
+                )
             )
         return False
 
@@ -129,12 +137,40 @@ class StockApi:
                 self.repository.save_screening_results(report.report_id, selected)
                 self.repository.save_report(report.report_id, report.as_of.isoformat(), report_payload)
                 return ApiResponse(200, {"report": report_payload})
+            if route == "/v1/performance/evaluate" and method == "POST":
+                if not isinstance(payload, dict):
+                    raise TypeError("body must be an object")
+                raw_horizons = payload.get("horizons", [5, 20, 60])
+                if not isinstance(raw_horizons, list) or any(
+                    isinstance(value, bool) or not isinstance(value, int) for value in raw_horizons
+                ):
+                    raise TypeError("horizons must be a list of integers")
+                evaluation = evaluate_report_performance(
+                    self.repository,
+                    report_id=str(payload["report_id"]),
+                    evaluated_at=datetime.fromisoformat(str(payload["evaluated_at"])),
+                    horizons=tuple(raw_horizons),
+                    round_trip_cost_bps=Decimal(str(payload.get("round_trip_cost_bps", "30"))),
+                )
+                return ApiResponse(200, {"evaluation": to_json_value(evaluation)})
             report_match = self._REPORT_ROUTE.fullmatch(route)
             if report_match is not None and method == "GET":
                 report = self.repository.get_report(report_match.group(1))
                 if report is None:
                     return ApiResponse(404, {"error": "report not found"})
                 return ApiResponse(200, {"report": report})
+            performance_match = self._PERFORMANCE_ROUTE.fullmatch(route)
+            if performance_match is not None and method == "GET":
+                if self.repository.get_report(performance_match.group(1)) is None:
+                    return ApiResponse(404, {"error": "report not found"})
+                records = self.repository.list_performance_records(
+                    report_id=performance_match.group(1),
+                )
+                return ApiResponse(200, {
+                    "contract_version": "1.0",
+                    "records": to_json_value(records),
+                    "summary": summarize_performance(records),
+                })
         except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
             return ApiResponse(422, {"error": str(exc)})
         return ApiResponse(404, {"error": "route not found"})

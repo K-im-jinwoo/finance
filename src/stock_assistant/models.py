@@ -43,6 +43,21 @@ class Decision(StrEnum):
     EXCLUDED = "EXCLUDED"
 
 
+class StrategyType(StrEnum):
+    BOTTOM_REBOUND = "BOTTOM_REBOUND"
+    MOMENTUM_CONTINUATION = "MOMENTUM_CONTINUATION"
+    HYBRID = "HYBRID"
+    WAIT_FOR_SETUP = "WAIT_FOR_SETUP"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class HoldingPeriod(StrEnum):
+    SEVERAL_DAYS = "SEVERAL_DAYS"
+    SEVERAL_WEEKS = "SEVERAL_WEEKS"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
 class ThesisStatus(StrEnum):
     DRAFT = "DRAFT"
     APPROVED = "APPROVED"
@@ -324,6 +339,13 @@ class ScreeningResult:
     checks: tuple[str, ...]
     metrics: dict[str, Decimal | int | str | None] = field(default_factory=dict)
     name: str | None = None
+    market: str | None = None
+    asset_type: str | None = None
+    strategy: StrategyType = StrategyType.UNAVAILABLE
+    expected_holding_period: HoldingPeriod = HoldingPeriod.REVIEW_REQUIRED
+    catalyst_states: tuple[str, ...] = ()
+    invalidation_conditions: tuple[str, ...] = ()
+    evidence_urls: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "as_of", _utc(self.as_of))

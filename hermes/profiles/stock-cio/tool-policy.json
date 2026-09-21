@@ -6,6 +6,8 @@
     "POST /v1/screen",
     "POST /v1/candidates",
     "GET /v1/reports/{report_id}",
+    "POST /v1/performance/evaluate",
+    "GET /v1/performance/{report_id}",
     "POST /v1/journal/preview"
   ],
   "forbidden": ["/v1/orders", "direct WIKI write", "broker credentials"]

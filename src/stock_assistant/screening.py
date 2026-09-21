@@ -14,10 +14,12 @@ from .models import (
     FinancialCompanySnapshot,
     FinancialSnapshot,
     FinancingEvent,
+    HoldingPeriod,
     ManagementRisk,
     OHLCV,
     ScreeningResult,
     Security,
+    StrategyType,
 )
 from .validation import assert_point_in_time
 
@@ -64,6 +66,8 @@ def screen_security(
         return ScreeningResult(
             security.symbol, as_of, Decision.EXCLUDED, score,
             ("UNSUPPORTED_ASSET_TYPE",), (), (), {}, security.name,
+            security.market.value, security.asset_type.value,
+            StrategyType.UNAVAILABLE, HoldingPeriod.NOT_APPLICABLE,
         )
     reasons.append("ELIGIBLE_ETF" if security.asset_type is AssetType.ETF else "ELIGIBLE_COMMON")
 
@@ -81,6 +85,9 @@ def screen_security(
             security.symbol, as_of, Decision.BUY_HOLD, score,
             tuple(reasons), ("DATA_UNAVAILABLE",),
             ("최소 61거래일의 검증된 OHLCV를 확보할 것",), {}, security.name,
+            security.market.value, security.asset_type.value,
+            StrategyType.UNAVAILABLE, HoldingPeriod.REVIEW_REQUIRED,
+            (), ("가격 이력이 확보되기 전에는 매수 논리를 확정하지 않을 것",), (),
         )
 
     if features.average_value20 < minimum_average_value:
@@ -110,6 +117,26 @@ def screen_security(
         score += Decimal("20")
     if not bottom_rebound and not momentum:
         checks.append("바닥 반등 또는 상승 지속 가격 조건이 확인될 때까지 매수를 보류할 것")
+
+    if bottom_rebound and momentum:
+        strategy = StrategyType.HYBRID
+        expected_holding_period = HoldingPeriod.SEVERAL_WEEKS
+    elif bottom_rebound:
+        strategy = StrategyType.BOTTOM_REBOUND
+        expected_holding_period = HoldingPeriod.SEVERAL_WEEKS
+    elif momentum:
+        strategy = StrategyType.MOMENTUM_CONTINUATION
+        expected_holding_period = HoldingPeriod.SEVERAL_DAYS
+    else:
+        strategy = StrategyType.WAIT_FOR_SETUP
+        expected_holding_period = HoldingPeriod.REVIEW_REQUIRED
+    invalidation_conditions: list[str] = []
+    if bottom_rebound or momentum:
+        invalidation_conditions.append("종가가 20일 이동평균 아래로 이탈하면 가격 논리를 재검토할 것")
+    else:
+        invalidation_conditions.append("바닥 반등 또는 상승 지속 조건이 확인되지 않으면 진입하지 않을 것")
+    evidence_urls: set[str] = set()
+    catalyst_states: list[str] = []
 
     hard_exclusion = False
     etf_metrics: dict[str, Decimal | None] = {
@@ -146,6 +173,7 @@ def screen_security(
                 "etf_total_expense_ratio_pct": etf_snapshot.total_expense_ratio_pct,
                 "etf_top10_weight_pct": etf_snapshot.top10_weight_pct,
             }
+            evidence_urls.add(etf_snapshot.source_url)
             missing_etf_metrics = [
                 label
                 for label, value in (
@@ -194,6 +222,7 @@ def screen_security(
                     "provision_coverage_ratio": financial_company.provision_coverage_ratio,
                     "shareholder_return_note": financial_company.shareholder_return_note,
                 }
+                evidence_urls.add(financial_company.source_url)
                 if any(value is None for value in financial_company_metrics.values()):
                     warnings.append("FINANCIAL_METRICS_INCOMPLETE")
                     checks.append("금융회사 전용 지표의 누락 항목을 보완할 것")
@@ -208,6 +237,9 @@ def screen_security(
             assert_point_in_time(as_of, published_at=financial.published_at, label="financial")
             if financial.symbol != security.symbol:
                 raise ValueError("financial symbol does not match security")
+            evidence_urls.add(financial.source_url)
+            if financial.ttm_source_url is not None:
+                evidence_urls.add(financial.ttm_source_url)
             annual_income = financial.annual_operating_income
             ttm_income = financial.ttm_operating_income
             if (
@@ -268,6 +300,7 @@ def screen_security(
         if event.symbol != security.symbol:
             raise ValueError("financing symbol does not match security")
         if event.dilutive and event.official and event.announced_at >= five_year_cutoff:
+            evidence_urls.add(event.source_url)
             dilution_count += 1
             if event.dilution_ratio_pct is not None:
                 dilution_ratios.append(event.dilution_ratio_pct)
@@ -297,6 +330,8 @@ def screen_security(
                 published_at=evidence.published_at,
                 label="management risk evidence",
             )
+            if evidence.official:
+                evidence_urls.add(evidence.url)
         if risk.confirmed:
             warnings.append("MANAGEMENT_RISK_CONFIRMED")
             hard_exclusion = True
@@ -309,8 +344,17 @@ def screen_security(
         if catalyst.symbol != security.symbol:
             raise ValueError("catalyst symbol does not match security")
         status = _current_catalyst_status(catalyst, as_of)
+        catalyst_states.append(
+            f"{catalyst.category}:{status.value}:{catalyst.announced_at.date().isoformat()}"
+        )
+        for evidence in catalyst.evidence:
+            if evidence.official:
+                evidence_urls.add(evidence.url)
         if status is CatalystStatus.CONFIRMED:
             reasons.append("CATALYST_CONFIRMED")
+            invalidation_conditions.append(
+                "공식 정정·취소 공시 또는 실적 훼손이 확인되면 재료 논리를 무효화할 것"
+            )
             catalyst_score = max(catalyst_score, Decimal("15"))
         elif status is CatalystStatus.PARTIAL:
             reasons.append("CATALYST_PARTIAL")
@@ -367,6 +411,13 @@ def screen_security(
         tuple(dict.fromkeys(checks)),
         metrics,
         security.name,
+        security.market.value,
+        security.asset_type.value,
+        strategy,
+        expected_holding_period,
+        tuple(dict.fromkeys(catalyst_states)),
+        tuple(dict.fromkeys(invalidation_conditions)),
+        tuple(sorted(evidence_urls)),
     )
 
 

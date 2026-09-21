@@ -78,6 +78,13 @@ class StockClient:
     def candidates(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/v1/candidates", payload)["report"]
 
+    def evaluate_performance(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/v1/performance/evaluate", payload)["evaluation"]
+
+    def get_performance(self, report_id: str) -> dict[str, Any]:
+        if not report_id.startswith("R-"):
+            raise ValueError("report_id is invalid")
+        return self._request("GET", f"/v1/performance/{report_id}")
+
     def journal_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/v1/journal/preview", payload)["draft"]
-

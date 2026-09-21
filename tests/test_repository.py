@@ -130,6 +130,13 @@ class RepositoryTests(unittest.TestCase):
                 )[0].close,
                 Decimal("105"),
             )
+            self.assertEqual(
+                repository.bars_since(
+                    "005930", start_date=date(2026, 9, 18),
+                    as_of=datetime(2026, 9, 18, 12, tzinfo=UTC),
+                )[0].close,
+                Decimal("100"),
+            )
 
     def test_financing_history_and_coverage_are_point_in_time(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

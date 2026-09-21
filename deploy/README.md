@@ -21,9 +21,10 @@ After the first approved 120-calendar-day backfill, `deploy/jobs/run_stock_cycle
 
 - `morning`: read the last completed market dataset, refresh DART dilution and title-level research signals through the last fully observable date, and generate the five-candidate report.
 - `evening`: ingest one KRX date, enrich the technical shortlist with the approved DART business year, dilution history, and title-level research signals, then generate the report.
-- `weekly`: refresh missing annual DART data and disclosures, then generate the report without repeating the KRX backfill.
+- `weekly`: freeze newly mature 5·20·60-session virtual outcomes for all prior reports, refresh missing annual DART data and disclosures, then generate the report without repeating the KRX backfill.
 
 The script prints only the final report so Hermes cron can deliver it to Telegram. Set `STOCK_DART_BUSINESS_YEAR` explicitly; do not infer a fiscal year during unattended operation.
+Completed virtual outcomes are immutable. Pending horizons remain explicit and are excluded from return and win-rate aggregates.
 
 ## Static validation
 

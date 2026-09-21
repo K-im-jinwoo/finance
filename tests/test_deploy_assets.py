@@ -34,6 +34,7 @@ class DeployAssetTests(unittest.TestCase):
         self.assertIn("--key-file /run/secrets/krx-auth-key", script)
         self.assertIn("--key-file /run/secrets/dart-api-key", script)
         self.assertIn("enrich-dart-disclosures", script)
+        self.assertIn("evaluate-all-performance", script)
         self.assertIn("generate-candidates", script)
         self.assertNotIn("/v1/orders", script)
         self.assertNotIn("TELEGRAM_BOT_TOKEN", script)

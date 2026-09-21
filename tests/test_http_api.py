@@ -124,6 +124,43 @@ class HttpApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status, 422)
 
+    def test_performance_evaluation_and_read_endpoint_share_persisted_result(self) -> None:
+        headers = {"Authorization": "Bearer secret"}
+        body = json.dumps({
+            "items": [screen_payload()], "limit": 1,
+        }).encode("utf-8")
+        report_response = self.api.dispatch("POST", "/v1/candidates", headers=headers, body=body)
+        report_id = report_response.body["report"]["report_id"]
+        self.api.repository.save_bars(make_bars("005930", count=300))
+        evaluated = self.api.dispatch(
+            "POST", "/v1/performance/evaluate", headers=headers,
+            body=json.dumps({
+                "report_id": report_id,
+                "evaluated_at": "2026-12-31T12:00:00+00:00",
+                "horizons": [5],
+                "round_trip_cost_bps": "30",
+            }).encode("utf-8"),
+        )
+        self.assertEqual(evaluated.status, 200)
+        self.assertEqual(evaluated.body["evaluation"]["records"][0]["status"], "COMPLETE")
+        fetched = self.api.dispatch(
+            "GET", f"/v1/performance/{report_id}", headers=headers,
+        )
+        self.assertEqual(fetched.status, 200)
+        self.assertEqual(len(fetched.body["records"]), 1)
+        self.assertEqual(fetched.body["summary"][0]["sample_count"], 1)
+
+    def test_performance_evaluation_rejects_naive_timestamp(self) -> None:
+        response = self.api.dispatch(
+            "POST", "/v1/performance/evaluate",
+            headers={"Authorization": "Bearer secret"},
+            body=json.dumps({
+                "report_id": "R-20260921T0000Z-ABCDEF12",
+                "evaluated_at": "2026-09-21T12:00:00",
+            }).encode("utf-8"),
+        )
+        self.assertEqual(response.status, 422)
+
     def test_specialist_role_can_analyze_but_cannot_read_holdings(self) -> None:
         secret = "m" * 32
         api = StockApi(

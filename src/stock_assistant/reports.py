@@ -9,6 +9,10 @@ from datetime import date, datetime, timezone
 from .models import ScreeningResult, to_json_value
 
 
+RULESET_VERSION = "2026-09-21.1"
+REPORT_CONTRACT_VERSION = "1.1"
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateReport:
     contract_version: str
@@ -19,6 +23,7 @@ class CandidateReport:
     inference_summary: tuple[str, ...]
     assumptions: tuple[str, ...]
     unavailable: tuple[str, ...]
+    ruleset_version: str = RULESET_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +42,7 @@ def make_report_id(
     inferences: tuple[str, ...] = (),
     assumptions: tuple[str, ...] = (),
     unavailable: tuple[str, ...] = (),
+    ruleset_version: str = RULESET_VERSION,
 ) -> str:
     timestamp = as_of.astimezone(timezone.utc).strftime("%Y%m%dT%H%MZ")
     identity = json.dumps(
@@ -46,6 +52,7 @@ def make_report_id(
             "inferences": inferences,
             "assumptions": assumptions,
             "unavailable": unavailable,
+            "ruleset_version": ruleset_version,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -63,11 +70,12 @@ def build_candidate_report(
     inferences: tuple[str, ...] = (),
     assumptions: tuple[str, ...] = (),
     unavailable: tuple[str, ...] = (),
+    ruleset_version: str = RULESET_VERSION,
 ) -> CandidateReport:
     if as_of.tzinfo is None:
         raise ValueError("as_of must be timezone-aware")
     return CandidateReport(
-        "1.0",
+        REPORT_CONTRACT_VERSION,
         make_report_id(
             as_of,
             results,
@@ -75,10 +83,11 @@ def build_candidate_report(
             inferences=inferences,
             assumptions=assumptions,
             unavailable=unavailable,
+            ruleset_version=ruleset_version,
         ),
         as_of.astimezone(timezone.utc),
         tuple(results),
-        facts, inferences, assumptions, unavailable,
+        facts, inferences, assumptions, unavailable, ruleset_version,
     )
 
 

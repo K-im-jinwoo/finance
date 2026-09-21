@@ -56,7 +56,11 @@ def render_candidate_report(report: dict[str, Any], *, max_chars: int = 3500) ->
         raise ValueError("candidates must be a list")
 
     sections = [
-        f"국내주식 후보 보고서\n보고서 ID: {report_id}\n기준시각: {report.get('as_of', '확인 불가')}",
+        (
+            f"국내주식 후보 보고서\n보고서 ID: {report_id}"
+            f"\n규칙 버전: {report.get('ruleset_version', 'legacy-unversioned')}"
+            f"\n기준시각: {report.get('as_of', '확인 불가')}"
+        ),
         "확인된 사실\n" + _bullets(report.get("fact_summary", []), empty="확인된 사실 없음"),
         "추론\n" + _bullets(report.get("inference_summary", [])),
         "가정\n" + _bullets(report.get("assumptions", [])),
@@ -67,7 +71,9 @@ def render_candidate_report(report: dict[str, Any], *, max_chars: int = 3500) ->
             raise ValueError("candidate must be an object")
         lines = [
             f"후보 {index}. {item.get('name') or '종목명 확인 불가'} ({item.get('symbol', '확인 불가')})",
+            f"시장/유형: {item.get('market', '확인 불가')} / {item.get('asset_type', '확인 불가')}",
             f"판정: {item.get('decision', '확인 불가')} / 점수: {item.get('score', '확인 불가')}",
+            f"전략/예상 기간: {item.get('strategy', '확인 불가')} / {item.get('expected_holding_period', '확인 불가')}",
             "핵심지표:",
             _visible_metrics(item.get("metrics")),
             "근거:",
@@ -76,6 +82,12 @@ def render_candidate_report(report: dict[str, Any], *, max_chars: int = 3500) ->
             _bullets(item.get("warnings", [])),
             "추가 확인:",
             _bullets(item.get("checks", [])),
+            "무효화 조건:",
+            _bullets(item.get("invalidation_conditions", []), empty="확인 불가"),
+            "재료 상태:",
+            _bullets(item.get("catalyst_states", []), empty="확인 불가"),
+            "근거 출처:",
+            _bullets(item.get("evidence_urls", []), empty="확인 불가"),
         ]
         sections.append("\n".join(lines))
 

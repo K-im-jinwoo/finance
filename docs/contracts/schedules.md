@@ -10,3 +10,4 @@ Timezone: `Asia/Seoul`
 
 The scheduler may create a run only once for each job and scheduled date. Analysis generation and Telegram delivery are separate states. A missed job is reported; it is not silently marked successful.
 
+The weekly review evaluates every persisted candidate report at 5, 20, and 60 trading sessions using the next session open and configured round-trip cost. It groups only completed observations by `ruleset_version`, decision, and horizon; pending observations are never imputed.

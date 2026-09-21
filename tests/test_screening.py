@@ -18,6 +18,8 @@ from stock_assistant.models import (
     ManagementRisk,
     Market,
     Security,
+    StrategyType,
+    HoldingPeriod,
 )
 from stock_assistant.screening import screen_security, select_top_candidates
 from stock_assistant.validation import ContractError
@@ -68,6 +70,13 @@ class ScreeningTests(unittest.TestCase):
         self.assertIn("OCF_POSITIVE", result.reasons)
         self.assertIn("CATALYST_CONFIRMED", result.reasons)
         self.assertEqual(result.warnings, ())
+        self.assertEqual(result.market, "KOSPI")
+        self.assertEqual(result.asset_type, "COMMON")
+        self.assertEqual(result.strategy, StrategyType.MOMENTUM_CONTINUATION)
+        self.assertEqual(result.expected_holding_period, HoldingPeriod.SEVERAL_DAYS)
+        self.assertIn("CONTRACT:CONFIRMED:2026-09-01", result.catalyst_states)
+        self.assertIn("https://dart.fss.or.kr/example", result.evidence_urls)
+        self.assertTrue(result.invalidation_conditions)
 
     def test_operating_loss_or_confirmed_management_risk_excludes(self) -> None:
         bad_financial = FinancialSnapshot(

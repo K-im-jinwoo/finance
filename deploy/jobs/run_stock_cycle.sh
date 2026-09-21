@@ -34,6 +34,11 @@ if [ "$mode" = evening ] || [ "$mode" = weekly ]; then
     --business-year "$STOCK_DART_BUSINESS_YEAR" >/dev/null
 fi
 
+if [ "$mode" = weekly ]; then
+  compose exec -T stock-assistant python -m stock_assistant evaluate-all-performance \
+    --database "$database" --as-of "$(date --iso-8601=seconds)" >/dev/null
+fi
+
 compose exec -T stock-assistant python -m stock_assistant enrich-dart-disclosures \
   --database "$database" --key-file /run/secrets/dart-api-key >/dev/null
 

@@ -5,12 +5,18 @@ import json
 import os
 import sys
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from .client import StockClient, StockClientError
 from .http_api import serve
 from .ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
 from .models import to_json_value
+from .performance import (
+    evaluate_all_report_performance,
+    evaluate_report_performance,
+    summarize_performance,
+)
 from .pipeline import CandidatePipeline
 from .presentation import render_candidate_report
 from .providers.http import ProviderError
@@ -79,6 +85,20 @@ def main(argv: list[str] | None = None) -> int:
     disclosure_parser.add_argument("--key-file", type=Path)
     disclosure_parser.add_argument("--as-of", type=datetime.fromisoformat)
     disclosure_parser.add_argument("--shortlist-limit", type=int, default=30)
+    performance_parser = subparsers.add_parser("evaluate-performance")
+    performance_parser.add_argument("report_id")
+    performance_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    performance_parser.add_argument("--as-of", type=datetime.fromisoformat, required=True)
+    performance_parser.add_argument("--horizons", default="5,20,60")
+    performance_parser.add_argument("--round-trip-cost-bps", type=Decimal, default=Decimal("30"))
+    summary_parser = subparsers.add_parser("performance-summary")
+    summary_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    summary_parser.add_argument("--report-id")
+    all_performance_parser = subparsers.add_parser("evaluate-all-performance")
+    all_performance_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    all_performance_parser.add_argument("--as-of", type=datetime.fromisoformat, required=True)
+    all_performance_parser.add_argument("--horizons", default="5,20,60")
+    all_performance_parser.add_argument("--round-trip-cost-bps", type=Decimal, default=Decimal("30"))
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -217,6 +237,52 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
             return 0
         except (OSError, ValueError, ProviderError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+    if args.command == "evaluate-performance":
+        try:
+            horizons = tuple(int(value.strip()) for value in args.horizons.split(",") if value.strip())
+            evaluation = evaluate_report_performance(
+                StockRepository(args.database),
+                report_id=args.report_id,
+                evaluated_at=args.as_of,
+                horizons=horizons,
+                round_trip_cost_bps=args.round_trip_cost_bps,
+            )
+            print(json.dumps(to_json_value(evaluation), ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+    if args.command == "performance-summary":
+        try:
+            records = StockRepository(args.database).list_performance_records(report_id=args.report_id)
+            print(json.dumps({
+                "records": to_json_value(records),
+                "summary": summarize_performance(records),
+            }, ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+    if args.command == "evaluate-all-performance":
+        try:
+            horizons = tuple(int(value.strip()) for value in args.horizons.split(",") if value.strip())
+            repository = StockRepository(args.database)
+            evaluations = evaluate_all_report_performance(
+                repository,
+                evaluated_at=args.as_of,
+                horizons=horizons,
+                round_trip_cost_bps=args.round_trip_cost_bps,
+            )
+            records = repository.list_performance_records()
+            print(json.dumps({
+                "evaluated_reports": len(evaluations),
+                "records": to_json_value(records),
+                "summary": summarize_performance(records),
+            }, ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError) as exc:
             print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 1
     raise AssertionError("unreachable")

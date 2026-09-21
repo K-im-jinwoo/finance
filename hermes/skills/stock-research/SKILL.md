@@ -20,9 +20,10 @@ Never print, copy, summarize, or send the token. Never read the server's full ro
 2. Keep confirmed facts, inferences, assumptions, and unavailable data separate.
 3. Cite the returned report ID in every Desktop or Telegram answer.
 4. Retrieve an existing report by ID before discussing it on another channel.
-5. Treat `403` as a hard role boundary. Do not retry with another profile or secret.
-6. A loss is never an automatic averaging-down signal. Revalidate the thesis and additional-check conditions.
-7. Never invoke, design around, or claim access to brokerage order endpoints.
+5. For weekly review, retrieve `/v1/performance/{report_id}` and distinguish completed horizons from `PENDING_ENTRY` or `PENDING_HORIZON`. Never present a pending value as a return.
+6. Compare outcomes by `ruleset_version`, decision, and horizon. Do not change a rule automatically from a small or incomplete sample.
+7. Treat `403` as a hard role boundary. Do not retry with another profile or secret.
+8. A loss is never an automatic averaging-down signal. Revalidate the thesis and additional-check conditions.
+9. Never invoke, design around, or claim access to brokerage order endpoints.
 
 Use `render_candidate_report` from `stock_assistant.presentation` when the same report must be shown in a channel with a message-size limit.
-

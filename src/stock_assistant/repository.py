@@ -28,7 +28,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _REPORT_ID = re.compile(r"^R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8}$")
 _DATASET = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
@@ -146,6 +146,15 @@ class StockRepository:
                     symbol TEXT NOT NULL,
                     payload_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS performance_records (
+                    report_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    trading_days INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    evaluated_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (report_id, symbol, trading_days)
+                );
                 """
             )
             connection.execute(
@@ -192,6 +201,19 @@ class StockRepository:
                 "SELECT payload_json FROM reports WHERE report_id = ?", (report_id,),
             ).fetchone()
         return json.loads(row["payload_json"]) if row is not None else None
+
+    def list_report_ids(self, *, as_of: datetime | None = None) -> list[str]:
+        if as_of is not None and as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        query = "SELECT report_id FROM reports"
+        parameters: tuple[str, ...] = ()
+        if as_of is not None:
+            query += " WHERE as_of<=?"
+            parameters = (as_of.astimezone(timezone.utc).isoformat(),)
+        query += " ORDER BY as_of, report_id"
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [str(row["report_id"]) for row in rows]
 
     def save_securities(self, securities: list[Security]) -> None:
         with self._connect() as connection:
@@ -244,6 +266,25 @@ class StockRepository:
             ).fetchall()
         bars = [_bar_from_dict(json.loads(row["payload_json"])) for row in rows]
         return sorted(bars, key=lambda item: item.trade_date)
+
+    def bars_since(self, symbol: str, *, start_date, as_of: datetime) -> list[OHLCV]:
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        if start_date > as_of.date():
+            raise ValueError("start_date cannot be after as_of date")
+        as_of_utc = as_of.astimezone(timezone.utc).isoformat()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT current.payload_json FROM ohlcv AS current "
+                "WHERE current.symbol=? AND current.trade_date>=? AND current.trade_date<=? "
+                "AND current.observed_at<=? AND current.observed_at=("
+                "SELECT MAX(history.observed_at) FROM ohlcv AS history "
+                "WHERE history.symbol=current.symbol AND history.trade_date=current.trade_date "
+                "AND history.observed_at<=?"
+                ") ORDER BY current.trade_date",
+                (symbol, start_date.isoformat(), as_of.date().isoformat(), as_of_utc, as_of_utc),
+            ).fetchall()
+        return [_bar_from_dict(json.loads(row["payload_json"])) for row in rows]
 
     def save_financial_snapshot(self, snapshot: FinancialSnapshot) -> None:
         payload = json.dumps(to_json_value(snapshot), ensure_ascii=False, sort_keys=True)
@@ -524,6 +565,51 @@ class StockRepository:
                 (thesis.thesis_id, thesis.symbol, payload),
             )
 
+    def save_performance_records(self, records) -> None:
+        from .performance import PerformanceStatus
+
+        with self._connect() as connection:
+            for record in records:
+                payload = json.dumps(to_json_value(record), ensure_ascii=False, sort_keys=True)
+                existing = connection.execute(
+                    "SELECT status, payload_json FROM performance_records "
+                    "WHERE report_id=? AND symbol=? AND trading_days=?",
+                    (record.report_id, record.symbol, record.trading_days),
+                ).fetchone()
+                if existing is not None and existing["status"] == PerformanceStatus.COMPLETE.value:
+                    previous = _performance_from_dict(json.loads(existing["payload_json"]))
+                    stable_fields = (
+                        "report_id", "ruleset_version", "symbol", "decision", "strategy",
+                        "expected_holding_period", "score",
+                        "signal_at", "trading_days", "status", "entry_date", "entry_price",
+                        "exit_date", "gross_return", "net_return",
+                    )
+                    if any(getattr(previous, field) != getattr(record, field) for field in stable_fields):
+                        raise ValueError("completed performance record is immutable")
+                    continue
+                connection.execute(
+                    "INSERT INTO performance_records VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(report_id, symbol, trading_days) DO UPDATE SET "
+                    "status=excluded.status, evaluated_at=excluded.evaluated_at, payload_json=excluded.payload_json",
+                    (
+                        record.report_id, record.symbol, record.trading_days,
+                        record.status.value, record.evaluated_at.isoformat(), payload,
+                    ),
+                )
+
+    def list_performance_records(self, *, report_id: str | None = None):
+        query = "SELECT payload_json FROM performance_records"
+        parameters: tuple[str, ...] = ()
+        if report_id is not None:
+            if not _REPORT_ID.fullmatch(report_id):
+                raise ValueError("report_id has an invalid format")
+            query += " WHERE report_id=?"
+            parameters = (report_id,)
+        query += " ORDER BY report_id, symbol, trading_days"
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [_performance_from_dict(json.loads(row["payload_json"])) for row in rows]
+
 
 def _security_from_dict(payload: dict) -> Security:
     from datetime import date
@@ -685,4 +771,32 @@ def _management_risk_from_dict(payload: dict) -> ManagementRisk:
         confirmed=bool(payload["confirmed"]),
         category=payload["category"],
         evidence=tuple(_evidence_from_dict(item) for item in payload.get("evidence", [])),
+    )
+
+
+def _performance_from_dict(payload: dict):
+    from decimal import Decimal
+    from .performance import PerformanceRecord, PerformanceStatus
+
+    def optional_decimal(field: str):
+        value = payload.get(field)
+        return Decimal(value) if value is not None else None
+
+    return PerformanceRecord(
+        report_id=payload["report_id"],
+        ruleset_version=payload["ruleset_version"],
+        symbol=payload["symbol"],
+        decision=payload["decision"],
+        strategy=payload.get("strategy", "UNAVAILABLE"),
+        expected_holding_period=payload.get("expected_holding_period", "REVIEW_REQUIRED"),
+        score=Decimal(payload["score"]),
+        signal_at=datetime.fromisoformat(payload["signal_at"]),
+        evaluated_at=datetime.fromisoformat(payload["evaluated_at"]),
+        trading_days=int(payload["trading_days"]),
+        status=PerformanceStatus(payload["status"]),
+        entry_date=payload.get("entry_date"),
+        entry_price=optional_decimal("entry_price"),
+        exit_date=payload.get("exit_date"),
+        gross_return=optional_decimal("gross_return"),
+        net_return=optional_decimal("net_return"),
     )

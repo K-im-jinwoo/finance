@@ -103,6 +103,13 @@ class DartFilingPage:
     total_page: int
 
 
+@dataclass(frozen=True, slots=True)
+class DartOperatingIncomePeriods:
+    current_cumulative: Decimal
+    previous_cumulative: Decimal
+    source_url: str
+
+
 def _dart_status(payload: dict[str, Any]) -> list[dict[str, Any]]:
     status = str(payload.get("status", ""))
     if status == "013":
@@ -365,7 +372,31 @@ def normalize_dart_financial_statement(
         receivable_turnover=_turnover_series(revenue, receivables),
         inventory_turnover=_turnover_series(cost_of_sales, inventory),
         source_url=source_url,
+        annual_operating_income=operating_income,
+        ttm_operating_income=operating_income,
+        ttm_period_end=period_end,
+        ttm_source_url=source_url,
     )
+
+
+def normalize_dart_operating_income_periods(
+    payload: dict[str, Any],
+    *,
+    source_url: str,
+) -> DartOperatingIncomePeriods | None:
+    rows = _dart_status(payload)
+    if not rows:
+        return None
+    for row in rows:
+        account_id = str(row.get("account_id", "")).strip().casefold()
+        account_name = str(row.get("account_nm", "")).strip().replace(" ", "")
+        if account_id not in _OPERATING_INCOME_IDS and account_name not in {"영업이익", "영업이익(손실)"}:
+            continue
+        periods = _period_amounts(row)
+        if "current" not in periods or "previous" not in periods:
+            raise UpstreamSchemaError("DART interim operating income requires current and previous cumulative amounts")
+        return DartOperatingIncomePeriods(periods["current"], periods["previous"], source_url)
+    raise UpstreamSchemaError("DART financial statement has no recognized operating-income account")
 
 
 def normalize_dart_filings(payload: dict[str, Any], *, observed_at: datetime) -> list[Evidence]:
@@ -566,6 +597,30 @@ class DartClient:
             published_at=published_at,
             source_url=source_url,
         )
+
+    def operating_income_periods(
+        self,
+        *,
+        corp_code: str,
+        business_year: int,
+        report_code: str,
+        financial_statement_division: str,
+    ) -> DartOperatingIncomePeriods | None:
+        if len(corp_code) != 8 or not corp_code.isdigit():
+            raise ValueError("corp_code must be eight digits")
+        if report_code not in {"11012", "11013", "11014"}:
+            raise ValueError("interim report_code must be 11012, 11013, or 11014")
+        if financial_statement_division not in {"CFS", "OFS"}:
+            raise ValueError("financial_statement_division must be CFS or OFS")
+        response = self.fetch_json(DART_FINANCIAL_URL, query={
+            "crtfc_key": self.api_key,
+            "corp_code": corp_code,
+            "bsns_year": str(business_year),
+            "reprt_code": report_code,
+            "fs_div": financial_statement_division,
+        })
+        source_url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={_receipt_number(response.payload)}"
+        return normalize_dart_operating_income_periods(response.payload, source_url=source_url)
 
 
 def _receipt_number(payload: dict[str, Any]) -> str:

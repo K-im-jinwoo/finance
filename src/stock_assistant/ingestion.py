@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+import re
 from time import sleep
 from typing import Callable
 
@@ -11,6 +12,34 @@ from .models import AssetType, CompanyKind, Evidence, Market, Security
 from .providers.dart import DART_FINANCING_ENDPOINTS, KST, DartClient
 from .providers.krx import KrxClient, classify_etf_asset_type
 from .repository import StockRepository
+
+
+_INTERIM_PERIOD = re.compile(r"\((?P<year>20\d{2})[./-](?P<month>0?[369])\)")
+
+
+def _latest_interim_filing(
+    filings: list[Evidence],
+    *,
+    business_year: int,
+) -> tuple[Evidence, str, date] | None:
+    candidates: list[tuple[Evidence, str, date]] = []
+    report_codes = {3: "11013", 6: "11012", 9: "11014"}
+    for filing in filings:
+        if "분기보고서" not in filing.title and "반기보고서" not in filing.title:
+            continue
+        match = _INTERIM_PERIOD.search(filing.title)
+        if match is None:
+            continue
+        year = int(match.group("year"))
+        month = int(match.group("month"))
+        if year != business_year + 1 or month not in report_codes:
+            continue
+        candidates.append((
+            filing,
+            report_codes[month],
+            date(year, month, monthrange(year, month)[1]),
+        ))
+    return max(candidates, key=lambda item: item[0].published_at) if candidates else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,14 +232,23 @@ class DartFinancialEnricher:
             security = securities.get(symbol)
             existing = self.repository.latest_financial(symbol, as_of=as_of)
             specialist = self.repository.latest_financial_company(symbol, as_of=as_of)
-            current_snapshot = specialist if security is not None and security.company_kind is CompanyKind.FINANCIAL else existing
-            if (
+            financial_company_current = (
                 security is not None
                 and security.asset_type is AssetType.COMMON
-                and security.company_kind is not CompanyKind.UNKNOWN
-                and current_snapshot is not None
-                and current_snapshot.period_end.year >= business_year
-            ):
+                and security.company_kind is CompanyKind.FINANCIAL
+                and specialist is not None
+                and specialist.period_end.year >= business_year
+            )
+            general_company_current = (
+                security is not None
+                and security.asset_type is AssetType.COMMON
+                and security.company_kind is CompanyKind.GENERAL
+                and existing is not None
+                and existing.period_end.year >= business_year
+                and existing.ttm_period_end is not None
+                and (as_of.date() - existing.ttm_period_end).days <= 185
+            )
+            if financial_company_current or general_company_current:
                 already_current += 1
             else:
                 pending.append(symbol)
@@ -299,6 +337,36 @@ class DartFinancialEnricher:
             if snapshot is None:
                 missing_statement += 1
                 continue
+            interim = _latest_interim_filing(filings, business_year=business_year)
+            if interim is not None:
+                interim_filing, report_code, ttm_period_end = interim
+                periods = self.client.operating_income_periods(
+                    corp_code=corp_code,
+                    business_year=business_year + 1,
+                    report_code=report_code,
+                    financial_statement_division="CFS",
+                )
+                self._pace()
+                if periods is None:
+                    periods = self.client.operating_income_periods(
+                        corp_code=corp_code,
+                        business_year=business_year + 1,
+                        report_code=report_code,
+                        financial_statement_division="OFS",
+                    )
+                    self._pace()
+                if periods is not None:
+                    annual_income = snapshot.annual_operating_income or snapshot.operating_income
+                    ttm_income = annual_income + periods.current_cumulative - periods.previous_cumulative
+                    snapshot = replace(
+                        snapshot,
+                        published_at=max(snapshot.published_at, interim_filing.published_at),
+                        operating_income=ttm_income,
+                        annual_operating_income=annual_income,
+                        ttm_operating_income=ttm_income,
+                        ttm_period_end=ttm_period_end,
+                        ttm_source_url=periods.source_url,
+                    )
             self.repository.save_financial_snapshot(snapshot)
             enriched += 1
         return DartEnrichmentSummary(

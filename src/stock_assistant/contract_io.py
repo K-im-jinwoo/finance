@@ -127,6 +127,13 @@ def parse_financial(value: Any) -> FinancialSnapshot | None:
         receivable_turnover=_decimal_tuple(item.get("receivable_turnover"), "financial.receivable_turnover"),
         inventory_turnover=_decimal_tuple(item.get("inventory_turnover"), "financial.inventory_turnover"),
         source_url=str(item["source_url"]),
+        annual_operating_income=_optional_decimal(item, "annual_operating_income"),
+        ttm_operating_income=_optional_decimal(item, "ttm_operating_income"),
+        ttm_period_end=(
+            _date(item["ttm_period_end"], "financial.ttm_period_end")
+            if item.get("ttm_period_end") else None
+        ),
+        ttm_source_url=(str(item["ttm_source_url"]) if item.get("ttm_source_url") else None),
     )
 
 

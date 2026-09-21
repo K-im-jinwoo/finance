@@ -572,6 +572,19 @@ def _financial_from_dict(payload: dict) -> FinancialSnapshot:
         receivable_turnover=tuple(Decimal(value) for value in payload.get("receivable_turnover", [])),
         inventory_turnover=tuple(Decimal(value) for value in payload.get("inventory_turnover", [])),
         source_url=payload["source_url"],
+        annual_operating_income=(
+            Decimal(payload["annual_operating_income"])
+            if payload.get("annual_operating_income") is not None else None
+        ),
+        ttm_operating_income=(
+            Decimal(payload["ttm_operating_income"])
+            if payload.get("ttm_operating_income") is not None else None
+        ),
+        ttm_period_end=(
+            date.fromisoformat(payload["ttm_period_end"])
+            if payload.get("ttm_period_end") else None
+        ),
+        ttm_source_url=payload.get("ttm_source_url"),
     )
 
 

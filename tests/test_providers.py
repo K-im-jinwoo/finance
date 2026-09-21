@@ -18,6 +18,7 @@ from stock_assistant.providers.dart import (
     normalize_dart_filing_page,
     normalize_dart_financing_events,
     normalize_dart_financial_statement,
+    normalize_dart_operating_income_periods,
 )
 from stock_assistant.providers.http import AuthenticationError, BinaryResponse, JsonResponse, RateLimitError, UpstreamSchemaError
 from stock_assistant.providers.krx import (
@@ -132,6 +133,9 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(snapshot.operating_income, Decimal("1000"))
         self.assertEqual(snapshot.operating_cash_flow, Decimal("700"))
         self.assertEqual(snapshot.free_cash_flow, Decimal("450"))
+        self.assertEqual(snapshot.annual_operating_income, Decimal("1000"))
+        self.assertEqual(snapshot.ttm_operating_income, Decimal("1000"))
+        self.assertEqual(snapshot.ttm_period_end, date(2025, 12, 31))
         self.assertEqual(snapshot.receivable_turnover, (
             Decimal("1000") / Decimal("90"),
             Decimal("1200") / Decimal("110"),
@@ -140,6 +144,17 @@ class ProviderTests(unittest.TestCase):
             Decimal("800") / Decimal("170"),
             Decimal("900") / Decimal("190"),
         ))
+
+    def test_dart_interim_operating_income_preserves_current_and_comparable_periods(self) -> None:
+        payload = json.loads((FIXTURES / "dart_financial_raw.json").read_text(encoding="utf-8"))
+        periods = normalize_dart_operating_income_periods(
+            payload,
+            source_url="https://dart.fss.or.kr/interim",
+        )
+        self.assertIsNotNone(periods)
+        assert periods is not None
+        self.assertEqual(periods.current_cumulative, Decimal("1000"))
+        self.assertEqual(periods.previous_cumulative, Decimal("800"))
 
     def test_dart_financing_events_preserve_ratio_purpose_and_refixing(self) -> None:
         rights = normalize_dart_financing_events({
@@ -215,6 +230,24 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(calls[0][0].endswith("/fnlttSinglAcntAll.json"))
         self.assertEqual(calls[0][1]["query"]["fs_div"], "CFS")
         self.assertEqual(calls[0][1]["query"]["reprt_code"], "11011")
+
+    def test_dart_interim_client_requests_comparable_cumulative_periods(self) -> None:
+        calls = []
+        payload = json.loads((FIXTURES / "dart_financial_raw.json").read_text(encoding="utf-8"))
+
+        def fake_fetch(url, **kwargs):
+            calls.append((url, kwargs))
+            return JsonResponse(200, payload)
+
+        periods = DartClient("not-a-real-key", fetch_json=fake_fetch).operating_income_periods(
+            corp_code="00126380",
+            business_year=2026,
+            report_code="11012",
+            financial_statement_division="CFS",
+        )
+        self.assertIsNotNone(periods)
+        self.assertEqual(calls[0][1]["query"]["bsns_year"], "2026")
+        self.assertEqual(calls[0][1]["query"]["reprt_code"], "11012")
 
     def test_dart_corp_code_archive_and_company_kind_are_normalized(self) -> None:
         xml = (

@@ -138,6 +138,10 @@ class FinancialSnapshot:
     receivable_turnover: tuple[Decimal, ...] = ()
     inventory_turnover: tuple[Decimal, ...] = ()
     source_url: str = ""
+    annual_operating_income: Decimal | None = None
+    ttm_operating_income: Decimal | None = None
+    ttm_period_end: date | None = None
+    ttm_source_url: str | None = None
 
     def __post_init__(self) -> None:
         if not (self.symbol.isdigit() and len(self.symbol) == 6):
@@ -145,6 +149,10 @@ class FinancialSnapshot:
         object.__setattr__(self, "published_at", _utc(self.published_at))
         if not self.source_url.strip():
             raise ValueError("financial source_url is required")
+        if self.ttm_period_end is not None and self.ttm_period_end > self.published_at.date():
+            raise ValueError("ttm_period_end cannot be after published_at")
+        if self.ttm_source_url is not None and not self.ttm_source_url.strip():
+            raise ValueError("ttm_source_url cannot be blank")
 
 
 @dataclass(frozen=True, slots=True)

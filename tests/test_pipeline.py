@@ -33,11 +33,15 @@ class PipelineTests(unittest.TestCase):
                 repository.save_financial_snapshot(FinancialSnapshot(
                     security.symbol,
                     date(2025, 12, 31),
-                    datetime(2026, 3, 20, tzinfo=UTC),
+                    datetime(2026, 8, 14, tzinfo=UTC),
                     Decimal("100"), Decimal("80"), Decimal("60"),
                     (Decimal("8"), Decimal("8.1")),
                     (Decimal("6"), Decimal("6.2")),
                     "https://dart.fss.or.kr/example",
+                    annual_operating_income=Decimal("100"),
+                    ttm_operating_income=Decimal("120"),
+                    ttm_period_end=date(2026, 6, 30),
+                    ttm_source_url="https://dart.fss.or.kr/ttm",
                 ))
 
             first = CandidatePipeline(repository).run(as_of=AS_OF)
@@ -69,6 +73,7 @@ class PipelineTests(unittest.TestCase):
             repository.save_bars(make_bars("005930", count=20))
             summary = CandidatePipeline(repository).run(as_of=AS_OF)
             self.assertEqual(summary.missing_financials, 1)
+            self.assertEqual(summary.missing_profit_periods, 1)
             self.assertEqual(summary.insufficient_history, 1)
             self.assertEqual(summary.missing_financing_histories, 1)
             self.assertEqual(summary.missing_management_histories, 1)

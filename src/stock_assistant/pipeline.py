@@ -17,6 +17,7 @@ class PipelineSummary:
     excluded: int
     insufficient_history: int
     missing_financials: int
+    missing_profit_periods: int
     missing_turnover_metrics: int
     missing_financial_company_metrics: int
     missing_etf_metrics: int
@@ -40,6 +41,7 @@ class CandidatePipeline:
         results = []
         insufficient_history = 0
         missing_financials = 0
+        missing_profit_periods = 0
         missing_turnover_metrics = 0
         missing_financial_company_metrics = 0
         missing_etf_metrics = 0
@@ -80,9 +82,19 @@ class CandidatePipeline:
                     financial = self.repository.latest_financial(security.symbol, as_of=as_of)
                     if financial is None:
                         missing_financials += 1
+                        missing_profit_periods += 1
                         missing_turnover_metrics += 1
-                    elif len(financial.receivable_turnover) < 2 or len(financial.inventory_turnover) < 2:
-                        missing_turnover_metrics += 1
+                    else:
+                        if (
+                            financial.annual_operating_income is None
+                            or financial.ttm_operating_income is None
+                            or financial.ttm_period_end is None
+                            or financial.ttm_source_url is None
+                            or (as_of.date() - financial.ttm_period_end).days > 185
+                        ):
+                            missing_profit_periods += 1
+                        if len(financial.receivable_turnover) < 2 or len(financial.inventory_turnover) < 2:
+                            missing_turnover_metrics += 1
                 financing_events = tuple(self.repository.financing_events_for(
                     security.symbol,
                     as_of=as_of,
@@ -150,6 +162,7 @@ class CandidatePipeline:
             results.append(result)
         return (
             securities, results, insufficient_history, missing_financials,
+            missing_profit_periods,
             missing_turnover_metrics,
             missing_financial_company_metrics, missing_etf_metrics,
             missing_financing_histories, missing_management_histories,
@@ -157,12 +170,13 @@ class CandidatePipeline:
         )
 
     def ranked_symbols(self, *, as_of: datetime, limit: int = 30) -> list[str]:
-        _, results, _, _, _, _, _, _, _, _ = self._screen_results(as_of=as_of)
+        _, results, _, _, _, _, _, _, _, _, _ = self._screen_results(as_of=as_of)
         return [item.symbol for item in select_top_candidates(results, limit=limit)]
 
     def run(self, *, as_of: datetime, limit: int = 5) -> PipelineSummary:
         (
             securities, results, insufficient_history, missing_financials,
+            missing_profit_periods,
             missing_turnover_metrics,
             missing_financial_company_metrics, missing_etf_metrics,
             missing_financing_histories, missing_management_histories,
@@ -176,6 +190,8 @@ class CandidatePipeline:
         ]
         if missing_financials:
             unavailable.append(f"재무 미적재 종목 {missing_financials}개")
+        if missing_profit_periods:
+            unavailable.append(f"결산연도·TTM 영업이익 미적재·오래됨 종목 {missing_profit_periods}개")
         if missing_turnover_metrics:
             unavailable.append(f"매출채권·재고자산 회전율 추세 미적재 종목 {missing_turnover_metrics}개")
         if missing_financial_company_metrics:
@@ -207,6 +223,7 @@ class CandidatePipeline:
             excluded=sum(item.decision is Decision.EXCLUDED for item in results),
             insufficient_history=insufficient_history,
             missing_financials=missing_financials,
+            missing_profit_periods=missing_profit_periods,
             missing_turnover_metrics=missing_turnover_metrics,
             missing_financial_company_metrics=missing_financial_company_metrics,
             missing_etf_metrics=missing_etf_metrics,

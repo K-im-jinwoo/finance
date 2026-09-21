@@ -23,6 +23,10 @@ def screen_payload(symbol: str = "005930") -> dict:
         Decimal("100"), Decimal("80"), Decimal("60"),
         (Decimal("8"), Decimal("8.1")), (Decimal("6"), Decimal("6.2")),
         "https://dart.fss.or.kr/example",
+        annual_operating_income=Decimal("100"),
+        ttm_operating_income=Decimal("120"),
+        ttm_period_end=date(2026, 6, 30),
+        ttm_source_url="https://dart.fss.or.kr/ttm",
     )
     return {
         "as_of": "2026-09-20T12:00:00+00:00",

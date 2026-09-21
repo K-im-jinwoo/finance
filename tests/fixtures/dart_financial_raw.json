@@ -7,7 +7,8 @@
       "sj_div": "IS",
       "account_id": "dart_OperatingIncomeLoss",
       "account_nm": "영업이익",
-      "thstrm_amount": "1,000"
+      "thstrm_amount": "1,000",
+      "frmtrm_amount": "800"
     },
     {
       "rcept_no": "20260918000001",

@@ -38,6 +38,10 @@ def good_financial() -> FinancialSnapshot:
         Decimal("100"), Decimal("80"), Decimal("60"),
         (Decimal("8"), Decimal("8.1")), (Decimal("6"), Decimal("6.2")),
         "https://dart.fss.or.kr/example",
+        annual_operating_income=Decimal("100"),
+        ttm_operating_income=Decimal("120"),
+        ttm_period_end=date(2026, 6, 30),
+        ttm_source_url="https://dart.fss.or.kr/ttm",
     )
 
 
@@ -182,6 +186,29 @@ class ScreeningTests(unittest.TestCase):
         self.assertIn("COMPANY_KIND_UNAVAILABLE", result.warnings)
         self.assertIn("OCF_NON_POSITIVE", result.warnings)
         self.assertIn("금융회사 여부", " ".join(result.checks))
+
+    def test_missing_or_stale_ttm_profit_forces_buy_hold(self) -> None:
+        missing = FinancialSnapshot(
+            "005930", date(2025, 12, 31), datetime(2026, 3, 20, tzinfo=UTC),
+            Decimal("100"), Decimal("80"), Decimal("60"), (), (),
+            "https://dart.fss.or.kr/missing",
+        )
+        missing_result = screen_security(samsung(), make_bars(), as_of=AS_OF, financial=missing)
+        self.assertEqual(missing_result.decision, Decision.BUY_HOLD)
+        self.assertIn("PROFIT_PERIODS_UNAVAILABLE", missing_result.warnings)
+
+        stale = FinancialSnapshot(
+            "005930", date(2025, 12, 31), datetime(2026, 3, 20, tzinfo=UTC),
+            Decimal("100"), Decimal("80"), Decimal("60"), (), (),
+            "https://dart.fss.or.kr/stale",
+            annual_operating_income=Decimal("100"),
+            ttm_operating_income=Decimal("100"),
+            ttm_period_end=date(2025, 12, 31),
+            ttm_source_url="https://dart.fss.or.kr/stale",
+        )
+        stale_result = screen_security(samsung(), make_bars(), as_of=AS_OF, financial=stale)
+        self.assertEqual(stale_result.decision, Decision.BUY_HOLD)
+        self.assertIn("TTM_STALE", stale_result.warnings)
 
     def test_future_financial_is_rejected(self) -> None:
         future = FinancialSnapshot(

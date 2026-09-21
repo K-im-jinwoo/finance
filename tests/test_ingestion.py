@@ -8,7 +8,7 @@ from pathlib import Path
 
 from stock_assistant.ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
 from stock_assistant.models import AssetType, CompanyKind, EtfSnapshot, Evidence, FinancialSnapshot, FinancingEvent, Market, OHLCV, Security
-from stock_assistant.providers.dart import DartCompanyProfile, DartFilingPage
+from stock_assistant.providers.dart import DartCompanyProfile, DartFilingPage, DartOperatingIncomePeriods
 from stock_assistant.providers.krx import KrxDailySnapshot
 from stock_assistant.repository import StockRepository
 
@@ -91,6 +91,10 @@ class FakeDartClient:
             kwargs["symbol"], kwargs["period_end"], kwargs["published_at"],
             Decimal("100"), Decimal("80"), Decimal("60"), (), (),
             "https://dart.fss.or.kr/example",
+            annual_operating_income=Decimal("100"),
+            ttm_operating_income=Decimal("100"),
+            ttm_period_end=kwargs["period_end"],
+            ttm_source_url="https://dart.fss.or.kr/example",
         )
 
     def financing_events(self, **kwargs):
@@ -106,6 +110,20 @@ class FakeDartClient:
 class FakeFinancialDartClient(FakeDartClient):
     def company_profile(self, corp_code):
         return DartCompanyProfile(CompanyKind.FINANCIAL, "64992", 12)
+
+
+class FakeInterimDartClient(FakeDartClient):
+    def filings(self, **kwargs):
+        return super().filings(**kwargs) + [Evidence(
+            "DART", "삼성전자 - 반기보고서 (2026.06)", "https://dart.fss.or.kr/interim",
+            datetime(2026, 8, 14, 14, 59, tzinfo=UTC),
+            datetime(2026, 9, 21, tzinfo=UTC), True,
+        )]
+
+    def operating_income_periods(self, **kwargs):
+        return DartOperatingIncomePeriods(
+            Decimal("50"), Decimal("20"), "https://dart.fss.or.kr/interim",
+        )
 
 
 class IngestionTests(unittest.TestCase):
@@ -185,8 +203,8 @@ class IngestionTests(unittest.TestCase):
             repeated = DartFinancialEnricher(
                 repository, FakeDartClient(), request_interval_seconds=0,
             ).enrich(symbols=["005930"], as_of=as_of, business_year=2025)
-            self.assertEqual(repeated.enriched, 0)
-            self.assertEqual(repeated.already_current, 1)
+            self.assertEqual(repeated.enriched, 1)
+            self.assertEqual(repeated.already_current, 0)
 
     def test_dart_enrichment_does_not_apply_general_cashflow_contract_to_financial_company(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -203,6 +221,26 @@ class IngestionTests(unittest.TestCase):
             self.assertEqual(summary.requires_specialist_metrics, 1)
             self.assertIsNone(repository.latest_financial("005930", as_of=as_of))
             self.assertEqual(repository.list_securities()[0].company_kind, CompanyKind.FINANCIAL)
+
+    def test_dart_enrichment_combines_annual_and_interim_for_ttm_profit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = StockRepository(Path(directory) / "stock.sqlite3")
+            repository.save_securities([Security(
+                "005930", "삼성전자", Market.KOSPI,
+                AssetType.COMMON, CompanyKind.UNKNOWN, date(1975, 6, 11),
+            )])
+            as_of = datetime(2026, 9, 21, tzinfo=UTC)
+            summary = DartFinancialEnricher(
+                repository, FakeInterimDartClient(), request_interval_seconds=0,
+            ).enrich(symbols=["005930"], as_of=as_of, business_year=2025)
+            self.assertEqual(summary.enriched, 1)
+            snapshot = repository.latest_financial("005930", as_of=as_of)
+            self.assertIsNotNone(snapshot)
+            assert snapshot is not None
+            self.assertEqual(snapshot.annual_operating_income, Decimal("100"))
+            self.assertEqual(snapshot.ttm_operating_income, Decimal("130"))
+            self.assertEqual(snapshot.ttm_period_end, date(2026, 6, 30))
+            self.assertEqual(snapshot.ttm_source_url, "https://dart.fss.or.kr/interim")
 
     def test_dart_disclosure_enrichment_marks_zero_safe_coverage_and_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

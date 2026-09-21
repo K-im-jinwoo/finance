@@ -208,10 +208,28 @@ def screen_security(
             assert_point_in_time(as_of, published_at=financial.published_at, label="financial")
             if financial.symbol != security.symbol:
                 raise ValueError("financial symbol does not match security")
-            if financial.operating_income <= 0:
+            annual_income = financial.annual_operating_income
+            ttm_income = financial.ttm_operating_income
+            if (
+                annual_income is None
+                or ttm_income is None
+                or financial.ttm_period_end is None
+                or financial.ttm_source_url is None
+            ):
+                warnings.append("PROFIT_PERIODS_UNAVAILABLE")
+                checks.append("최근 결산연도와 최근 12개월 누적 영업이익을 각각 확인할 것")
+            elif financial.ttm_period_end > as_of.date():
+                raise ValueError("financial ttm_period_end is later than as_of")
+            elif (as_of.date() - financial.ttm_period_end).days > 185:
+                warnings.append("TTM_STALE")
+                checks.append("최근 분기 누적 실적으로 TTM 영업이익을 갱신할 것")
+            if financial.operating_income <= 0 or (
+                annual_income is not None and ttm_income is not None
+                and (annual_income <= 0 or ttm_income <= 0)
+            ):
                 warnings.append("OPERATING_LOSS")
                 hard_exclusion = True
-            else:
+            elif annual_income is not None and ttm_income is not None:
                 reasons.append("OPERATING_PROFIT_POSITIVE")
                 score += Decimal("10")
 
@@ -326,6 +344,16 @@ def screen_security(
         "max_dilution_ratio_pct_5y": max(dilution_ratios) if dilution_ratios else None,
         "refixing_event_count_5y": refixing_count,
         "financing_purposes_5y": " | ".join(sorted(financing_purposes)) or None,
+        "annual_operating_income": (
+            financial.annual_operating_income if financial is not None else None
+        ),
+        "ttm_operating_income": (
+            financial.ttm_operating_income if financial is not None else None
+        ),
+        "ttm_period_end": (
+            financial.ttm_period_end.isoformat()
+            if financial is not None and financial.ttm_period_end is not None else None
+        ),
         **etf_metrics,
         **financial_company_metrics,
     }

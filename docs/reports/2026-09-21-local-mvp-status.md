@@ -1,0 +1,56 @@
+# Hermes 국내주식 리서치 비서 로컬 MVP 상태
+
+기준일: 2026-09-21
+
+## 결론
+
+로컬 MVP의 코드와 안전장치는 구현·검증했다. 실제 주문 기능은 없으며, Oracle 배포·공식 Hermes 설치·Desktop 연결·Telegram 알림·실제 WIKI 기록은 운영 변경 승인 전까지 실행하지 않았다.
+
+## 확인된 사실
+
+- 구현 브랜치: `codex/hermes-stock-mvp`
+- 국내 보통주와 일반 ETF 계약, 재무·재료·기술 신호 스크리닝, 상위 5개 후보, point-in-time 이벤트 스터디, 통합 수동 포트폴리오, 매수 논리 카드, 보유/부분매도/전량매도 시나리오를 구현했다.
+- HTTP API는 `/health`, 인증된 보유정보·저널 미리보기, `/v1/screen`, `/v1/candidates`를 제공한다.
+- 모든 주문 경로는 `403`으로 차단하고 `orders_enabled=false`를 상태 응답에 고정했다.
+- WIKI 작성기는 승인된 `wiki/20_Areas/Investments/*.md` 경로와 일회성 승인 토큰만 허용한다.
+- 08:30 평일, 20:00 평일, 토요일 12:00 KST 스케줄 판정과 중복/쿨다운 알림 상태를 구현했다.
+- Hermes용 `stock-cio`, `stock-market`, `stock-fundamentals`, `stock-risk` SOUL 템플릿을 만들었다.
+
+## 실행한 검증
+
+- Node 테스트: 27/27 통과
+- Python 테스트: 52/52 통과
+- 비활성 n8n 워크플로 보안 감사: 통과
+- Docker Compose 정적 구성 검증: 통과
+- Python compileall, JSON fixture, 비밀정보 스캔, `git diff --check`: 통과
+- 로컬 HTTP 스모크: `GET /health`가 `status=ok`, `orders_enabled=false` 반환
+
+## 미확인 항목과 남은 위험
+
+- KRX·OpenDART 실데이터 호출은 키가 없어 실행하지 않았다.
+- Toss Securities read-only OAuth와 실제 보유자산 동기화는 실행하지 않았다. 미래에셋은 공식 국내주식 개인용 API 경로를 확인하지 못해 MVP에서 수동 입력으로 유지한다.
+- 로컬 Docker 데몬이 실행 중이 아니어서 이미지 빌드와 컨테이너 런타임 검증은 하지 못했다.
+- Oracle에는 현재 공식 Hermes가 아니라 기존 커스텀 Telegram gateway가 실행 중이다. 공식 Hermes Desktop은 이 gateway에 직접 연결되지 않는다.
+- Oracle 배포, 공식 Hermes 프로필 생성, ChatGPT/Codex OAuth, Desktop 원격 연결, 테스트 Telegram Bot, 실제 WIKI 기록은 실행하지 않았다.
+- 공식 Hermes 문서상 OpenAI Codex는 ChatGPT OAuth를 지원하지만, 구독 등급별 사용 한도 산정 방식은 문서화되어 있지 않다. 각 프로필의 인증 상태도 독립적으로 검증해야 한다.
+- 현재 성과는 구조·테스트 검증이며 실제 투자 수익률을 입증하지 않는다.
+
+## 운영 전환 권고안
+
+1. 기존 운영 Telegram gateway를 유지한 채 Oracle에 stock-assistant와 공식 Hermes를 별도 후보 서비스로 설치한다.
+2. Desktop은 공개 포트 노출 대신 SSH 또는 Tailscale 경로를 사용한다. 최초 전환은 기존 SSH 접근을 이용하는 방식이 가장 변경 범위가 작다.
+3. CIO 프로필 하나에만 별도 테스트 Telegram Bot을 연결하고, 전문 프로필은 Desktop/Bot Mode와 CIO 위임에 사용한다.
+4. KRX·OpenDART 키로 실데이터 smoke를 통과한 후 08:30/20:00/토요일 12:00 스케줄을 활성화한다.
+5. 동일 report ID가 Desktop과 Telegram에 표시되는지 확인한 후 실제 WIKI 쓰기를 한 건씩 승인한다.
+
+## 다음 승인 게이트
+
+다음 작업은 서버·외부 채널·credential·실제 WIKI를 변경하므로 별도 승인이 필요하다.
+
+- Oracle 후보 배포와 공식 Hermes 설치
+- Desktop 원격 연결 방식 확정
+- 별도 테스트 Telegram Bot token과 허용 user ID 등록
+- KRX·OpenDART 키 등록
+- 네 개 프로필의 ChatGPT/Codex OAuth 수행
+- 실제 WIKI 첫 기록 승인
+

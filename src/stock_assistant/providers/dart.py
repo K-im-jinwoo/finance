@@ -8,7 +8,7 @@ from typing import Any, Callable
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
-from ..models import CompanyKind, Evidence, FinancialSnapshot
+from ..models import CompanyKind, Evidence, FinancialSnapshot, FinancingEvent
 from .http import AuthenticationError, ProviderError, RateLimitError, UpstreamSchemaError, get_bytes, get_json
 
 
@@ -20,6 +20,11 @@ DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json"
 DART_FINANCIAL_URL = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json"
 DART_CORP_CODE_URL = "https://opendart.fss.or.kr/api/corpCode.xml"
 DART_COMPANY_URL = "https://opendart.fss.or.kr/api/company.json"
+DART_FINANCING_ENDPOINTS = {
+    "RIGHTS_ISSUE": "https://opendart.fss.or.kr/api/piicDecsn.json",
+    "CB": "https://opendart.fss.or.kr/api/cvbdIsDecsn.json",
+    "BW": "https://opendart.fss.or.kr/api/bdwtIsDecsn.json",
+}
 KST = timezone(timedelta(hours=9))
 
 _OPERATING_INCOME_IDS = {
@@ -43,6 +48,14 @@ class DartCompanyProfile:
     kind: CompanyKind
     industry_code: str | None
     fiscal_month: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class DartFilingPage:
+    filings: tuple[Evidence, ...]
+    receipt_dates: dict[str, datetime]
+    page_no: int
+    total_page: int
 
 
 def _dart_status(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -140,6 +153,108 @@ def _dart_amount(value: Any, field: str) -> Decimal | None:
     return amount
 
 
+def _dart_percentage(value: Any, field: str) -> Decimal | None:
+    text = str(value or "").strip().replace(",", "").replace("%", "")
+    if text in {"", "-"}:
+        return None
+    try:
+        amount = Decimal(text)
+    except InvalidOperation as exc:
+        raise UpstreamSchemaError(f"DART {field} must be numeric") from exc
+    if not amount.is_finite() or amount < 0:
+        raise UpstreamSchemaError(f"DART {field} must be a non-negative finite number")
+    return amount
+
+
+def _financing_purpose(row: dict[str, Any]) -> str | None:
+    labels = {
+        "fdpp_fclt": "시설자금",
+        "fdpp_bsninh": "영업양수자금",
+        "fdpp_op": "운영자금",
+        "fdpp_dtrp": "채무상환자금",
+        "fdpp_ocsa": "타법인증권취득자금",
+        "fdpp_etc": "기타자금",
+    }
+    parts: list[str] = []
+    for field, label in labels.items():
+        amount = _dart_amount(row.get(field), field)
+        if amount is not None and amount > 0:
+            parts.append(f"{label}={amount}")
+    return "; ".join(parts) or None
+
+
+def normalize_dart_financing_events(
+    payload: dict[str, Any],
+    *,
+    symbol: str,
+    event_type: str,
+    observed_at: datetime,
+    receipt_dates: dict[str, datetime],
+) -> list[FinancingEvent]:
+    if event_type not in DART_FINANCING_ENDPOINTS:
+        raise ValueError(f"unsupported DART financing event type: {event_type}")
+    if observed_at.tzinfo is None:
+        raise ValueError("observed_at must be timezone-aware")
+    rows = _dart_status(payload)
+    results: list[FinancingEvent] = []
+    seen_receipts: set[str] = set()
+    for index, row in enumerate(rows):
+        receipt = str(row.get("rcept_no", "")).strip()
+        if receipt in seen_receipts:
+            raise UpstreamSchemaError(f"duplicate DART financing receipt: {receipt}")
+        seen_receipts.add(receipt)
+        if len(receipt) != 14 or not receipt.isdigit():
+            raise UpstreamSchemaError("DART rcept_no must be 14 digits")
+        announced_at = receipt_dates.get(receipt)
+        if announced_at is None:
+            raise UpstreamSchemaError(f"DART financing receipt date is unavailable: {receipt}")
+        if announced_at.tzinfo is None:
+            raise ValueError("receipt_dates values must be timezone-aware")
+        announced_at = announced_at.astimezone(timezone.utc)
+        if announced_at > observed_at.astimezone(timezone.utc):
+            raise UpstreamSchemaError(f"DART financing row {index} was observed before publication")
+        ratio: Decimal | None
+        refixing: bool | None = None
+        if event_type == "RIGHTS_ISSUE":
+            new_common = _dart_amount(row.get("nstk_ostk_cnt"), "nstk_ostk_cnt")
+            new_other = _dart_amount(row.get("nstk_estk_cnt"), "nstk_estk_cnt")
+            before_common = _dart_amount(row.get("bfic_tisstk_ostk"), "bfic_tisstk_ostk")
+            before_other = _dart_amount(row.get("bfic_tisstk_estk"), "bfic_tisstk_estk")
+            if None in (new_common, new_other, before_common, before_other):
+                ratio = None
+            else:
+                before_total = before_common + before_other
+                ratio = ((new_common + new_other) / before_total * Decimal("100")) if before_total > 0 else None
+        elif event_type == "CB":
+            ratio = _dart_percentage(row.get("cvisstk_tisstk_vs"), "cvisstk_tisstk_vs")
+            basis = str(row.get("act_mktprcfl_cvprc_lwtrsprc_bs", "")).strip()
+            lower_price = _dart_amount(
+                row.get("act_mktprcfl_cvprc_lwtrsprc"),
+                "act_mktprcfl_cvprc_lwtrsprc",
+            )
+            refixing = bool(basis) or (lower_price is not None and lower_price > 0)
+        else:
+            ratio = _dart_percentage(row.get("nstk_isstk_tisstk_vs"), "nstk_isstk_tisstk_vs")
+            basis = str(row.get("act_mktprcfl_cvprc_lwtrsprc_bs", "")).strip()
+            lower_price = _dart_amount(
+                row.get("act_mktprcfl_cvprc_lwtrsprc"),
+                "act_mktprcfl_cvprc_lwtrsprc",
+            )
+            refixing = bool(basis) or (lower_price is not None and lower_price > 0)
+        results.append(FinancingEvent(
+            symbol=symbol,
+            event_type=event_type,
+            announced_at=announced_at,
+            dilutive=True,
+            official=True,
+            source_url=f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt}",
+            dilution_ratio_pct=ratio,
+            purpose=_financing_purpose(row),
+            refixing=refixing,
+        ))
+    return sorted(results, key=lambda item: (item.announced_at, item.source_url))
+
+
 def normalize_dart_financial_statement(
     payload: dict[str, Any],
     *,
@@ -224,6 +339,26 @@ def normalize_dart_filings(payload: dict[str, Any], *, observed_at: datetime) ->
     return results
 
 
+def normalize_dart_filing_page(payload: dict[str, Any], *, observed_at: datetime) -> DartFilingPage:
+    filings = normalize_dart_filings(payload, observed_at=observed_at)
+    if str(payload.get("status", "")) == "013":
+        return DartFilingPage((), {}, 0, 0)
+    try:
+        page_no = int(payload["page_no"])
+        total_page = int(payload["total_page"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise UpstreamSchemaError("DART filing response requires numeric page metadata") from exc
+    if page_no < 1 or total_page < 1 or page_no > total_page:
+        raise UpstreamSchemaError("DART filing page metadata is inconsistent")
+    receipt_dates: dict[str, datetime] = {}
+    for filing in filings:
+        receipt = filing.url.rsplit("=", 1)[-1]
+        if len(receipt) != 14 or not receipt.isdigit():
+            raise UpstreamSchemaError("DART filing URL has an invalid receipt number")
+        receipt_dates[receipt] = filing.published_at
+    return DartFilingPage(tuple(filings), receipt_dates, page_no, total_page)
+
+
 class DartClient:
     def __init__(
         self,
@@ -254,6 +389,40 @@ class DartClient:
         )
         return normalize_dart_company_profile(response.payload)
 
+    def financing_events(
+        self,
+        *,
+        corp_code: str,
+        symbol: str,
+        event_type: str,
+        begin_date: str,
+        end_date: str,
+        observed_at: datetime,
+        receipt_dates: dict[str, datetime],
+    ) -> list[FinancingEvent]:
+        if len(corp_code) != 8 or not corp_code.isdigit():
+            raise ValueError("corp_code must be eight digits")
+        try:
+            endpoint = DART_FINANCING_ENDPOINTS[event_type]
+        except KeyError as exc:
+            raise ValueError(f"unsupported DART financing event type: {event_type}") from exc
+        for value, field in ((begin_date, "begin_date"), (end_date, "end_date")):
+            if len(value) != 8 or not value.isdigit():
+                raise ValueError(f"{field} must be YYYYMMDD")
+        response = self.fetch_json(endpoint, query={
+            "crtfc_key": self.api_key,
+            "corp_code": corp_code,
+            "bgn_de": begin_date,
+            "end_de": end_date,
+        })
+        return normalize_dart_financing_events(
+            response.payload,
+            symbol=symbol,
+            event_type=event_type,
+            observed_at=observed_at,
+            receipt_dates=receipt_dates,
+        )
+
     def filings(
         self,
         *,
@@ -264,8 +433,29 @@ class DartClient:
         page_no: int = 1,
         page_count: int = 100,
     ) -> list[Evidence]:
+        return list(self.filing_page(
+            observed_at=observed_at,
+            corp_code=corp_code,
+            begin_date=begin_date,
+            end_date=end_date,
+            page_no=page_no,
+            page_count=page_count,
+        ).filings)
+
+    def filing_page(
+        self,
+        *,
+        observed_at: datetime,
+        corp_code: str | None = None,
+        begin_date: str | None = None,
+        end_date: str | None = None,
+        page_no: int = 1,
+        page_count: int = 100,
+    ) -> DartFilingPage:
         if not (1 <= page_count <= 100):
             raise ValueError("page_count must be between 1 and 100")
+        if page_no < 1:
+            raise ValueError("page_no must be positive")
         query = {
             "crtfc_key": self.api_key,
             "page_no": str(page_no),
@@ -280,7 +470,7 @@ class DartClient:
         if end_date:
             query["end_de"] = end_date
         response = self.fetch_json(DART_LIST_URL, query=query)
-        return normalize_dart_filings(response.payload, observed_at=observed_at)
+        return normalize_dart_filing_page(response.payload, observed_at=observed_at)
 
     def financial_statement(
         self,

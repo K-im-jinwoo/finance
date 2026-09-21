@@ -6,8 +6,9 @@ from datetime import date, datetime, timedelta
 from time import sleep
 from typing import Callable
 
-from .models import AssetType, CompanyKind, Market, Security
-from .providers.dart import DartClient
+from .disclosures import classify_dart_filing_signals
+from .models import AssetType, CompanyKind, Evidence, Market, Security
+from .providers.dart import DART_FINANCING_ENDPOINTS, KST, DartClient
 from .providers.krx import KrxClient
 from .repository import StockRepository
 
@@ -246,14 +247,15 @@ class DartFinancialEnricher:
                 unknown_company_kind += 1
                 continue
             filing_start = date(business_year + 1, 1, 1)
-            if as_of.date() < filing_start:
+            fully_observable_end = as_of.astimezone(KST).date() - timedelta(days=1)
+            if fully_observable_end < filing_start:
                 missing_annual_filing += 1
                 continue
             filings = self.client.filings(
                 observed_at=as_of,
                 corp_code=corp_code,
                 begin_date=filing_start.strftime("%Y%m%d"),
-                end_date=as_of.date().strftime("%Y%m%d"),
+                end_date=fully_observable_end.strftime("%Y%m%d"),
                 page_count=100,
             )
             self._pace()
@@ -297,4 +299,158 @@ class DartFinancialEnricher:
             missing_statement=missing_statement,
             unknown_company_kind=unknown_company_kind,
             already_current=already_current,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DartDisclosureSummary:
+    requested: int
+    covered: int
+    events_saved: int
+    catalysts_saved: int
+    management_risks_saved: int
+    missing_corp_code: int
+    skipped_non_common: int
+
+
+class DartDisclosureEnricher:
+    """Persist official five-year dilution history without treating missing data as no events."""
+
+    def __init__(
+        self,
+        repository: StockRepository,
+        client: DartClient,
+        *,
+        request_interval_seconds: float = 0.2,
+        sleeper: Callable[[float], None] = sleep,
+    ) -> None:
+        self.repository = repository
+        self.client = client
+        if request_interval_seconds < 0:
+            raise ValueError("request_interval_seconds cannot be negative")
+        self.request_interval_seconds = request_interval_seconds
+        self.sleeper = sleeper
+
+    def _pace(self) -> None:
+        if self.request_interval_seconds:
+            self.sleeper(self.request_interval_seconds)
+
+    def _receipt_dates(
+        self,
+        *,
+        corp_code: str,
+        start_date: date,
+        end_date: date,
+        observed_at: datetime,
+    ) -> tuple[dict[str, datetime], list[Evidence]]:
+        receipt_dates: dict[str, datetime] = {}
+        filings: list[Evidence] = []
+        page_no = 1
+        total_page = 1
+        while page_no <= total_page:
+            page = self.client.filing_page(
+                observed_at=observed_at,
+                corp_code=corp_code,
+                begin_date=start_date.strftime("%Y%m%d"),
+                end_date=end_date.strftime("%Y%m%d"),
+                page_no=page_no,
+                page_count=100,
+            )
+            self._pace()
+            if page.total_page and page.page_no != page_no:
+                raise ValueError("DART filing response page number does not match the request")
+            if page.total_page > 50:
+                raise ValueError("DART filing history exceeds the 50-page safety limit")
+            total_page = page.total_page
+            for receipt, published_at in page.receipt_dates.items():
+                existing = receipt_dates.get(receipt)
+                if existing is not None and existing != published_at:
+                    raise ValueError(f"DART filing receipt date changed across pages: {receipt}")
+                receipt_dates[receipt] = published_at
+            filings.extend(page.filings)
+            if total_page == 0:
+                break
+            page_no += 1
+        return receipt_dates, filings
+
+    def enrich(self, *, symbols: list[str], as_of: datetime) -> DartDisclosureSummary:
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        unique_symbols = list(dict.fromkeys(symbols))
+        if not unique_symbols or len(unique_symbols) > 50:
+            raise ValueError("symbols must contain between 1 and 50 unique items")
+        end_date = as_of.astimezone(KST).date() - timedelta(days=1)
+        financing_start = max(end_date - timedelta(days=365 * 5 + 2), date(2015, 1, 1))
+        management_start = max(end_date - timedelta(days=365 * 10 + 3), date(2015, 1, 1))
+        securities = {item.symbol: item for item in self.repository.list_securities()}
+        corp_codes = self.client.corp_codes()
+        self._pace()
+        covered = 0
+        events_saved = 0
+        catalysts_saved = 0
+        management_risks_saved = 0
+        missing_corp_code = 0
+        skipped_non_common = 0
+        for symbol in unique_symbols:
+            security = securities.get(symbol)
+            if security is None or security.asset_type is not AssetType.COMMON:
+                skipped_non_common += 1
+                continue
+            corp_code = corp_codes.get(symbol)
+            if corp_code is None:
+                missing_corp_code += 1
+                continue
+            receipt_dates, filings = self._receipt_dates(
+                corp_code=corp_code,
+                start_date=management_start,
+                end_date=end_date,
+                observed_at=as_of,
+            )
+            events = []
+            for event_type in DART_FINANCING_ENDPOINTS:
+                events.extend(self.client.financing_events(
+                    corp_code=corp_code,
+                    symbol=symbol,
+                    event_type=event_type,
+                    begin_date=financing_start.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                    observed_at=as_of,
+                    receipt_dates=receipt_dates,
+                ))
+                self._pace()
+            self.repository.save_financing_events(events)
+            catalysts, management_risks = classify_dart_filing_signals(
+                symbol,
+                filings,
+                as_of=as_of,
+            )
+            self.repository.save_catalysts(catalysts)
+            self.repository.save_management_risks(management_risks)
+            self.repository.save_coverage(
+                symbol=symbol,
+                dataset="DART_FINANCING",
+                start_date=financing_start.isoformat(),
+                end_date=end_date.isoformat(),
+                observed_at=as_of,
+            )
+            for dataset in ("DART_CATALYST", "DART_MANAGEMENT_RISK"):
+                self.repository.save_coverage(
+                    symbol=symbol,
+                    dataset=dataset,
+                    start_date=management_start.isoformat(),
+                    end_date=end_date.isoformat(),
+                    observed_at=as_of,
+                )
+            covered += 1
+            events_saved += len(events)
+            catalysts_saved += len(catalysts)
+            management_risks_saved += len(management_risks)
+        return DartDisclosureSummary(
+            requested=len(unique_symbols),
+            covered=covered,
+            events_saved=events_saved,
+            catalysts_saved=catalysts_saved,
+            management_risks_saved=management_risks_saved,
+            missing_corp_code=missing_corp_code,
+            skipped_non_common=skipped_non_common,
         )

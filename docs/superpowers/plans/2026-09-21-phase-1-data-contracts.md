@@ -17,6 +17,7 @@
 - `src/stock_assistant/models.py`: immutable domain records and enums
 - `src/stock_assistant/validation.py`: external-boundary validation
 - `src/stock_assistant/indicators.py`: deterministic price and volume indicators
+- `src/stock_assistant/disclosures.py`: conservative DART title-level catalyst and risk classification
 - `src/stock_assistant/screening.py`: filters, scores, reason codes, top-five selection
 - `src/stock_assistant/backtest.py`: point-in-time event-study replay
 - `src/stock_assistant/portfolio.py`: holdings, thesis cards, scenarios
@@ -71,4 +72,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 - 외부 Git push
 
 운영 연결 전 사용자는 테스트 Telegram Bot과 허용 user ID, 공식 Hermes 인증 방식, credential 등록 범위를 승인해야 한다.
-

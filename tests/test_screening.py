@@ -84,14 +84,43 @@ class ScreeningTests(unittest.TestCase):
         events = tuple(
             FinancingEvent(
                 "005930", "CB", AS_OF - timedelta(days=365 * years), True, True,
-                f"https://dart.fss.or.kr/{years}",
+                f"https://dart.fss.or.kr/{years}", Decimal("12.5"), "운영자금=100", True,
             )
             for years in (1, 2)
         )
         result = screen_security(samsung(), make_bars(), as_of=AS_OF, financial=good_financial(), financing_events=events)
         self.assertEqual(result.decision, Decision.BUY_HOLD)
         self.assertIn("REPEATED_DILUTION", result.warnings)
+        self.assertIn("REFIXING_PRESENT", result.warnings)
+        self.assertEqual(result.metrics["max_dilution_ratio_pct_5y"], Decimal("12.5"))
         self.assertIn("조달 목적", " ".join(result.checks))
+
+    def test_unverified_risk_histories_force_additional_check(self) -> None:
+        result = screen_security(
+            samsung(), make_bars(), as_of=AS_OF, financial=good_financial(),
+            financing_data_available=False,
+            management_data_available=False,
+            catalyst_data_available=False,
+        )
+        self.assertEqual(result.decision, Decision.BUY_HOLD)
+        self.assertIn("DILUTION_HISTORY_UNAVAILABLE", result.warnings)
+        self.assertIn("MANAGEMENT_HISTORY_UNAVAILABLE", result.warnings)
+        self.assertIn("CATALYST_HISTORY_UNAVAILABLE", result.warnings)
+
+    def test_official_allegation_requires_review_but_does_not_claim_conviction(self) -> None:
+        evidence = Evidence(
+            "DART", "횡령ㆍ배임혐의발생", "https://dart.fss.or.kr/risk",
+            datetime(2026, 9, 1, tzinfo=UTC), datetime(2026, 9, 2, tzinfo=UTC), True,
+        )
+        result = screen_security(
+            samsung(), make_bars(), as_of=AS_OF, financial=good_financial(),
+            management_risks=(ManagementRisk(
+                "005930", False, "OFFICIAL_REVIEW", (evidence,),
+            ),),
+        )
+        self.assertEqual(result.decision, Decision.BUY_HOLD)
+        self.assertIn("MANAGEMENT_RISK_OFFICIAL_REVIEW", result.warnings)
+        self.assertNotIn("MANAGEMENT_RISK_CONFIRMED", result.warnings)
 
     def test_etf_does_not_require_company_financials(self) -> None:
         etf = Security("069500", "KODEX 200", Market.KOSPI, AssetType.ETF, CompanyKind.FUND, date(2002, 10, 14))

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .client import StockClient, StockClientError
 from .http_api import serve
-from .ingestion import DartFinancialEnricher, KrxHistoryIngestor
+from .ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
 from .models import to_json_value
 from .pipeline import CandidatePipeline
 from .presentation import render_candidate_report
@@ -74,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
     dart_parser.add_argument("--as-of", type=datetime.fromisoformat)
     dart_parser.add_argument("--business-year", type=int, required=True)
     dart_parser.add_argument("--shortlist-limit", type=int, default=30)
+    disclosure_parser = subparsers.add_parser("enrich-dart-disclosures")
+    disclosure_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    disclosure_parser.add_argument("--key-file", type=Path)
+    disclosure_parser.add_argument("--as-of", type=datetime.fromisoformat)
+    disclosure_parser.add_argument("--shortlist-limit", type=int, default=30)
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -183,6 +188,31 @@ def main(argv: list[str] | None = None) -> int:
                 symbols=symbols,
                 as_of=as_of,
                 business_year=args.business_year,
+            )
+            print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError, ProviderError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+    if args.command == "enrich-dart-disclosures":
+        key_file = args.key_file
+        if key_file is None and os.getenv("DART_API_KEY_FILE"):
+            key_file = Path(os.environ["DART_API_KEY_FILE"])
+        if key_file is None:
+            print(json.dumps({"error": "DART key file is required"}), file=sys.stderr)
+            return 2
+        as_of = args.as_of or datetime.now(timezone.utc)
+        try:
+            key = key_file.read_text(encoding="utf-8").strip()
+            if not key:
+                raise ValueError("DART key file is empty")
+            repository = StockRepository(args.database)
+            symbols = CandidatePipeline(repository).ranked_symbols(
+                as_of=as_of, limit=args.shortlist_limit,
+            )
+            summary = DartDisclosureEnricher(repository, DartClient(key)).enrich(
+                symbols=symbols,
+                as_of=as_of,
             )
             print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
             return 0

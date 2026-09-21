@@ -34,5 +34,8 @@ if [ "$mode" = evening ] || [ "$mode" = weekly ]; then
     --business-year "$STOCK_DART_BUSINESS_YEAR" >/dev/null
 fi
 
+compose exec -T stock-assistant python -m stock_assistant enrich-dart-disclosures \
+  --database "$database" --key-file /run/secrets/dart-api-key >/dev/null
+
 compose exec -T stock-assistant python -m stock_assistant generate-candidates \
   --database "$database" --limit 5 --format text

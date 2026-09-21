@@ -7,6 +7,28 @@ def _bullets(values: list[str] | tuple[str, ...], *, empty: str = "없음") -> s
     return "\n".join(f"- {value}" for value in values) if values else f"- {empty}"
 
 
+_VISIBLE_METRICS = (
+    ("close", "종가"),
+    ("volume_ratio20", "20일 대비 거래량"),
+    ("drawdown60", "60일 고점 대비"),
+    ("dilution_count_5y", "5년 희석성 조달 횟수"),
+    ("max_dilution_ratio_pct_5y", "5년 최대 잠재 희석률(%)"),
+    ("refixing_event_count_5y", "5년 리픽싱 포함 건수"),
+    ("financing_purposes_5y", "확인된 조달 목적"),
+)
+
+
+def _visible_metrics(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "- 확인 불가"
+    lines = [
+        f"- {label}: {value[key]}"
+        for key, label in _VISIBLE_METRICS
+        if value.get(key) is not None
+    ]
+    return "\n".join(lines) if lines else "- 확인 가능한 핵심지표 없음"
+
+
 def render_candidate_report(report: dict[str, Any], *, max_chars: int = 3500) -> tuple[str, ...]:
     """Render one stored report for Desktop or Telegram without changing its meaning."""
     if max_chars < 500 or max_chars > 4000:
@@ -31,6 +53,8 @@ def render_candidate_report(report: dict[str, Any], *, max_chars: int = 3500) ->
         lines = [
             f"후보 {index}. {item.get('name') or '종목명 확인 불가'} ({item.get('symbol', '확인 불가')})",
             f"판정: {item.get('decision', '확인 불가')} / 점수: {item.get('score', '확인 불가')}",
+            "핵심지표:",
+            _visible_metrics(item.get("metrics")),
             "근거:",
             _bullets(item.get("reasons", [])),
             "경고:",

@@ -7,7 +7,10 @@ from decimal import Decimal
 from pathlib import Path
 
 from stock_assistant.models import Decision, Holding, ScreeningResult
-from stock_assistant.models import AssetType, CompanyKind, FinancialSnapshot, Market, OHLCV, Security
+from stock_assistant.models import (
+    AssetType, Catalyst, CatalystStatus, CompanyKind, Evidence, FinancialSnapshot,
+    FinancingEvent, ManagementRisk, Market, OHLCV, Security,
+)
 from stock_assistant.repository import StockRepository
 from tests.helpers import make_bars
 
@@ -100,6 +103,57 @@ class RepositoryTests(unittest.TestCase):
                 )[0].close,
                 Decimal("105"),
             )
+
+    def test_financing_history_and_coverage_are_point_in_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = StockRepository(Path(directory) / "stock.sqlite3")
+            event = FinancingEvent(
+                "005930", "CB", datetime(2025, 9, 18, tzinfo=UTC), True, True,
+                "https://dart.fss.or.kr/example", Decimal("12.5"), "운영자금=100", True,
+            )
+            repository.save_financing_events([event])
+            repository.save_coverage(
+                symbol="005930", dataset="DART_FINANCING",
+                start_date="2021-09-17", end_date="2026-09-17",
+                observed_at=datetime(2026, 9, 18, tzinfo=UTC),
+            )
+            self.assertEqual(repository.financing_events_for(
+                "005930", as_of=datetime(2026, 9, 18, tzinfo=UTC),
+                since=datetime(2021, 9, 17, tzinfo=UTC),
+            ), [event])
+            self.assertFalse(repository.has_coverage(
+                symbol="005930", dataset="DART_FINANCING",
+                required_start_date="2021-09-17", required_end_date="2026-09-17",
+                as_of=datetime(2026, 9, 17, tzinfo=UTC),
+            ))
+            self.assertTrue(repository.has_coverage(
+                symbol="005930", dataset="DART_FINANCING",
+                required_start_date="2021-09-17", required_end_date="2026-09-17",
+                as_of=datetime(2026, 9, 18, tzinfo=UTC),
+            ))
+
+    def test_catalyst_and_management_evidence_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = StockRepository(Path(directory) / "stock.sqlite3")
+            published = datetime(2026, 9, 18, 14, 59, 59, tzinfo=UTC)
+            evidence = Evidence(
+                "DART", "회사 - 단일판매ㆍ공급계약체결",
+                "https://dart.fss.or.kr/contract", published,
+                datetime(2026, 9, 19, tzinfo=UTC), True,
+            )
+            catalyst = Catalyst(
+                "005930", "CONTRACT", CatalystStatus.PARTIAL,
+                published, None, (evidence,),
+            )
+            risk = ManagementRisk(
+                "005930", False, "OFFICIAL_REVIEW", (evidence,),
+            )
+            repository.save_catalysts([catalyst])
+            repository.save_management_risks([risk])
+            as_of = datetime(2026, 9, 20, tzinfo=UTC)
+            since = datetime(2025, 9, 20, tzinfo=UTC)
+            self.assertEqual(repository.catalysts_for("005930", as_of=as_of, since=since), [catalyst])
+            self.assertEqual(repository.management_risks_for("005930", as_of=as_of, since=since), [risk])
 
 
 if __name__ == "__main__":

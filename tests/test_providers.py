@@ -15,6 +15,8 @@ from stock_assistant.providers.dart import (
     normalize_dart_company_profile,
     normalize_dart_corp_codes,
     normalize_dart_filings,
+    normalize_dart_filing_page,
+    normalize_dart_financing_events,
     normalize_dart_financial_statement,
 )
 from stock_assistant.providers.http import AuthenticationError, BinaryResponse, JsonResponse, RateLimitError, UpstreamSchemaError
@@ -93,6 +95,9 @@ class ProviderTests(unittest.TestCase):
             normalize_dart_filings({"status": "010"}, observed_at=OBSERVED)
         with self.assertRaises(RateLimitError):
             normalize_dart_filings({"status": "020"}, observed_at=OBSERVED)
+        page = normalize_dart_filing_page(payload, observed_at=OBSERVED)
+        self.assertEqual(page.total_page, 1)
+        self.assertEqual(page.receipt_dates["20260918000001"], filings[0].published_at)
 
     def test_dart_financial_statement_extracts_operating_cash_flow_and_fcf(self) -> None:
         payload = json.loads((FIXTURES / "dart_financial_raw.json").read_text(encoding="utf-8"))
@@ -108,6 +113,59 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(snapshot.operating_income, Decimal("1000"))
         self.assertEqual(snapshot.operating_cash_flow, Decimal("700"))
         self.assertEqual(snapshot.free_cash_flow, Decimal("450"))
+
+    def test_dart_financing_events_preserve_ratio_purpose_and_refixing(self) -> None:
+        rights = normalize_dart_financing_events({
+            "status": "000",
+            "list": [{
+                "rcept_no": "20250918000001",
+                "nstk_ostk_cnt": "100",
+                "nstk_estk_cnt": "0",
+                "bfic_tisstk_ostk": "1,000",
+                "bfic_tisstk_estk": "0",
+                "fdpp_op": "5000000000",
+            }],
+        }, symbol="005930", event_type="RIGHTS_ISSUE", observed_at=OBSERVED, receipt_dates={
+            "20250918000001": datetime(2025, 9, 18, 14, 59, 59, tzinfo=UTC),
+        })
+        self.assertEqual(rights[0].dilution_ratio_pct, Decimal("10.0"))
+        self.assertIn("운영자금", rights[0].purpose or "")
+        cb = normalize_dart_financing_events({
+            "status": "000",
+            "list": [{
+                "rcept_no": "20240918000002",
+                "cvisstk_tisstk_vs": "12.5%",
+                "act_mktprcfl_cvprc_lwtrsprc": "8000",
+            }],
+        }, symbol="005930", event_type="CB", observed_at=OBSERVED, receipt_dates={
+            "20240918000002": datetime(2024, 9, 18, 14, 59, 59, tzinfo=UTC),
+        })
+        self.assertEqual(cb[0].dilution_ratio_pct, Decimal("12.5"))
+        self.assertTrue(cb[0].refixing)
+        with self.assertRaisesRegex(UpstreamSchemaError, "receipt date is unavailable"):
+            normalize_dart_financing_events({
+                "status": "000", "list": [{"rcept_no": "20240918000002"}],
+            }, symbol="005930", event_type="CB", observed_at=OBSERVED, receipt_dates={})
+
+    def test_dart_financing_client_uses_official_event_endpoint(self) -> None:
+        calls = []
+
+        def fake_fetch(url, **kwargs):
+            calls.append((url, kwargs))
+            return JsonResponse(200, {"status": "013"})
+
+        events = DartClient("not-a-real-key", fetch_json=fake_fetch).financing_events(
+            corp_code="00126380",
+            symbol="005930",
+            event_type="BW",
+            begin_date="20210918",
+            end_date="20260917",
+            observed_at=OBSERVED,
+            receipt_dates={},
+        )
+        self.assertEqual(events, [])
+        self.assertTrue(calls[0][0].endswith("/bdwtIsDecsn.json"))
+        self.assertEqual(calls[0][1]["query"]["bgn_de"], "20210918")
 
     def test_dart_financial_client_sends_required_point_in_time_query(self) -> None:
         calls = []

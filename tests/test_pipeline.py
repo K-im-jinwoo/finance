@@ -43,6 +43,9 @@ class PipelineTests(unittest.TestCase):
             first = CandidatePipeline(repository).run(as_of=AS_OF)
             second = CandidatePipeline(repository).run(as_of=AS_OF)
             self.assertEqual(first.scanned, 6)
+            self.assertEqual(first.missing_financing_histories, 6)
+            self.assertEqual(first.missing_management_histories, 6)
+            self.assertEqual(first.missing_catalyst_histories, 6)
             self.assertEqual(len(first.report.candidates), 5)
             self.assertEqual(first.report.report_id, second.report.report_id)
             stored = repository.get_report(first.report.report_id)
@@ -67,11 +70,15 @@ class PipelineTests(unittest.TestCase):
             summary = CandidatePipeline(repository).run(as_of=AS_OF)
             self.assertEqual(summary.missing_financials, 1)
             self.assertEqual(summary.insufficient_history, 1)
+            self.assertEqual(summary.missing_financing_histories, 1)
+            self.assertEqual(summary.missing_management_histories, 1)
+            self.assertEqual(summary.missing_catalyst_histories, 1)
             unavailable = " ".join(summary.report.unavailable)
             self.assertIn("재무 미적재", unavailable)
             self.assertIn("61거래일 미만", unavailable)
             self.assertIn("회전율", unavailable)
             self.assertIn("경영진 위험", unavailable)
+            self.assertIn("CB·BW·유상증자", unavailable)
 
 
 if __name__ == "__main__":

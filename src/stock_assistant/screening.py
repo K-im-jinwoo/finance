@@ -46,6 +46,9 @@ def screen_security(
     financing_events: tuple[FinancingEvent, ...] = (),
     management_risks: tuple[ManagementRisk, ...] = (),
     catalysts: tuple[Catalyst, ...] = (),
+    financing_data_available: bool | None = None,
+    management_data_available: bool | None = None,
+    catalyst_data_available: bool | None = None,
     minimum_average_value: Decimal = Decimal("1000000000"),
 ) -> ScreeningResult:
     reasons: list[str] = []
@@ -106,6 +109,15 @@ def screen_security(
 
     hard_exclusion = False
     if security.asset_type is AssetType.COMMON:
+        if financing_data_available is False:
+            warnings.append("DILUTION_HISTORY_UNAVAILABLE")
+            checks.append("최근 5년 CB·BW·유상증자 공시 이력을 확인할 것")
+        if management_data_available is False:
+            warnings.append("MANAGEMENT_HISTORY_UNAVAILABLE")
+            checks.append("최근 10년 경영진·대주주 공식 위험 이력을 확인할 것")
+        if catalyst_data_available is False:
+            warnings.append("CATALYST_HISTORY_UNAVAILABLE")
+            checks.append("계약·실적 공시의 현재 유효성을 확인할 것")
         company_kind_unknown = security.company_kind is CompanyKind.UNKNOWN
         if company_kind_unknown:
             warnings.append("COMPANY_KIND_UNAVAILABLE")
@@ -154,22 +166,49 @@ def screen_security(
 
     five_year_cutoff = as_of.astimezone(timezone.utc) - timedelta(days=365 * 5 + 2)
     dilution_count = 0
+    dilution_ratios: list[Decimal] = []
+    refixing_count = 0
+    financing_purposes: set[str] = set()
     for event in financing_events:
         assert_point_in_time(as_of, published_at=event.announced_at, label="financing")
         if event.symbol != security.symbol:
             raise ValueError("financing symbol does not match security")
         if event.dilutive and event.official and event.announced_at >= five_year_cutoff:
             dilution_count += 1
+            if event.dilution_ratio_pct is not None:
+                dilution_ratios.append(event.dilution_ratio_pct)
+            if event.refixing is True:
+                refixing_count += 1
+            if event.purpose:
+                financing_purposes.add(event.purpose)
     if dilution_count:
         warnings.append("DILUTION_EVENT")
         checks.append("조달 목적·규모·주식수 증가와 반복성을 확인할 것")
+        if len(dilution_ratios) < dilution_count:
+            warnings.append("DILUTION_SCALE_UNAVAILABLE")
+        if refixing_count:
+            warnings.append("REFIXING_PRESENT")
+            checks.append("리픽싱 최저가·조정 조건과 잠재 전환 물량을 확인할 것")
     if dilution_count >= 2:
         warnings.append("REPEATED_DILUTION")
         score = max(Decimal("0"), score - Decimal("20"))
 
-    if any(risk.confirmed for risk in management_risks):
-        warnings.append("MANAGEMENT_RISK_CONFIRMED")
-        hard_exclusion = True
+    for risk in management_risks:
+        if risk.symbol != security.symbol:
+            raise ValueError("management risk symbol does not match security")
+        for evidence in risk.evidence:
+            assert_point_in_time(
+                as_of,
+                observed_at=evidence.observed_at,
+                published_at=evidence.published_at,
+                label="management risk evidence",
+            )
+        if risk.confirmed:
+            warnings.append("MANAGEMENT_RISK_CONFIRMED")
+            hard_exclusion = True
+        else:
+            warnings.append("MANAGEMENT_RISK_OFFICIAL_REVIEW")
+            checks.append("공식 공시에 언급된 횡령·배임 위험의 수사·기소·판결 상태를 확인할 것")
 
     catalyst_score = Decimal("0")
     for catalyst in catalysts:
@@ -208,6 +247,9 @@ def screen_security(
         "average_value20": features.average_value20,
         "atr14": features.atr14,
         "dilution_count_5y": dilution_count,
+        "max_dilution_ratio_pct_5y": max(dilution_ratios) if dilution_ratios else None,
+        "refixing_event_count_5y": refixing_count,
+        "financing_purposes_5y": " | ".join(sorted(financing_purposes)) or None,
     }
     return ScreeningResult(
         security.symbol,

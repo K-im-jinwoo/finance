@@ -21,7 +21,7 @@ After the candidate API smoke passes, perform the first data run in this order:
 
 1. Run one 120-calendar-day KRX backfill with the mounted KRX key file.
 2. Inspect saved security counts, trading-day counts, excluded asset classes, and the latest date before continuing.
-3. Run OpenDART enrichment for an explicitly approved business year and the technical shortlist only.
+3. Run OpenDART enrichment for an explicitly approved business year and the technical shortlist only; reconcile detailed financing receipts with filing-list receipt dates.
 4. Generate five candidates and confirm every unavailable source is labeled rather than inferred.
 5. Enable `deploy/jobs/run_stock_cycle.sh` modes one at a time: `morning`, `evening`, then `weekly`.
 

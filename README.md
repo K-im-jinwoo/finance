@@ -14,6 +14,8 @@ Hermes Desktop과 Telegram이 함께 사용할 수 있는 채널 중립적 국�
 - 인증된 private API와 주문 경로 강제 차단
 - 역할별 API 토큰과 저장된 보고서 ID 재조회
 - KRX 종목·OHLCV 백필/일일 적재와 OpenDART 기업·연간 재무 보강 명령
+- OpenDART 전용 API 기반 최근 5년 유상증자·CB·BW와 희석률·자금목적·리픽싱 적재
+- OpenDART 공시목록 기반 계약·잠정실적 부분 확인과 10년 횡령·배임 공식 검토 신호
 - 정규화 저장소에서 동일 기준시각으로 상위 5개 보고서를 생성하는 파이프라인
 - Desktop·Telegram 공통 보고서 렌더링과 Hermes stock-research skill
 - Hermes 네 개 profile용 SOUL 템플릿
@@ -39,6 +41,7 @@ $env:PYTHONPATH='src'
 $env:PYTHONPATH='src'
 & $env:STOCK_PYTHON -m stock_assistant ingest-krx --mode backfill --calendar-days 120 --key-file '<KRX key file>'
 & $env:STOCK_PYTHON -m stock_assistant enrich-dart --business-year 2025 --key-file '<OpenDART key file>'
+& $env:STOCK_PYTHON -m stock_assistant enrich-dart-disclosures --key-file '<OpenDART key file>'
 & $env:STOCK_PYTHON -m stock_assistant generate-candidates
 ```
 
@@ -51,3 +54,5 @@ $env:PYTHONPATH='src'
 - Telegram 전달과 실제 WIKI 저장
 
 이 항목들은 credential과 운영 변경 승인을 받은 후 별도로 검증합니다.
+
+공시 제목 분류는 판결이나 계약 이행을 확정하지 않습니다. 계약·잠정실적은 `PARTIAL`, 횡령·배임 관련 제목은 `MANAGEMENT_RISK_OFFICIAL_REVIEW`로 보류 조건에만 사용합니다.

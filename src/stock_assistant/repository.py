@@ -9,9 +9,14 @@ from pathlib import Path
 
 from .models import (
     AssetType,
+    Catalyst,
+    CatalystStatus,
     CompanyKind,
+    Evidence,
     FinancialSnapshot,
+    FinancingEvent,
     Holding,
+    ManagementRisk,
     Market,
     OHLCV,
     ScreeningResult,
@@ -21,8 +26,9 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 _REPORT_ID = re.compile(r"^R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8}$")
+_DATASET = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
 
 class StockRepository:
@@ -78,6 +84,38 @@ class StockRepository:
                     published_at TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY (symbol, period_end, published_at)
+                );
+                CREATE TABLE IF NOT EXISTS financing_events (
+                    symbol TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    announced_at TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (symbol, event_type, announced_at, source_url)
+                );
+                CREATE TABLE IF NOT EXISTS research_coverage (
+                    symbol TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    PRIMARY KEY (symbol, dataset)
+                );
+                CREATE TABLE IF NOT EXISTS catalysts (
+                    symbol TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    announced_at TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (symbol, category, announced_at, source_url)
+                );
+                CREATE TABLE IF NOT EXISTS management_risks (
+                    symbol TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    source_url TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (symbol, category, published_at, source_url)
                 );
                 CREATE TABLE IF NOT EXISTS holdings (
                     broker TEXT NOT NULL,
@@ -215,6 +253,162 @@ class StockRepository:
                 return snapshot
         return None
 
+    def save_financing_events(self, events: list[FinancingEvent]) -> None:
+        with self._connect() as connection:
+            for event in events:
+                payload = json.dumps(to_json_value(event), ensure_ascii=False, sort_keys=True)
+                connection.execute(
+                    "INSERT INTO financing_events(symbol, event_type, announced_at, source_url, payload_json) "
+                    "VALUES (?, ?, ?, ?, ?) ON CONFLICT(symbol, event_type, announced_at, source_url) "
+                    "DO UPDATE SET payload_json=excluded.payload_json",
+                    (
+                        event.symbol,
+                        event.event_type,
+                        event.announced_at.isoformat(),
+                        event.source_url,
+                        payload,
+                    ),
+                )
+
+    def financing_events_for(
+        self,
+        symbol: str,
+        *,
+        as_of: datetime,
+        since: datetime,
+    ) -> list[FinancingEvent]:
+        if as_of.tzinfo is None or since.tzinfo is None:
+            raise ValueError("as_of and since must be timezone-aware")
+        as_of_utc = as_of.astimezone(timezone.utc)
+        since_utc = since.astimezone(timezone.utc)
+        if since_utc > as_of_utc:
+            raise ValueError("since cannot be after as_of")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM financing_events WHERE symbol=? "
+                "AND announced_at>=? AND announced_at<=? ORDER BY announced_at, event_type, source_url",
+                (symbol, since_utc.isoformat(), as_of_utc.isoformat()),
+            ).fetchall()
+        return [_financing_from_dict(json.loads(row["payload_json"])) for row in rows]
+
+    def save_coverage(
+        self,
+        *,
+        symbol: str,
+        dataset: str,
+        start_date: str,
+        end_date: str,
+        observed_at: datetime,
+    ) -> None:
+        if not (symbol.isdigit() and len(symbol) == 6):
+            raise ValueError("coverage symbol must be six digits")
+        if not _DATASET.fullmatch(dataset):
+            raise ValueError("coverage dataset has an invalid format")
+        from datetime import date
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+        if start > end:
+            raise ValueError("coverage start_date cannot be after end_date")
+        if observed_at.tzinfo is None:
+            raise ValueError("coverage observed_at must be timezone-aware")
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO research_coverage(symbol, dataset, start_date, end_date, observed_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(symbol, dataset) DO UPDATE SET "
+                "start_date=excluded.start_date, end_date=excluded.end_date, observed_at=excluded.observed_at",
+                (symbol, dataset, start.isoformat(), end.isoformat(), observed_at.astimezone(timezone.utc).isoformat()),
+            )
+
+    def has_coverage(
+        self,
+        *,
+        symbol: str,
+        dataset: str,
+        required_start_date: str,
+        required_end_date: str,
+        as_of: datetime,
+    ) -> bool:
+        if not _DATASET.fullmatch(dataset):
+            raise ValueError("coverage dataset has an invalid format")
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM research_coverage WHERE symbol=? AND dataset=? "
+                "AND start_date<=? AND end_date>=? AND observed_at<=? LIMIT 1",
+                (
+                    symbol,
+                    dataset,
+                    required_start_date,
+                    required_end_date,
+                    as_of.astimezone(timezone.utc).isoformat(),
+                ),
+            ).fetchone()
+        return row is not None
+
+    def save_catalysts(self, catalysts: list[Catalyst]) -> None:
+        with self._connect() as connection:
+            for catalyst in catalysts:
+                if not catalyst.evidence:
+                    raise ValueError("persisted catalyst requires evidence")
+                source_url = catalyst.evidence[0].url
+                payload = json.dumps(to_json_value(catalyst), ensure_ascii=False, sort_keys=True)
+                connection.execute(
+                    "INSERT INTO catalysts(symbol, category, announced_at, source_url, payload_json) "
+                    "VALUES (?, ?, ?, ?, ?) ON CONFLICT(symbol, category, announced_at, source_url) "
+                    "DO UPDATE SET payload_json=excluded.payload_json",
+                    (catalyst.symbol, catalyst.category, catalyst.announced_at.isoformat(), source_url, payload),
+                )
+
+    def catalysts_for(self, symbol: str, *, as_of: datetime, since: datetime) -> list[Catalyst]:
+        if as_of.tzinfo is None or since.tzinfo is None:
+            raise ValueError("as_of and since must be timezone-aware")
+        as_of_utc = as_of.astimezone(timezone.utc)
+        since_utc = since.astimezone(timezone.utc)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM catalysts WHERE symbol=? AND announced_at>=? "
+                "AND announced_at<=? ORDER BY announced_at, category, source_url",
+                (symbol, since_utc.isoformat(), as_of_utc.isoformat()),
+            ).fetchall()
+        return [_catalyst_from_dict(json.loads(row["payload_json"])) for row in rows]
+
+    def save_management_risks(self, risks: list[ManagementRisk]) -> None:
+        with self._connect() as connection:
+            for risk in risks:
+                if not risk.evidence:
+                    raise ValueError("persisted management risk requires evidence")
+                published_at = max(item.published_at for item in risk.evidence)
+                source_url = risk.evidence[0].url
+                payload = json.dumps(to_json_value(risk), ensure_ascii=False, sort_keys=True)
+                connection.execute(
+                    "INSERT INTO management_risks(symbol, category, published_at, source_url, payload_json) "
+                    "VALUES (?, ?, ?, ?, ?) ON CONFLICT(symbol, category, published_at, source_url) "
+                    "DO UPDATE SET payload_json=excluded.payload_json",
+                    (risk.symbol, risk.category, published_at.isoformat(), source_url, payload),
+                )
+
+    def management_risks_for(
+        self,
+        symbol: str,
+        *,
+        as_of: datetime,
+        since: datetime,
+    ) -> list[ManagementRisk]:
+        if as_of.tzinfo is None or since.tzinfo is None:
+            raise ValueError("as_of and since must be timezone-aware")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM management_risks WHERE symbol=? AND published_at>=? "
+                "AND published_at<=? ORDER BY published_at, category, source_url",
+                (
+                    symbol,
+                    since.astimezone(timezone.utc).isoformat(),
+                    as_of.astimezone(timezone.utc).isoformat(),
+                ),
+            ).fetchall()
+        return [_management_risk_from_dict(json.loads(row["payload_json"])) for row in rows]
+
     def replace_holding(self, holding: Holding) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -302,4 +496,60 @@ def _financial_from_dict(payload: dict) -> FinancialSnapshot:
         receivable_turnover=tuple(Decimal(value) for value in payload.get("receivable_turnover", [])),
         inventory_turnover=tuple(Decimal(value) for value in payload.get("inventory_turnover", [])),
         source_url=payload["source_url"],
+    )
+
+
+def _financing_from_dict(payload: dict) -> FinancingEvent:
+    from datetime import datetime
+    from decimal import Decimal
+    return FinancingEvent(
+        symbol=payload["symbol"],
+        event_type=payload["event_type"],
+        announced_at=datetime.fromisoformat(payload["announced_at"]),
+        dilutive=bool(payload["dilutive"]),
+        official=bool(payload["official"]),
+        source_url=payload["source_url"],
+        dilution_ratio_pct=(
+            Decimal(payload["dilution_ratio_pct"])
+            if payload.get("dilution_ratio_pct") is not None else None
+        ),
+        purpose=payload.get("purpose"),
+        refixing=bool(payload["refixing"]) if payload.get("refixing") is not None else None,
+    )
+
+
+def _evidence_from_dict(payload: dict) -> Evidence:
+    from datetime import datetime
+    return Evidence(
+        source_type=payload["source_type"],
+        title=payload["title"],
+        url=payload["url"],
+        published_at=datetime.fromisoformat(payload["published_at"]),
+        observed_at=datetime.fromisoformat(payload["observed_at"]),
+        official=bool(payload["official"]),
+        facts=tuple(payload.get("facts", [])),
+    )
+
+
+def _catalyst_from_dict(payload: dict) -> Catalyst:
+    from datetime import datetime
+    return Catalyst(
+        symbol=payload["symbol"],
+        category=payload["category"],
+        status=CatalystStatus(payload["status"]),
+        announced_at=datetime.fromisoformat(payload["announced_at"]),
+        valid_until=(
+            datetime.fromisoformat(payload["valid_until"])
+            if payload.get("valid_until") is not None else None
+        ),
+        evidence=tuple(_evidence_from_dict(item) for item in payload.get("evidence", [])),
+    )
+
+
+def _management_risk_from_dict(payload: dict) -> ManagementRisk:
+    return ManagementRisk(
+        symbol=payload["symbol"],
+        confirmed=bool(payload["confirmed"]),
+        category=payload["category"],
+        evidence=tuple(_evidence_from_dict(item) for item in payload.get("evidence", [])),
     )

@@ -6,9 +6,9 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from stock_assistant.ingestion import DartFinancialEnricher, KrxHistoryIngestor
-from stock_assistant.models import AssetType, CompanyKind, Evidence, FinancialSnapshot, Market, OHLCV, Security
-from stock_assistant.providers.dart import DartCompanyProfile
+from stock_assistant.ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
+from stock_assistant.models import AssetType, CompanyKind, Evidence, FinancialSnapshot, FinancingEvent, Market, OHLCV, Security
+from stock_assistant.providers.dart import DartCompanyProfile, DartFilingPage
 from stock_assistant.providers.krx import KrxDailySnapshot
 from stock_assistant.repository import StockRepository
 
@@ -59,12 +59,41 @@ class FakeDartClient:
             True,
         )]
 
+    def filing_page(self, **kwargs):
+        published_at = datetime(2025, 9, 18, 14, 59, 59, tzinfo=UTC)
+        filings = (
+            Evidence(
+                "DART", "삼성전자 - 단일판매ㆍ공급계약체결",
+                "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250918000001",
+                published_at, kwargs["observed_at"], True,
+            ),
+            Evidence(
+                "DART", "삼성전자 - 횡령ㆍ배임혐의발생",
+                "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20250918000002",
+                published_at, kwargs["observed_at"], True,
+            ),
+        )
+        return DartFilingPage(
+            filings,
+            {"20250918000001": published_at, "20250918000002": published_at},
+            kwargs["page_no"], 1,
+        )
+
     def financial_statement(self, **kwargs):
         return FinancialSnapshot(
             kwargs["symbol"], kwargs["period_end"], kwargs["published_at"],
             Decimal("100"), Decimal("80"), Decimal("60"), (), (),
             "https://dart.fss.or.kr/example",
         )
+
+    def financing_events(self, **kwargs):
+        if kwargs["event_type"] != "CB":
+            return []
+        return [FinancingEvent(
+            kwargs["symbol"], "CB", datetime(2025, 9, 18, tzinfo=UTC),
+            True, True, "https://dart.fss.or.kr/cb", Decimal("12.5"),
+            "운영자금=100", True,
+        )]
 
 
 class IngestionTests(unittest.TestCase):
@@ -145,6 +174,40 @@ class IngestionTests(unittest.TestCase):
             ).enrich(symbols=["005930"], as_of=as_of, business_year=2025)
             self.assertEqual(repeated.enriched, 0)
             self.assertEqual(repeated.already_current, 1)
+
+    def test_dart_disclosure_enrichment_marks_zero_safe_coverage_and_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = StockRepository(Path(directory) / "stock.sqlite3")
+            repository.save_securities([Security(
+                "005930", "삼성전자", Market.KOSPI,
+                AssetType.COMMON, CompanyKind.GENERAL, date(1975, 6, 11),
+            )])
+            as_of = datetime(2026, 9, 21, tzinfo=UTC)
+            summary = DartDisclosureEnricher(
+                repository, FakeDartClient(), request_interval_seconds=0,
+            ).enrich(symbols=["005930"], as_of=as_of)
+            self.assertEqual(summary.covered, 1)
+            self.assertEqual(summary.events_saved, 1)
+            self.assertEqual(summary.catalysts_saved, 1)
+            self.assertEqual(summary.management_risks_saved, 1)
+            events = repository.financing_events_for(
+                "005930", as_of=as_of,
+                since=datetime(2021, 9, 17, tzinfo=UTC),
+            )
+            self.assertEqual(events[0].event_type, "CB")
+            self.assertTrue(repository.has_coverage(
+                symbol="005930", dataset="DART_FINANCING",
+                required_start_date="2021-09-20", required_end_date="2026-09-20",
+                as_of=as_of,
+            ))
+            self.assertEqual(len(repository.catalysts_for(
+                "005930", as_of=as_of,
+                since=datetime(2025, 1, 1, tzinfo=UTC),
+            )), 1)
+            self.assertFalse(repository.management_risks_for(
+                "005930", as_of=as_of,
+                since=datetime(2016, 1, 1, tzinfo=UTC),
+            )[0].confirmed)
 
 
 if __name__ == "__main__":

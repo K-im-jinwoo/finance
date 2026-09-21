@@ -19,9 +19,9 @@ Store the KRX and OpenDART keys as one-value files with the same permissions. Th
 
 After the first approved 120-calendar-day backfill, `deploy/jobs/run_stock_cycle.sh` supports three outputs:
 
-- `morning`: read the last completed dataset and generate the five-candidate report.
-- `evening`: ingest one KRX date, enrich the technical shortlist with the approved DART business year, then generate the report.
-- `weekly`: refresh missing annual DART data and generate the report without repeating the KRX backfill.
+- `morning`: read the last completed market dataset, refresh DART dilution and title-level research signals through the last fully observable date, and generate the five-candidate report.
+- `evening`: ingest one KRX date, enrich the technical shortlist with the approved DART business year, dilution history, and title-level research signals, then generate the report.
+- `weekly`: refresh missing annual DART data and disclosures, then generate the report without repeating the KRX backfill.
 
 The script prints only the final report so Hermes cron can deliver it to Telegram. Set `STOCK_DART_BUSINESS_YEAR` explicitly; do not infer a fiscal year during unattended operation.
 

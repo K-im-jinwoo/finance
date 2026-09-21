@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .models import (
@@ -66,12 +66,22 @@ def _decimal_tuple(value: Any, field: str) -> tuple[Decimal, ...]:
     return tuple(Decimal(str(item)) for item in _array(value, field))
 
 
+def _decimal(value: Any, field: str) -> Decimal:
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field} must be decimal") from exc
+    if not result.is_finite():
+        raise ValueError(f"{field} must be finite")
+    return result
+
+
 def parse_security(value: Any) -> Security:
     item = _object(value, "security")
     return Security(
         symbol=str(item["symbol"]), name=str(item["name"]), market=Market(str(item["market"])),
         asset_type=AssetType(str(item["asset_type"])), company_kind=CompanyKind(str(item["company_kind"])),
-        listed_on=_date(item["listed_on"], "security.listed_on"),
+        listed_on=_date(item["listed_on"], "security.listed_on") if item.get("listed_on") else None,
         delisted_on=_date(item["delisted_on"], "security.delisted_on") if item.get("delisted_on") else None,
     )
 
@@ -126,6 +136,12 @@ def parse_screen_request(value: Any) -> ScreenRequest:
             announced_at=_datetime(event["announced_at"], "financing.announced_at"),
             dilutive=bool(event["dilutive"]), official=bool(event["official"]),
             source_url=str(event["source_url"]),
+            dilution_ratio_pct=(
+                _decimal(event["dilution_ratio_pct"], "financing.dilution_ratio_pct")
+                if event.get("dilution_ratio_pct") is not None else None
+            ),
+            purpose=str(event["purpose"]) if event.get("purpose") is not None else None,
+            refixing=bool(event["refixing"]) if event.get("refixing") is not None else None,
         ))
     management = []
     for raw in _array(item.get("management_risks", []), "management_risks"):
@@ -151,4 +167,3 @@ def parse_screen_request(value: Any) -> ScreenRequest:
         financial=parse_financial(item.get("financial")),
         financing_events=tuple(financing), management_risks=tuple(management), catalysts=tuple(catalysts),
     )
-

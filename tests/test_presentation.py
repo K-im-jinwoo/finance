@@ -21,6 +21,7 @@ class PresentationTests(unittest.TestCase):
                     "name": f"회사-{index}",
                     "decision": "CANDIDATE",
                     "score": "80",
+                    "metrics": {"dilution_count_5y": 2, "max_dilution_ratio_pct_5y": "12.5"},
                     "reasons": ["OCF_POSITIVE"],
                     "warnings": ["과열 여부 재확인"],
                     "checks": ["다음 공시 확인"],
@@ -37,6 +38,7 @@ class PresentationTests(unittest.TestCase):
         self.assertIn("추론\n- 실적 모멘텀 가능성", combined)
         self.assertIn("확인 불가\n- 장중 체결 데이터", combined)
         self.assertIn("회사-1 (000001)", combined)
+        self.assertIn("5년 최대 잠재 희석률(%): 12.5", combined)
 
     def test_invalid_or_oversized_report_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "report_id"):

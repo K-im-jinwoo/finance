@@ -154,11 +154,22 @@ class FinancingEvent:
     dilutive: bool
     official: bool
     source_url: str
+    dilution_ratio_pct: Decimal | None = None
+    purpose: str | None = None
+    refixing: bool | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "announced_at", _utc(self.announced_at))
+        if not (self.symbol.isdigit() and len(self.symbol) == 6):
+            raise ValueError("financing symbol must be six digits")
+        if not self.event_type.strip():
+            raise ValueError("financing event_type is required")
         if not self.source_url.strip():
             raise ValueError("financing source_url is required")
+        if self.dilution_ratio_pct is not None and self.dilution_ratio_pct < 0:
+            raise ValueError("dilution_ratio_pct cannot be negative")
+        if self.purpose is not None and not self.purpose.strip():
+            raise ValueError("financing purpose cannot be blank")
 
 
 @dataclass(frozen=True, slots=True)

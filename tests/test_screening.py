@@ -99,6 +99,21 @@ class ScreeningTests(unittest.TestCase):
         self.assertEqual(result.decision, Decision.CANDIDATE)
         self.assertIn("ELIGIBLE_ETF", result.reasons)
 
+    def test_unknown_company_kind_never_applies_general_company_ocf_exclusion(self) -> None:
+        unknown = Security(
+            "005930", "삼성전자", Market.KOSPI, AssetType.COMMON,
+            CompanyKind.UNKNOWN, date(1975, 6, 11),
+        )
+        financial = FinancialSnapshot(
+            "005930", date(2025, 12, 31), datetime(2026, 3, 20, tzinfo=UTC),
+            Decimal("100"), Decimal("-10"), None, (), (), "https://dart.fss.or.kr/example",
+        )
+        result = screen_security(unknown, make_bars(), as_of=AS_OF, financial=financial)
+        self.assertEqual(result.decision, Decision.BUY_HOLD)
+        self.assertIn("COMPANY_KIND_UNAVAILABLE", result.warnings)
+        self.assertIn("OCF_NON_POSITIVE", result.warnings)
+        self.assertIn("금융회사 여부", " ".join(result.checks))
+
     def test_future_financial_is_rejected(self) -> None:
         future = FinancialSnapshot(
             "005930", date(2026, 9, 30), AS_OF + timedelta(days=1),
@@ -124,4 +139,3 @@ class ScreeningTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

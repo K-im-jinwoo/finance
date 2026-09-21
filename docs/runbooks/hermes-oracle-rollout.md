@@ -17,6 +17,16 @@ Deploy `deploy/compose.yaml` with port 9120 published only to Oracle loopback. K
 
 Rollback: stop and remove only the `stock-assistant` candidate container. Preserve `/srv/stock-assistant/state` for diagnosis.
 
+After the candidate API smoke passes, perform the first data run in this order:
+
+1. Run one 120-calendar-day KRX backfill with the mounted KRX key file.
+2. Inspect saved security counts, trading-day counts, excluded asset classes, and the latest date before continuing.
+3. Run OpenDART enrichment for an explicitly approved business year and the technical shortlist only.
+4. Generate five candidates and confirm every unavailable source is labeled rather than inferred.
+5. Enable `deploy/jobs/run_stock_cycle.sh` modes one at a time: `morning`, `evening`, then `weekly`.
+
+Stop the cycle if a provider schema changes, the last trading date does not advance as expected, or a secret value appears in output.
+
 ## Gate 3 - Official Hermes
 
 Install the official Hermes runtime as a separate service. Do not replace the existing custom Telegram gateway. Prefer Desktop's SSH connection to a loopback `hermes serve` backend for the first validation. If a remote URL is later exposed through Tailscale or the public internet, apply the official authentication guidance; never expose username/password authentication directly to the public internet.

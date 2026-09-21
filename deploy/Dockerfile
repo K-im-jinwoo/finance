@@ -14,5 +14,4 @@ RUN groupadd --gid 10001 stock \
 
 USER stock:stock
 ENTRYPOINT ["python", "-m", "stock_assistant"]
-CMD ["serve", "--host", "0.0.0.0", "--port", "9120", "--database", "/var/lib/stock/stock-assistant.sqlite3", "--secret-file", "/run/secrets/stock-api-key"]
-
+CMD ["serve", "--host", "0.0.0.0", "--port", "9120", "--database", "/var/lib/stock/stock-assistant.sqlite3", "--role-secret-file", "/run/secrets/stock-api-roles"]

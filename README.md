@@ -13,6 +13,8 @@ Hermes Desktop과 Telegram이 함께 사용할 수 있는 채널 중립적 국�
 - 일회성 승인 토큰과 WIKI 투자일지 미리보기
 - 인증된 private API와 주문 경로 강제 차단
 - 역할별 API 토큰과 저장된 보고서 ID 재조회
+- KRX 종목·OHLCV 백필/일일 적재와 OpenDART 기업·연간 재무 보강 명령
+- 정규화 저장소에서 동일 기준시각으로 상위 5개 보고서를 생성하는 파이프라인
 - Desktop·Telegram 공통 보고서 렌더링과 Hermes stock-research skill
 - Hermes 네 개 profile용 SOUL 템플릿
 
@@ -31,9 +33,18 @@ $env:PYTHONPATH='src'
 & $env:STOCK_PYTHON -m stock_assistant isu-case
 ```
 
+실데이터 키를 파일로 준비하고 운영 변경을 승인한 뒤의 최초 적재 순서는 다음과 같습니다.
+
+```powershell
+$env:PYTHONPATH='src'
+& $env:STOCK_PYTHON -m stock_assistant ingest-krx --mode backfill --calendar-days 120 --key-file '<KRX key file>'
+& $env:STOCK_PYTHON -m stock_assistant enrich-dart --business-year 2025 --key-file '<OpenDART key file>'
+& $env:STOCK_PYTHON -m stock_assistant generate-candidates
+```
+
 ## 아직 운영 증거가 없는 항목
 
-- KRX·DART 실데이터 수집
+- KRX·DART 실데이터 수집 명령의 실제 API 응답 검증
 - 토스증권 read-only 시세·보유자산 연동
 - Oracle 배포와 정기 스케줄
 - 공식 Hermes Desktop 연결과 Bot Mode 토론

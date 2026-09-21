@@ -4,11 +4,20 @@ import argparse
 import json
 import os
 import sys
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from .client import StockClient, StockClientError
 from .http_api import serve
+from .ingestion import DartFinancialEnricher, KrxHistoryIngestor
+from .models import to_json_value
+from .pipeline import CandidatePipeline
 from .presentation import render_candidate_report
+from .providers.http import ProviderError
+from .providers.dart import DartClient
+from .providers.krx import KrxClient
+from .repository import StockRepository
+from .reports import report_to_dict
 
 
 def _project_root() -> Path:
@@ -48,6 +57,23 @@ def main(argv: list[str] | None = None) -> int:
     holdings_parser = subparsers.add_parser("holdings")
     holdings_parser.add_argument("--base-url", default=os.getenv("STOCK_API_BASE_URL", "http://127.0.0.1:9120"))
     holdings_parser.add_argument("--token-file", type=Path)
+    ingest_parser = subparsers.add_parser("ingest-krx")
+    ingest_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    ingest_parser.add_argument("--key-file", type=Path)
+    ingest_parser.add_argument("--end-date", type=date.fromisoformat, default=date.today())
+    ingest_parser.add_argument("--calendar-days", type=int, default=120)
+    ingest_parser.add_argument("--mode", choices=("daily", "backfill"), default="daily")
+    candidates_parser = subparsers.add_parser("generate-candidates")
+    candidates_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    candidates_parser.add_argument("--as-of", type=datetime.fromisoformat)
+    candidates_parser.add_argument("--limit", type=int, default=5)
+    candidates_parser.add_argument("--format", choices=("json", "text"), default="text")
+    dart_parser = subparsers.add_parser("enrich-dart")
+    dart_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    dart_parser.add_argument("--key-file", type=Path)
+    dart_parser.add_argument("--as-of", type=datetime.fromisoformat)
+    dart_parser.add_argument("--business-year", type=int, required=True)
+    dart_parser.add_argument("--shortlist-limit", type=int, default=30)
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -98,6 +124,70 @@ def main(argv: list[str] | None = None) -> int:
         except (StockClientError, ValueError) as exc:
             status = exc.status if isinstance(exc, StockClientError) else None
             print(json.dumps({"error": str(exc), "status": status}, ensure_ascii=False), file=sys.stderr)
+            return 1
+    if args.command == "ingest-krx":
+        key_file = args.key_file
+        if key_file is None and os.getenv("KRX_AUTH_KEY_FILE"):
+            key_file = Path(os.environ["KRX_AUTH_KEY_FILE"])
+        if key_file is None:
+            print(json.dumps({"error": "KRX key file is required"}), file=sys.stderr)
+            return 2
+        try:
+            key = key_file.read_text(encoding="utf-8").strip()
+            if not key:
+                raise ValueError("KRX key file is empty")
+            ingestor = KrxHistoryIngestor(StockRepository(args.database), KrxClient(key))
+            observed_at = datetime.now(timezone.utc)
+            if args.mode == "daily":
+                summary = ingestor.ingest_day(business_date=args.end_date, observed_at=observed_at)
+            else:
+                summary = ingestor.backfill(
+                    end_date=args.end_date,
+                    calendar_days=args.calendar_days,
+                    observed_at=observed_at,
+                )
+            print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError, ProviderError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+    if args.command == "generate-candidates":
+        as_of = args.as_of or datetime.now(timezone.utc)
+        try:
+            summary = CandidatePipeline(StockRepository(args.database)).run(as_of=as_of, limit=args.limit)
+            if args.format == "json":
+                print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
+            else:
+                print("\n\n".join(render_candidate_report(report_to_dict(summary.report))))
+            return 0
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
+    if args.command == "enrich-dart":
+        key_file = args.key_file
+        if key_file is None and os.getenv("DART_API_KEY_FILE"):
+            key_file = Path(os.environ["DART_API_KEY_FILE"])
+        if key_file is None:
+            print(json.dumps({"error": "DART key file is required"}), file=sys.stderr)
+            return 2
+        as_of = args.as_of or datetime.now(timezone.utc)
+        try:
+            key = key_file.read_text(encoding="utf-8").strip()
+            if not key:
+                raise ValueError("DART key file is empty")
+            repository = StockRepository(args.database)
+            symbols = CandidatePipeline(repository).ranked_symbols(
+                as_of=as_of, limit=args.shortlist_limit,
+            )
+            summary = DartFinancialEnricher(repository, DartClient(key)).enrich(
+                symbols=symbols,
+                as_of=as_of,
+                business_year=args.business_year,
+            )
+            print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError, ProviderError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 1
     raise AssertionError("unreachable")
 

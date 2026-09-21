@@ -20,12 +20,14 @@ class AssetType(StrEnum):
     ETN = "ETN"
     LEVERAGED_ETF = "LEVERAGED_ETF"
     INVERSE_ETF = "INVERSE_ETF"
+    OTHER = "OTHER"
 
 
 class CompanyKind(StrEnum):
     GENERAL = "GENERAL"
     FINANCIAL = "FINANCIAL"
     FUND = "FUND"
+    UNKNOWN = "UNKNOWN"
 
 
 class CatalystStatus(StrEnum):
@@ -61,7 +63,7 @@ class Security:
     market: Market
     asset_type: AssetType
     company_kind: CompanyKind
-    listed_on: date
+    listed_on: date | None
     delisted_on: date | None = None
 
     def __post_init__(self) -> None:
@@ -69,7 +71,7 @@ class Security:
             raise ValueError("symbol must be a six-digit Korean security code")
         if not self.name.strip():
             raise ValueError("security name is required")
-        if self.delisted_on is not None and self.delisted_on < self.listed_on:
+        if self.delisted_on is not None and self.listed_on is not None and self.delisted_on < self.listed_on:
             raise ValueError("delisted_on cannot precede listed_on")
         if self.asset_type is AssetType.ETF and self.company_kind is not CompanyKind.FUND:
             raise ValueError("ETF must use FUND company_kind")
@@ -238,6 +240,7 @@ class ScreeningResult:
     warnings: tuple[str, ...]
     checks: tuple[str, ...]
     metrics: dict[str, Decimal | int | str | None] = field(default_factory=dict)
+    name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "as_of", _utc(self.as_of))
@@ -264,4 +267,3 @@ def to_json_value(value: Any) -> Any:
             for name in value.__dataclass_fields__
         }
     return value
-

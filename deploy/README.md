@@ -7,9 +7,23 @@ This Compose service is an inactive candidate. It publishes port 9120 only on Or
 ```text
 /srv/stock-assistant/state/
 /srv/stock-assistant/stock-api-roles.json
+/srv/stock-assistant/krx-auth-key
+/srv/stock-assistant/dart-api-key
 ```
 
 Create a JSON object containing unique random secrets of at least 32 characters for `cio`, `market`, `fundamentals`, `risk`, and `scheduler`. Store it only in the role-secret file, set mode `0600`, and make it readable by the configured container UID. Do not copy values into the image, repository, WIKI, prompt, or logs. Specialists can analyze and retrieve reports but cannot read or change holdings or journal drafts.
+
+Store the KRX and OpenDART keys as one-value files with the same permissions. They are mounted read-only for deterministic ingestion commands and are never passed in command-line arguments or model prompts.
+
+## Data and report cycle
+
+After the first approved 120-calendar-day backfill, `deploy/jobs/run_stock_cycle.sh` supports three outputs:
+
+- `morning`: read the last completed dataset and generate the five-candidate report.
+- `evening`: ingest one KRX date, enrich the technical shortlist with the approved DART business year, then generate the report.
+- `weekly`: refresh missing annual DART data and generate the report without repeating the KRX backfill.
+
+The script prints only the final report so Hermes cron can deliver it to Telegram. Set `STOCK_DART_BUSINESS_YEAR` explicitly; do not infer a fiscal year during unattended operation.
 
 ## Static validation
 
@@ -30,4 +44,4 @@ Run only after deployment approval:
 7. Confirm a CIO-created report is retrievable by the same report ID through the specialist read route.
 8. Confirm no WIKI, Telegram, n8n, or brokerage state changed.
 
-KRX, DART, and Toss credentials are not part of this candidate container yet. The provider adapters are code- and fixture-validated only.
+KRX and OpenDART key-file mounts are included in the inactive candidate, but live calls are not yet validated. Toss credentials and brokerage connectivity remain outside this candidate.

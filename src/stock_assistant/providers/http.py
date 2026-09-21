@@ -35,6 +35,12 @@ class JsonResponse:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class BinaryResponse:
+    status: int
+    payload: bytes
+
+
 OpenFunction = Callable[..., Any]
 
 
@@ -78,3 +84,37 @@ def get_json(
         raise UpstreamSchemaError("provider JSON root must be an object")
     return JsonResponse(status, payload)
 
+
+def get_bytes(
+    url: str,
+    *,
+    query: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout_seconds: int = 30,
+    opener: OpenFunction = urllib.request.urlopen,
+) -> BinaryResponse:
+    if query:
+        url = f"{url}?{urllib.parse.urlencode(query)}"
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/octet-stream", "User-Agent": "stock-assistant/0.1", **(headers or {})},
+    )
+    try:
+        with opener(request, timeout=timeout_seconds) as response:
+            status = int(response.status)
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise AuthenticationError(f"provider returned HTTP {exc.code}") from exc
+        if exc.code == 429:
+            raise RateLimitError("provider returned HTTP 429") from exc
+        raise NetworkError(f"provider returned HTTP {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+        raise NetworkError(f"provider request failed: {type(exc).__name__}") from exc
+    if status in {401, 403}:
+        raise AuthenticationError(f"provider returned HTTP {status}")
+    if status == 429:
+        raise RateLimitError("provider returned HTTP 429")
+    if status < 200 or status >= 300:
+        raise NetworkError(f"provider returned HTTP {status}")
+    return BinaryResponse(status, raw)

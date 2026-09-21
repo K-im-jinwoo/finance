@@ -1,0 +1,34 @@
+{
+  "status": "000",
+  "message": "정상",
+  "list": [
+    {
+      "rcept_no": "20260918000001",
+      "sj_div": "IS",
+      "account_id": "dart_OperatingIncomeLoss",
+      "account_nm": "영업이익",
+      "thstrm_amount": "1,000"
+    },
+    {
+      "rcept_no": "20260918000001",
+      "sj_div": "CF",
+      "account_id": "ifrs-full_CashFlowsFromUsedInOperatingActivities",
+      "account_nm": "영업활동으로 인한 현금흐름",
+      "thstrm_amount": "700"
+    },
+    {
+      "rcept_no": "20260918000001",
+      "sj_div": "CF",
+      "account_id": "ifrs-full_PurchaseOfPropertyPlantAndEquipment",
+      "account_nm": "유형자산의 취득",
+      "thstrm_amount": "(200)"
+    },
+    {
+      "rcept_no": "20260918000001",
+      "sj_div": "CF",
+      "account_id": "ifrs-full_PurchaseOfIntangibleAssets",
+      "account_nm": "무형자산의 취득",
+      "thstrm_amount": "-50"
+    }
+  ]
+}

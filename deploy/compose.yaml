@@ -26,6 +26,8 @@ services:
         target: /var/lib/stock
     secrets:
       - stock-api-roles
+      - krx-auth-key
+      - dart-api-key
     tmpfs:
       - /tmp:size=32m,noexec,nosuid
     networks:
@@ -49,6 +51,10 @@ services:
 secrets:
   stock-api-roles:
     file: "${STOCK_API_ROLE_SECRET_HOST_FILE:?required}"
+  krx-auth-key:
+    file: "${KRX_AUTH_KEY_HOST_FILE:?required}"
+  dart-api-key:
+    file: "${DART_API_KEY_HOST_FILE:?required}"
 
 networks:
   n8n-private:

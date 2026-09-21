@@ -17,11 +17,13 @@
 - WIKI 작성기는 승인된 `wiki/20_Areas/Investments/*.md` 경로와 일회성 승인 토큰만 허용한다.
 - 08:30 평일, 20:00 평일, 토요일 12:00 KST 스케줄 판정과 중복/쿨다운 알림 상태를 구현했다.
 - Hermes용 `stock-cio`, `stock-market`, `stock-fundamentals`, `stock-risk` SOUL 템플릿을 만들었다.
+- KRX 보통주·ETF 종목과 OHLCV의 90~366일 백필·일일 적재, OpenDART 기업코드·회사유형·연간 재무 보강, 정규화 저장소 기반 상위 5개 보고서 생성을 구현했다.
+- 배포 후보는 KRX·OpenDART 키를 파일 secret으로만 마운트하고, 오전·저녁·주간 실행 스크립트는 주문 경로를 호출하지 않는다.
 
 ## 실행한 검증
 
 - Node 테스트: 27/27 통과
-- Python 테스트: 62/62 통과
+- Python 테스트: 79/79 통과
 - 비활성 n8n 워크플로 보안 감사: 통과
 - Docker Compose 정적 구성 검증: 통과. API는 Oracle의 `127.0.0.1:9120`에만 게시하도록 제한했다.
 - Python compileall, JSON fixture, 비밀정보 스캔, `git diff --check`: 통과
@@ -30,6 +32,7 @@
 ## 미확인 항목과 남은 위험
 
 - KRX·OpenDART 실데이터 호출은 키가 없어 실행하지 않았다.
+- 계약·실적 외 공시 재료 유효성, 5년 CB·BW·유상증자, 10년 경영진 위험, 매출채권·재고자산 회전율 원천 계정은 아직 자동 적재하지 않는다. 보고서에는 `확인 불가`로 표시한다.
 - Toss Securities read-only OAuth와 실제 보유자산 동기화는 실행하지 않았다. 미래에셋은 공식 국내주식 개인용 API 경로를 확인하지 못해 MVP에서 수동 입력으로 유지한다.
 - 로컬 Docker 데몬이 실행 중이 아니어서 이미지 빌드와 컨테이너 런타임 검증은 하지 못했다.
 - Oracle에는 현재 공식 Hermes가 아니라 기존 커스텀 Telegram gateway가 실행 중이다. 공식 Hermes Desktop은 이 gateway에 직접 연결되지 않는다.

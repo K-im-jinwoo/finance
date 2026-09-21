@@ -56,7 +56,7 @@ def screen_security(
     if security.asset_type not in ALLOWED_ASSET_TYPES:
         return ScreeningResult(
             security.symbol, as_of, Decision.EXCLUDED, score,
-            ("UNSUPPORTED_ASSET_TYPE",), (), (), {},
+            ("UNSUPPORTED_ASSET_TYPE",), (), (), {}, security.name,
         )
     reasons.append("ELIGIBLE_ETF" if security.asset_type is AssetType.ETF else "ELIGIBLE_COMMON")
 
@@ -73,7 +73,7 @@ def screen_security(
         return ScreeningResult(
             security.symbol, as_of, Decision.BUY_HOLD, score,
             tuple(reasons), ("DATA_UNAVAILABLE",),
-            ("최소 61거래일의 검증된 OHLCV를 확보할 것",), {},
+            ("최소 61거래일의 검증된 OHLCV를 확보할 것",), {}, security.name,
         )
 
     if features.average_value20 < minimum_average_value:
@@ -106,6 +106,10 @@ def screen_security(
 
     hard_exclusion = False
     if security.asset_type is AssetType.COMMON:
+        company_kind_unknown = security.company_kind is CompanyKind.UNKNOWN
+        if company_kind_unknown:
+            warnings.append("COMPANY_KIND_UNAVAILABLE")
+            checks.append("금융회사 여부와 적용할 재무 기준을 확인할 것")
         if financial is None:
             warnings.append("DATA_UNAVAILABLE")
             checks.append("최신 연간·TTM 재무와 공시일을 확인할 것")
@@ -128,7 +132,8 @@ def screen_security(
                 checks.append("영업활동현금흐름 양수 여부를 확인할 것")
             elif financial.operating_cash_flow <= 0:
                 warnings.append("OCF_NON_POSITIVE")
-                hard_exclusion = True
+                if not company_kind_unknown:
+                    hard_exclusion = True
             else:
                 reasons.append("OCF_POSITIVE")
                 score += Decimal("10")
@@ -213,6 +218,7 @@ def screen_security(
         tuple(dict.fromkeys(warnings)),
         tuple(dict.fromkeys(checks)),
         metrics,
+        security.name,
     )
 
 
@@ -221,4 +227,3 @@ def select_top_candidates(results: list[ScreeningResult], limit: int = 5) -> lis
         raise ValueError("limit must be positive")
     eligible = [item for item in results if item.decision is not Decision.EXCLUDED]
     return sorted(eligible, key=lambda item: (-item.score, item.symbol))[:limit]
-

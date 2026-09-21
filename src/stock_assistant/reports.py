@@ -41,13 +41,14 @@ def make_report_id(
     timestamp = as_of.astimezone(timezone.utc).strftime("%Y%m%dT%H%MZ")
     identity = json.dumps(
         {
-            "results": [(item.symbol, str(item.score), item.decision.value) for item in results],
+            "results": [to_json_value(item) for item in results],
             "facts": facts,
             "inferences": inferences,
             "assumptions": assumptions,
             "unavailable": unavailable,
         },
         ensure_ascii=False,
+        sort_keys=True,
         separators=(",", ":"),
     )
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8].upper()

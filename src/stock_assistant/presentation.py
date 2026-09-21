@@ -29,7 +29,7 @@ def render_candidate_report(report: dict[str, Any], *, max_chars: int = 3500) ->
         if not isinstance(item, dict):
             raise ValueError("candidate must be an object")
         lines = [
-            f"후보 {index}. {item.get('symbol', '확인 불가')}",
+            f"후보 {index}. {item.get('name') or '종목명 확인 불가'} ({item.get('symbol', '확인 불가')})",
             f"판정: {item.get('decision', '확인 불가')} / 점수: {item.get('score', '확인 불가')}",
             "근거:",
             _bullets(item.get("reasons", [])),
@@ -54,4 +54,3 @@ def render_candidate_report(report: dict[str, Any], *, max_chars: int = 3500) ->
             current += addition
     chunks.append(current)
     return tuple(chunks)
-

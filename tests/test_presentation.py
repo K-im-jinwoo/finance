@@ -18,6 +18,7 @@ class PresentationTests(unittest.TestCase):
             "candidates": [
                 {
                     "symbol": f"{index:06d}",
+                    "name": f"회사-{index}",
                     "decision": "CANDIDATE",
                     "score": "80",
                     "reasons": ["OCF_POSITIVE"],
@@ -35,6 +36,7 @@ class PresentationTests(unittest.TestCase):
         self.assertIn("확인된 사실\n- DART 공시 확인", combined)
         self.assertIn("추론\n- 실적 모멘텀 가능성", combined)
         self.assertIn("확인 불가\n- 장중 체결 데이터", combined)
+        self.assertIn("회사-1 (000001)", combined)
 
     def test_invalid_or_oversized_report_fails_closed(self) -> None:
         with self.assertRaisesRegex(ValueError, "report_id"):
@@ -44,4 +46,3 @@ class PresentationTests(unittest.TestCase):
                 {"report_id": "R-1", "candidates": [], "fact_summary": ["x" * 600]},
                 max_chars=500,
             )
-

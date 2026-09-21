@@ -1,6 +1,6 @@
 # Official Hermes and Stock Assistant Oracle Rollout
 
-Status: Gate 2 candidate API deployed; provider credentials and Gates 3-6 pending
+Status: Gate 2 deployed; Gate 3 runtime and SSH backend smoke complete, Desktop UI test pending; provider credentials and Gates 4-6 pending
 
 ## Gate 1 - Inputs
 
@@ -32,6 +32,10 @@ Stop the cycle if a provider schema changes, the last trading date does not adva
 ## Gate 3 - Official Hermes
 
 Install the official Hermes runtime as a separate service. Do not replace the existing custom Telegram gateway. Prefer Desktop's SSH connection to a loopback `hermes serve` backend for the first validation. If a remote URL is later exposed through Tailscale or the public internet, apply the official authentication guidance; never expose username/password authentication directly to the public internet.
+
+Installed on 2026-09-21 as `v0.21.3` at commit `345cd2b057a452236de401d3534b8502a7465e8d`. The loopback SSH session-token and owner-nonce smoke passed without leaving port 9119 listening. Windows Desktop was built and launched. See `docs/reports/2026-09-21-hermes-runtime-desktop-bootstrap.md`.
+
+Register the SSH connection in Desktop with `ubuntu@144.24.92.159:22`, remote Hermes path `/home/ubuntu/.local/bin/hermes`, and the approved local SSH key. Gate 3 remains incomplete until Desktop's own `Test` reports `Reachable`, reconnect works, and one authenticated model conversation survives a restart.
 
 Verify `/api/status`, one normal chat, reconnect after restart, and Desktop session continuity before adding profiles.
 

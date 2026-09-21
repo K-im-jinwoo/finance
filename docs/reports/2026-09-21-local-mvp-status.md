@@ -4,7 +4,7 @@
 
 ## 결론
 
-로컬 MVP의 코드와 안전장치를 구현·검증했고 Oracle에 loopback-only 후보 API를 배포했다. 실제 주문 기능은 없으며, 공식 Hermes 설치·Desktop 연결·Telegram 알림·실제 WIKI 기록은 아직 실행하지 않았다.
+로컬 MVP의 코드와 안전장치를 구현·검증했고 Oracle에 loopback-only 후보 API와 공식 Hermes v0.21.3을 별도로 준비했다. Windows Desktop도 빌드·기동했으며 Desktop SSH 방식의 백엔드 인증 smoke를 통과했다. 실제 주문 기능은 없고, Desktop UI 연결 저장·모델 대화·Telegram 알림·실제 WIKI 기록은 아직 실행하지 않았다.
 
 ## 확인된 사실
 
@@ -43,8 +43,9 @@
 - ETF 추적오차·총보수·구성종목 집중도와 금융회사 전용 지표의 공식 자동 수집기는 아직 없다. 값이 없으면 `BUY_HOLD`로 실패 폐쇄한다.
 - Toss Securities read-only OAuth와 실제 보유자산 동기화는 실행하지 않았다. 미래에셋은 공식 국내주식 개인용 API 경로를 확인하지 못해 MVP에서 수동 입력으로 유지한다.
 - Oracle arm64에서 이미지를 빌드하고 별도 `stock-assistant` Compose 프로젝트, read-only root filesystem, `127.0.0.1:9120` 바인딩과 영속 DB를 검증했다.
-- Oracle에는 현재 공식 Hermes가 아니라 기존 커스텀 Telegram gateway가 실행 중이다. 공식 Hermes Desktop은 이 gateway에 직접 연결되지 않는다.
-- 공식 Hermes 프로필 생성, ChatGPT/Codex OAuth, Desktop 원격 연결, 테스트 Telegram Bot, 실제 WIKI 기록은 실행하지 않았다.
+- Oracle에 공식 Hermes v0.21.3을 기존 커스텀 Telegram gateway와 별도로 설치했다. 상시 공개 포트는 열지 않았고 Desktop SSH가 필요할 때 loopback 백엔드를 기동하는 경로의 401·토큰 인증·owner nonce·runtime 검증을 통과했다.
+- Windows Desktop 실행물을 빌드하고 로컬 백엔드 WebSocket 연결까지 확인했다. 다만 Desktop UI의 Oracle 연결 저장과 `Reachable` 표시는 아직 확인하지 못했다.
+- 공식 Hermes 프로필 생성, ChatGPT/Codex OAuth, 테스트 Telegram Bot, 실제 WIKI 기록은 실행하지 않았다.
 - 공식 Hermes 문서상 OpenAI Codex는 ChatGPT OAuth를 지원하지만, 구독 등급별 사용 한도 산정 방식은 문서화되어 있지 않다. 각 프로필의 인증 상태도 독립적으로 검증해야 한다.
 - 현재 성과는 구조·테스트 검증이며 실제 투자 수익률을 입증하지 않는다.
 - 각 후보 보고서는 `ruleset_version`을 포함하며, 다음 거래일 시가 진입과 왕복 비용을 적용한 5·20·60거래일 가상성과를 전용 DB에 누적한다.
@@ -53,8 +54,8 @@
 
 ## 운영 전환 권고안
 
-1. 기존 운영 Telegram gateway와 배포된 stock-assistant를 유지한 채 공식 Hermes를 별도 후보 서비스로 설치한다.
-2. Desktop은 공개 포트 노출 대신 SSH 또는 Tailscale 경로를 사용한다. 최초 전환은 기존 SSH 접근을 이용하는 방식이 가장 변경 범위가 작다.
+1. Desktop의 `Settings -> Gateways`에 Oracle SSH 연결을 저장하고 `Reachable`과 재연결을 확인한다.
+2. CIO 프로필의 모델 인증·일반 대화·stock skill을 먼저 검증한다.
 3. CIO 프로필 하나에만 별도 테스트 Telegram Bot을 연결하고, 전문 프로필은 Desktop/Bot Mode와 CIO 위임에 사용한다.
 4. KRX·OpenDART 키로 실데이터 smoke를 통과한 후 08:30/20:00/토요일 12:00 스케줄을 활성화한다.
 5. 동일 report ID가 Desktop과 Telegram에 표시되는지 확인한 후 실제 WIKI 쓰기를 한 건씩 승인한다.
@@ -63,8 +64,8 @@
 
 다음 작업은 서버·외부 채널·credential·실제 WIKI를 변경하므로 별도 승인이 필요하다.
 
-- 공식 Hermes 설치
-- Desktop 원격 연결 방식 확정
+- Desktop UI에서 Oracle SSH 연결 저장과 `Reachable` 확인
+- CIO 프로필의 모델 인증 방식과 일반 대화 smoke
 - 별도 테스트 Telegram Bot token과 허용 user ID 등록
 - KRX·OpenDART 키 등록
 - 네 개 프로필의 ChatGPT/Codex OAuth 수행

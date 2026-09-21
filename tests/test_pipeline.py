@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from stock_assistant.models import AssetType, CompanyKind, FinancialSnapshot, Market, Security
+from stock_assistant.models import AssetType, CompanyKind, EtfSnapshot, FinancialSnapshot, Market, Security
 from stock_assistant.pipeline import CandidatePipeline
 from stock_assistant.repository import StockRepository
 from tests.helpers import make_bars
@@ -79,6 +79,24 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("회전율", unavailable)
             self.assertIn("경영진 위험", unavailable)
             self.assertIn("CB·BW·유상증자", unavailable)
+
+    def test_pipeline_reports_incomplete_etf_specialist_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = StockRepository(Path(directory) / "stock.sqlite3")
+            repository.save_securities([Security(
+                "069500", "KODEX 200", Market.KOSPI,
+                AssetType.ETF, CompanyKind.FUND, date(2002, 10, 14),
+            )])
+            repository.save_bars(make_bars("069500"))
+            repository.save_etf_snapshots([EtfSnapshot(
+                "069500", date(2026, 9, 20), AS_OF - timedelta(hours=1),
+                Decimal("42050"), Decimal("7800000000000"), Decimal("0.1"),
+                None, None, None, "https://data.krx.co.kr/example",
+            )])
+            summary = CandidatePipeline(repository).run(as_of=AS_OF)
+            self.assertEqual(summary.missing_etf_metrics, 1)
+            self.assertEqual(summary.report.candidates[0].decision.value, "BUY_HOLD")
+            self.assertIn("ETF 전용 지표 미적재·불완전", " ".join(summary.report.unavailable))
 
 
 if __name__ == "__main__":

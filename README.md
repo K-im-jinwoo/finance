@@ -4,7 +4,7 @@ Hermes Desktop과 Telegram이 함께 사용할 수 있는 채널 중립적 국�
 
 ## 현재 구현
 
-- KOSPI·KOSDAQ 보통주와 일반 ETF 계약
+- KOSPI·KOSDAQ 보통주와 일반 ETF 계약, 레버리지·인버스 ETF 제외
 - OHLCV 검증, Wilder ATR, 추세·바닥 반등·거래량 신호
 - 영업이익·OCF·FCF·회전율·희석·경영진 위험·재료 상태 필터
 - 후보 5개 선정과 point-in-time event-study
@@ -15,8 +15,11 @@ Hermes Desktop과 Telegram이 함께 사용할 수 있는 채널 중립적 국�
 - 역할별 API 토큰과 저장된 보고서 ID 재조회
 - KRX 종목·OHLCV 백필/일일 적재와 OpenDART 기업·연간 재무 보강 명령
 - OpenDART 전용 API 기반 최근 5년 유상증자·CB·BW와 희석률·자금목적·리픽싱 적재
+- OpenDART 전체 재무제표의 당기·전기·전전기 표준계정으로 매출채권·재고자산 회전율 추세 계산
 - OpenDART 공시목록 기반 계약·잠정실적 부분 확인과 10년 횡령·배임 공식 검토 신호
 - 정규화 저장소에서 동일 기준시각으로 상위 5개 보고서를 생성하는 파이프라인
+- KRX ETF NAV·순자산총액 보존과 괴리율 계산, 추적오차·총보수·집중도 결측 시 매수 보류
+- 금융회사는 일반기업 OCF 규칙을 적용하지 않고 전용 건전성 계약과 전문가 검토 전까지 매수 보류
 - Desktop·Telegram 공통 보고서 렌더링과 Hermes stock-research skill
 - Hermes 네 개 profile용 SOUL 템플릿
 

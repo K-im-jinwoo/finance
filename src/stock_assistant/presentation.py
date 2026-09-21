@@ -15,6 +15,18 @@ _VISIBLE_METRICS = (
     ("max_dilution_ratio_pct_5y", "5년 최대 잠재 희석률(%)"),
     ("refixing_event_count_5y", "5년 리픽싱 포함 건수"),
     ("financing_purposes_5y", "확인된 조달 목적"),
+    ("etf_nav_per_share", "ETF 주당 NAV"),
+    ("etf_net_assets", "ETF 순자산총액"),
+    ("etf_premium_discount_pct", "ETF 괴리율(%)"),
+    ("etf_tracking_error_pct", "ETF 추적오차(%)"),
+    ("etf_total_expense_ratio_pct", "ETF 총보수율(%)"),
+    ("etf_top10_weight_pct", "ETF 상위 10종목 비중(%)"),
+    ("capital_adequacy_ratio", "금융회사 자본적정성 비율"),
+    ("return_on_equity", "금융회사 ROE"),
+    ("non_performing_loan_ratio", "금융회사 부실채권 비율"),
+    ("delinquency_ratio", "금융회사 연체율"),
+    ("provision_coverage_ratio", "금융회사 충당금 커버리지"),
+    ("shareholder_return_note", "금융회사 주주환원"),
 )
 
 

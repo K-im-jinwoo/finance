@@ -41,6 +41,51 @@ _CAPEX_ID_FRAGMENTS = (
     "acquisitionofpropertyplantandequipment",
     "acquisitionofintangibleassets",
 )
+_REVENUE_IDS = {
+    "ifrs-full_revenue",
+    "ifrs_revenue",
+    "dart_revenue",
+}
+_RECEIVABLE_IDS = {
+    "ifrs-full_tradeandothercurrentreceivables",
+    "ifrs-full_tradereceivables",
+    "ifrs_tradeandotherreceivablescurrent",
+}
+_INVENTORY_IDS = {"ifrs-full_inventories", "ifrs_inventories"}
+_COST_OF_SALES_IDS = {"ifrs-full_costofsales", "ifrs_costofsales", "dart_costofsales"}
+
+
+def _period_amounts(row: dict[str, Any]) -> dict[str, Decimal]:
+    candidates = {
+        "current": ("thstrm_add_amount", "thstrm_amount"),
+        "previous": ("frmtrm_add_amount", "frmtrm_amount"),
+        "before_previous": ("bfefrmtrm_amount",),
+    }
+    result: dict[str, Decimal] = {}
+    for period, fields in candidates.items():
+        for field in fields:
+            amount = _dart_amount(row.get(field), field)
+            if amount is not None:
+                result[period] = amount
+                break
+    return result
+
+
+def _turnover_series(
+    flow: dict[str, Decimal],
+    balance: dict[str, Decimal],
+) -> tuple[Decimal, ...]:
+    results: list[Decimal] = []
+    for flow_period, opening_period, closing_period in (
+        ("previous", "before_previous", "previous"),
+        ("current", "previous", "current"),
+    ):
+        if not all(key in balance for key in (opening_period, closing_period)) or flow_period not in flow:
+            continue
+        average_balance = (balance[opening_period] + balance[closing_period]) / Decimal("2")
+        if flow[flow_period] >= 0 and average_balance > 0:
+            results.append(flow[flow_period] / average_balance)
+    return tuple(results)
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +315,10 @@ def normalize_dart_financial_statement(
     operating_cash_flow: Decimal | None = None
     capex = Decimal("0")
     capex_found = False
+    revenue: dict[str, Decimal] = {}
+    receivables: dict[str, Decimal] = {}
+    inventory: dict[str, Decimal] = {}
+    cost_of_sales: dict[str, Decimal] = {}
     for row in rows:
         account_id = str(row.get("account_id", "")).strip().casefold()
         account_name = str(row.get("account_nm", "")).strip().replace(" ", "")
@@ -290,6 +339,17 @@ def normalize_dart_financial_statement(
         }:
             capex += abs(amount)
             capex_found = True
+        periods = _period_amounts(row)
+        if account_id in _REVENUE_IDS or account_name in {"매출액", "수익(매출액)"}:
+            revenue.update(periods)
+        if account_id in _RECEIVABLE_IDS or account_name in {
+            "매출채권", "매출채권및기타채권", "매출채권및기타유동채권",
+        }:
+            receivables.update(periods)
+        if account_id in _INVENTORY_IDS or account_name == "재고자산":
+            inventory.update(periods)
+        if account_id in _COST_OF_SALES_IDS or account_name == "매출원가":
+            cost_of_sales.update(periods)
     if operating_income is None:
         raise UpstreamSchemaError("DART financial statement has no recognized operating-income account")
     free_cash_flow = None
@@ -302,6 +362,8 @@ def normalize_dart_financial_statement(
         operating_income=operating_income,
         operating_cash_flow=operating_cash_flow,
         free_cash_flow=free_cash_flow,
+        receivable_turnover=_turnover_series(revenue, receivables),
+        inventory_turnover=_turnover_series(cost_of_sales, inventory),
         source_url=source_url,
     )
 

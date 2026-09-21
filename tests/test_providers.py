@@ -22,6 +22,7 @@ from stock_assistant.providers.dart import (
 from stock_assistant.providers.http import AuthenticationError, BinaryResponse, JsonResponse, RateLimitError, UpstreamSchemaError
 from stock_assistant.providers.krx import (
     KrxClient,
+    classify_etf_asset_type,
     normalize_krx_daily_payload,
     normalize_krx_daily_snapshot,
     normalize_krx_security_payload,
@@ -43,6 +44,24 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(rows[0].volume, 12_345_678)
         snapshot = normalize_krx_daily_snapshot(payload, observed_at=OBSERVED)
         self.assertEqual(snapshot.names, {"005930": "삼성전자"})
+
+    def test_etf_daily_snapshot_preserves_official_nav_and_net_assets(self) -> None:
+        payload = json.loads((FIXTURES / "krx_etf_daily_raw.json").read_text(encoding="utf-8"))
+        snapshot = normalize_krx_daily_snapshot(payload, observed_at=OBSERVED, market="ETF")
+        self.assertEqual(len(snapshot.etf_snapshots), 1)
+        metrics = snapshot.etf_snapshots[0]
+        self.assertEqual(metrics.nav_per_share, Decimal("42050.25"))
+        self.assertEqual(metrics.net_assets, Decimal("7800000000000"))
+        self.assertEqual(
+            metrics.premium_discount_pct,
+            (Decimal("42100") / Decimal("42050.25") - Decimal("1")) * Decimal("100"),
+        )
+        self.assertIsNone(metrics.tracking_error_pct)
+
+    def test_etf_name_classification_excludes_leverage_and_inverse(self) -> None:
+        self.assertEqual(classify_etf_asset_type("KODEX 200"), AssetType.ETF)
+        self.assertEqual(classify_etf_asset_type("KODEX 레버리지"), AssetType.LEVERAGED_ETF)
+        self.assertEqual(classify_etf_asset_type("KODEX 200선물인버스2X"), AssetType.INVERSE_ETF)
 
     def test_krx_client_sends_auth_header_and_business_date(self) -> None:
         calls = []
@@ -113,6 +132,14 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(snapshot.operating_income, Decimal("1000"))
         self.assertEqual(snapshot.operating_cash_flow, Decimal("700"))
         self.assertEqual(snapshot.free_cash_flow, Decimal("450"))
+        self.assertEqual(snapshot.receivable_turnover, (
+            Decimal("1000") / Decimal("90"),
+            Decimal("1200") / Decimal("110"),
+        ))
+        self.assertEqual(snapshot.inventory_turnover, (
+            Decimal("800") / Decimal("170"),
+            Decimal("900") / Decimal("190"),
+        ))
 
     def test_dart_financing_events_preserve_ratio_purpose_and_refixing(self) -> None:
         rights = normalize_dart_financing_events({

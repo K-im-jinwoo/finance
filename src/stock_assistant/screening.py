@@ -10,6 +10,8 @@ from .models import (
     CatalystStatus,
     CompanyKind,
     Decision,
+    EtfSnapshot,
+    FinancialCompanySnapshot,
     FinancialSnapshot,
     FinancingEvent,
     ManagementRisk,
@@ -43,6 +45,8 @@ def screen_security(
     *,
     as_of: datetime,
     financial: FinancialSnapshot | None = None,
+    financial_company: FinancialCompanySnapshot | None = None,
+    etf_snapshot: EtfSnapshot | None = None,
     financing_events: tuple[FinancingEvent, ...] = (),
     management_risks: tuple[ManagementRisk, ...] = (),
     catalysts: tuple[Catalyst, ...] = (),
@@ -108,6 +112,57 @@ def screen_security(
         checks.append("바닥 반등 또는 상승 지속 가격 조건이 확인될 때까지 매수를 보류할 것")
 
     hard_exclusion = False
+    etf_metrics: dict[str, Decimal | None] = {
+        "etf_nav_per_share": None,
+        "etf_net_assets": None,
+        "etf_premium_discount_pct": None,
+        "etf_tracking_error_pct": None,
+        "etf_total_expense_ratio_pct": None,
+        "etf_top10_weight_pct": None,
+    }
+    financial_company_metrics: dict[str, Decimal | str | None] = {
+        "capital_adequacy_ratio": None,
+        "return_on_equity": None,
+        "non_performing_loan_ratio": None,
+        "delinquency_ratio": None,
+        "provision_coverage_ratio": None,
+        "shareholder_return_note": None,
+    }
+    if security.asset_type is AssetType.ETF:
+        if etf_snapshot is None:
+            warnings.append("ETF_METRICS_UNAVAILABLE")
+            checks.append("ETF 순자산총액·괴리율·추적오차·총보수·구성종목 집중도를 확인할 것")
+        else:
+            assert_point_in_time(as_of, observed_at=etf_snapshot.observed_at, label="ETF snapshot")
+            if etf_snapshot.symbol != security.symbol:
+                raise ValueError("ETF snapshot symbol does not match security")
+            if etf_snapshot.trade_date > as_of.date():
+                raise ValueError("ETF snapshot trade_date is later than as_of")
+            etf_metrics = {
+                "etf_nav_per_share": etf_snapshot.nav_per_share,
+                "etf_net_assets": etf_snapshot.net_assets,
+                "etf_premium_discount_pct": etf_snapshot.premium_discount_pct,
+                "etf_tracking_error_pct": etf_snapshot.tracking_error_pct,
+                "etf_total_expense_ratio_pct": etf_snapshot.total_expense_ratio_pct,
+                "etf_top10_weight_pct": etf_snapshot.top10_weight_pct,
+            }
+            missing_etf_metrics = [
+                label
+                for label, value in (
+                    ("순자산총액", etf_snapshot.net_assets),
+                    ("괴리율", etf_snapshot.premium_discount_pct),
+                    ("추적오차", etf_snapshot.tracking_error_pct),
+                    ("총보수", etf_snapshot.total_expense_ratio_pct),
+                    ("구성종목 집중도", etf_snapshot.top10_weight_pct),
+                )
+                if value is None
+            ]
+            if missing_etf_metrics:
+                warnings.append("ETF_DUE_DILIGENCE_INCOMPLETE")
+                checks.append(f"ETF 전용 지표를 보완할 것: {', '.join(missing_etf_metrics)}")
+            else:
+                reasons.append("ETF_METRICS_COMPLETE")
+
     if security.asset_type is AssetType.COMMON:
         if financing_data_available is False:
             warnings.append("DILUTION_HISTORY_UNAVAILABLE")
@@ -122,7 +177,31 @@ def screen_security(
         if company_kind_unknown:
             warnings.append("COMPANY_KIND_UNAVAILABLE")
             checks.append("금융회사 여부와 적용할 재무 기준을 확인할 것")
-        if financial is None:
+        if security.company_kind is CompanyKind.FINANCIAL:
+            reasons.append("FINANCIAL_SECTOR_SEPARATE")
+            if financial_company is None:
+                warnings.append("FINANCIAL_METRICS_UNAVAILABLE")
+                checks.append("자본적정성·수익성·연체·충당금·자산건전성·주주환원 지표를 확인할 것")
+            else:
+                assert_point_in_time(as_of, published_at=financial_company.published_at, label="financial company")
+                if financial_company.symbol != security.symbol:
+                    raise ValueError("financial-company symbol does not match security")
+                financial_company_metrics = {
+                    "capital_adequacy_ratio": financial_company.capital_adequacy_ratio,
+                    "return_on_equity": financial_company.return_on_equity,
+                    "non_performing_loan_ratio": financial_company.non_performing_loan_ratio,
+                    "delinquency_ratio": financial_company.delinquency_ratio,
+                    "provision_coverage_ratio": financial_company.provision_coverage_ratio,
+                    "shareholder_return_note": financial_company.shareholder_return_note,
+                }
+                if any(value is None for value in financial_company_metrics.values()):
+                    warnings.append("FINANCIAL_METRICS_INCOMPLETE")
+                    checks.append("금융회사 전용 지표의 누락 항목을 보완할 것")
+                else:
+                    reasons.append("FINANCIAL_METRICS_COMPLETE")
+                warnings.append("FINANCIAL_SPECIALIST_REVIEW_REQUIRED")
+                checks.append("업권별 규제 기준과 비교한 별도 심층 검토 후에만 후보로 승격할 것")
+        elif financial is None:
             warnings.append("DATA_UNAVAILABLE")
             checks.append("최신 연간·TTM 재무와 공시일을 확인할 것")
         else:
@@ -136,10 +215,7 @@ def screen_security(
                 reasons.append("OPERATING_PROFIT_POSITIVE")
                 score += Decimal("10")
 
-            if security.company_kind is CompanyKind.FINANCIAL:
-                reasons.append("FINANCIAL_SECTOR_SEPARATE")
-                checks.append("금융회사 전용 건전성 지표로 별도 검토할 것")
-            elif financial.operating_cash_flow is None:
+            if financial.operating_cash_flow is None:
                 warnings.append("OCF_UNAVAILABLE")
                 checks.append("영업활동현금흐름 양수 여부를 확인할 것")
             elif financial.operating_cash_flow <= 0:
@@ -250,6 +326,8 @@ def screen_security(
         "max_dilution_ratio_pct_5y": max(dilution_ratios) if dilution_ratios else None,
         "refixing_event_count_5y": refixing_count,
         "financing_purposes_5y": " | ".join(sorted(financing_purposes)) or None,
+        **etf_metrics,
+        **financial_company_metrics,
     }
     return ScreeningResult(
         security.symbol,

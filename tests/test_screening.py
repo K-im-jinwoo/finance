@@ -10,7 +10,9 @@ from stock_assistant.models import (
     CatalystStatus,
     CompanyKind,
     Decision,
+    EtfSnapshot,
     Evidence,
+    FinancialCompanySnapshot,
     FinancialSnapshot,
     FinancingEvent,
     ManagementRisk,
@@ -122,11 +124,49 @@ class ScreeningTests(unittest.TestCase):
         self.assertIn("MANAGEMENT_RISK_OFFICIAL_REVIEW", result.warnings)
         self.assertNotIn("MANAGEMENT_RISK_CONFIRMED", result.warnings)
 
-    def test_etf_does_not_require_company_financials(self) -> None:
+    def test_etf_without_specialist_metrics_is_held_not_promoted(self) -> None:
         etf = Security("069500", "KODEX 200", Market.KOSPI, AssetType.ETF, CompanyKind.FUND, date(2002, 10, 14))
         result = screen_security(etf, make_bars("069500"), as_of=AS_OF)
-        self.assertEqual(result.decision, Decision.CANDIDATE)
+        self.assertEqual(result.decision, Decision.BUY_HOLD)
         self.assertIn("ELIGIBLE_ETF", result.reasons)
+        self.assertIn("ETF_METRICS_UNAVAILABLE", result.warnings)
+
+    def test_etf_with_complete_specialist_metrics_can_be_candidate(self) -> None:
+        etf = Security("069500", "KODEX 200", Market.KOSPI, AssetType.ETF, CompanyKind.FUND, date(2002, 10, 14))
+        snapshot = EtfSnapshot(
+            "069500", AS_OF.date(), AS_OF - timedelta(hours=1),
+            Decimal("42050"), Decimal("7800000000000"), Decimal("0.12"),
+            Decimal("0.15"), Decimal("0.15"), Decimal("35"),
+            "https://data.krx.co.kr/example",
+        )
+        result = screen_security(etf, make_bars("069500"), as_of=AS_OF, etf_snapshot=snapshot)
+        self.assertEqual(result.decision, Decision.CANDIDATE)
+        self.assertIn("ETF_METRICS_COMPLETE", result.reasons)
+        self.assertEqual(result.metrics["etf_net_assets"], Decimal("7800000000000"))
+
+    def test_financial_company_uses_separate_contract_and_stays_under_specialist_review(self) -> None:
+        bank = Security(
+            "105560", "KB금융", Market.KOSPI, AssetType.COMMON,
+            CompanyKind.FINANCIAL, date(2008, 10, 10),
+        )
+        general = FinancialSnapshot(
+            "105560", date(2025, 12, 31), datetime(2026, 3, 20, tzinfo=UTC),
+            Decimal("-1"), Decimal("-1"), Decimal("-1"), (), (),
+            "https://dart.fss.or.kr/general",
+        )
+        specialist = FinancialCompanySnapshot(
+            "105560", date(2025, 12, 31), datetime(2026, 3, 20, tzinfo=UTC),
+            Decimal("14.2"), Decimal("9.1"), Decimal("0.7"), Decimal("0.5"),
+            Decimal("180"), "배당 및 자사주 정책 확인", "https://fss.or.kr/example",
+        )
+        result = screen_security(
+            bank, make_bars("105560"), as_of=AS_OF,
+            financial=general, financial_company=specialist,
+        )
+        self.assertEqual(result.decision, Decision.BUY_HOLD)
+        self.assertNotIn("OPERATING_LOSS", result.warnings)
+        self.assertIn("FINANCIAL_METRICS_COMPLETE", result.reasons)
+        self.assertIn("FINANCIAL_SPECIALIST_REVIEW_REQUIRED", result.warnings)
 
     def test_unknown_company_kind_never_applies_general_company_ocf_exclusion(self) -> None:
         unknown = Security(

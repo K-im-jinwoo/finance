@@ -29,6 +29,40 @@
       "account_id": "ifrs-full_PurchaseOfIntangibleAssets",
       "account_nm": "무형자산의 취득",
       "thstrm_amount": "-50"
+    },
+    {
+      "rcept_no": "20260918000001",
+      "sj_div": "IS",
+      "account_id": "ifrs-full_Revenue",
+      "account_nm": "매출액",
+      "thstrm_amount": "1,200",
+      "frmtrm_amount": "1,000"
+    },
+    {
+      "rcept_no": "20260918000001",
+      "sj_div": "IS",
+      "account_id": "ifrs-full_CostOfSales",
+      "account_nm": "매출원가",
+      "thstrm_amount": "900",
+      "frmtrm_amount": "800"
+    },
+    {
+      "rcept_no": "20260918000001",
+      "sj_div": "BS",
+      "account_id": "ifrs-full_TradeAndOtherCurrentReceivables",
+      "account_nm": "매출채권 및 기타채권",
+      "thstrm_amount": "120",
+      "frmtrm_amount": "100",
+      "bfefrmtrm_amount": "80"
+    },
+    {
+      "rcept_no": "20260918000001",
+      "sj_div": "BS",
+      "account_id": "ifrs-full_Inventories",
+      "account_nm": "재고자산",
+      "thstrm_amount": "200",
+      "frmtrm_amount": "180",
+      "bfefrmtrm_amount": "160"
     }
   ]
 }

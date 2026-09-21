@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from .models import AssetType, Decision
+from .models import AssetType, CompanyKind, Decision
 from .providers.dart import KST
 from .reports import CandidateReport, build_candidate_report, report_to_dict
 from .repository import StockRepository
@@ -17,6 +17,9 @@ class PipelineSummary:
     excluded: int
     insufficient_history: int
     missing_financials: int
+    missing_turnover_metrics: int
+    missing_financial_company_metrics: int
+    missing_etf_metrics: int
     missing_financing_histories: int
     missing_management_histories: int
     missing_catalyst_histories: int
@@ -37,6 +40,9 @@ class CandidatePipeline:
         results = []
         insufficient_history = 0
         missing_financials = 0
+        missing_turnover_metrics = 0
+        missing_financial_company_metrics = 0
+        missing_etf_metrics = 0
         missing_financing_histories = 0
         missing_management_histories = 0
         missing_catalyst_histories = 0
@@ -50,6 +56,8 @@ class CandidatePipeline:
         for security in securities:
             bars = self.repository.bars_for(security.symbol, as_of=as_of, limit=120)
             financial = None
+            financial_company = None
+            etf_snapshot = None
             financing_events = ()
             management_risks = ()
             catalysts = ()
@@ -57,9 +65,24 @@ class CandidatePipeline:
             management_available = None
             catalyst_available = None
             if security.asset_type is AssetType.COMMON:
-                financial = self.repository.latest_financial(security.symbol, as_of=as_of)
-                if financial is None:
-                    missing_financials += 1
+                if security.company_kind is CompanyKind.FINANCIAL:
+                    financial_company = self.repository.latest_financial_company(security.symbol, as_of=as_of)
+                    if financial_company is None or any(value is None for value in (
+                        financial_company.capital_adequacy_ratio,
+                        financial_company.return_on_equity,
+                        financial_company.non_performing_loan_ratio,
+                        financial_company.delinquency_ratio,
+                        financial_company.provision_coverage_ratio,
+                        financial_company.shareholder_return_note,
+                    )):
+                        missing_financial_company_metrics += 1
+                else:
+                    financial = self.repository.latest_financial(security.symbol, as_of=as_of)
+                    if financial is None:
+                        missing_financials += 1
+                        missing_turnover_metrics += 1
+                    elif len(financial.receivable_turnover) < 2 or len(financial.inventory_turnover) < 2:
+                        missing_turnover_metrics += 1
                 financing_events = tuple(self.repository.financing_events_for(
                     security.symbol,
                     as_of=as_of,
@@ -98,11 +121,23 @@ class CandidatePipeline:
                 )
                 if not catalyst_available:
                     missing_catalyst_histories += 1
+            elif security.asset_type is AssetType.ETF:
+                etf_snapshot = self.repository.latest_etf_snapshot(security.symbol, as_of=as_of)
+                if etf_snapshot is None or any(value is None for value in (
+                    etf_snapshot.net_assets,
+                    etf_snapshot.premium_discount_pct,
+                    etf_snapshot.tracking_error_pct,
+                    etf_snapshot.total_expense_ratio_pct,
+                    etf_snapshot.top10_weight_pct,
+                )):
+                    missing_etf_metrics += 1
             result = screen_security(
                 security,
                 bars,
                 as_of=as_of,
                 financial=financial,
+                financial_company=financial_company,
+                etf_snapshot=etf_snapshot,
                 financing_events=financing_events,
                 management_risks=management_risks,
                 catalysts=catalysts,
@@ -115,17 +150,21 @@ class CandidatePipeline:
             results.append(result)
         return (
             securities, results, insufficient_history, missing_financials,
+            missing_turnover_metrics,
+            missing_financial_company_metrics, missing_etf_metrics,
             missing_financing_histories, missing_management_histories,
             missing_catalyst_histories,
         )
 
     def ranked_symbols(self, *, as_of: datetime, limit: int = 30) -> list[str]:
-        _, results, _, _, _, _, _ = self._screen_results(as_of=as_of)
+        _, results, _, _, _, _, _, _, _, _ = self._screen_results(as_of=as_of)
         return [item.symbol for item in select_top_candidates(results, limit=limit)]
 
     def run(self, *, as_of: datetime, limit: int = 5) -> PipelineSummary:
         (
             securities, results, insufficient_history, missing_financials,
+            missing_turnover_metrics,
+            missing_financial_company_metrics, missing_etf_metrics,
             missing_financing_histories, missing_management_histories,
             missing_catalyst_histories,
         ) = self._screen_results(as_of=as_of)
@@ -134,10 +173,15 @@ class CandidatePipeline:
             "실시간 장중 데이터",
             "공식 근거와 연결되지 않은 비공식 재료",
             "계약·실적 공시의 상세 조건과 현재 이행 상태",
-            "매출채권·재고자산 회전율 원천 계정과 추세",
         ]
         if missing_financials:
             unavailable.append(f"재무 미적재 종목 {missing_financials}개")
+        if missing_turnover_metrics:
+            unavailable.append(f"매출채권·재고자산 회전율 추세 미적재 종목 {missing_turnover_metrics}개")
+        if missing_financial_company_metrics:
+            unavailable.append(f"금융회사 전용 지표 미적재·불완전 종목 {missing_financial_company_metrics}개")
+        if missing_etf_metrics:
+            unavailable.append(f"ETF 전용 지표 미적재·불완전 종목 {missing_etf_metrics}개")
         if insufficient_history:
             unavailable.append(f"61거래일 미만 종목 {insufficient_history}개")
         if missing_financing_histories:
@@ -163,6 +207,9 @@ class CandidatePipeline:
             excluded=sum(item.decision is Decision.EXCLUDED for item in results),
             insufficient_history=insufficient_history,
             missing_financials=missing_financials,
+            missing_turnover_metrics=missing_turnover_metrics,
+            missing_financial_company_metrics=missing_financial_company_metrics,
+            missing_etf_metrics=missing_etf_metrics,
             missing_financing_histories=missing_financing_histories,
             missing_management_histories=missing_management_histories,
             missing_catalyst_histories=missing_catalyst_histories,

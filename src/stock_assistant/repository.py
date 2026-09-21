@@ -12,7 +12,9 @@ from .models import (
     Catalyst,
     CatalystStatus,
     CompanyKind,
+    EtfSnapshot,
     Evidence,
+    FinancialCompanySnapshot,
     FinancialSnapshot,
     FinancingEvent,
     Holding,
@@ -26,7 +28,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _REPORT_ID = re.compile(r"^R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8}$")
 _DATASET = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
@@ -84,6 +86,20 @@ class StockRepository:
                     published_at TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY (symbol, period_end, published_at)
+                );
+                CREATE TABLE IF NOT EXISTS financial_company_snapshots (
+                    symbol TEXT NOT NULL,
+                    period_end TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (symbol, period_end, published_at)
+                );
+                CREATE TABLE IF NOT EXISTS etf_snapshots (
+                    symbol TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (symbol, trade_date, observed_at)
                 );
                 CREATE TABLE IF NOT EXISTS financing_events (
                     symbol TEXT NOT NULL,
@@ -252,6 +268,66 @@ class StockRepository:
             if snapshot.published_at <= as_of.astimezone(timezone.utc):
                 return snapshot
         return None
+
+    def save_financial_company_snapshot(self, snapshot: FinancialCompanySnapshot) -> None:
+        payload = json.dumps(to_json_value(snapshot), ensure_ascii=False, sort_keys=True)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO financial_company_snapshots(symbol, period_end, published_at, payload_json) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(symbol, period_end, published_at) DO UPDATE SET "
+                "payload_json=excluded.payload_json",
+                (snapshot.symbol, snapshot.period_end.isoformat(), snapshot.published_at.isoformat(), payload),
+            )
+
+    def latest_financial_company(
+        self,
+        symbol: str,
+        *,
+        as_of: datetime,
+    ) -> FinancialCompanySnapshot | None:
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM financial_company_snapshots WHERE symbol=? ORDER BY published_at DESC",
+                (symbol,),
+            ).fetchall()
+        for row in rows:
+            snapshot = _financial_company_from_dict(json.loads(row["payload_json"]))
+            if snapshot.published_at <= as_of.astimezone(timezone.utc):
+                return snapshot
+        return None
+
+    def save_etf_snapshots(self, snapshots: list[EtfSnapshot]) -> None:
+        with self._connect() as connection:
+            for snapshot in snapshots:
+                payload = json.dumps(to_json_value(snapshot), ensure_ascii=False, sort_keys=True)
+                connection.execute(
+                    "INSERT INTO etf_snapshots(symbol, trade_date, observed_at, payload_json) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT(symbol, trade_date, observed_at) DO UPDATE SET "
+                    "payload_json=excluded.payload_json",
+                    (
+                        snapshot.symbol,
+                        snapshot.trade_date.isoformat(),
+                        snapshot.observed_at.isoformat(),
+                        payload,
+                    ),
+                )
+
+    def latest_etf_snapshot(self, symbol: str, *, as_of: datetime) -> EtfSnapshot | None:
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM etf_snapshots WHERE symbol=? AND trade_date<=? "
+                "AND observed_at<=? ORDER BY trade_date DESC, observed_at DESC",
+                (
+                    symbol,
+                    as_of.date().isoformat(),
+                    as_of.astimezone(timezone.utc).isoformat(),
+                ),
+            ).fetchall()
+        return _etf_snapshot_from_dict(json.loads(rows[0]["payload_json"])) if rows else None
 
     def save_financing_events(self, events: list[FinancingEvent]) -> None:
         with self._connect() as connection:
@@ -495,6 +571,50 @@ def _financial_from_dict(payload: dict) -> FinancialSnapshot:
         free_cash_flow=Decimal(payload["free_cash_flow"]) if payload.get("free_cash_flow") is not None else None,
         receivable_turnover=tuple(Decimal(value) for value in payload.get("receivable_turnover", [])),
         inventory_turnover=tuple(Decimal(value) for value in payload.get("inventory_turnover", [])),
+        source_url=payload["source_url"],
+    )
+
+
+def _financial_company_from_dict(payload: dict) -> FinancialCompanySnapshot:
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    def optional_decimal(field: str) -> Decimal | None:
+        value = payload.get(field)
+        return Decimal(value) if value is not None else None
+
+    return FinancialCompanySnapshot(
+        symbol=payload["symbol"],
+        period_end=date.fromisoformat(payload["period_end"]),
+        published_at=datetime.fromisoformat(payload["published_at"]),
+        capital_adequacy_ratio=optional_decimal("capital_adequacy_ratio"),
+        return_on_equity=optional_decimal("return_on_equity"),
+        non_performing_loan_ratio=optional_decimal("non_performing_loan_ratio"),
+        delinquency_ratio=optional_decimal("delinquency_ratio"),
+        provision_coverage_ratio=optional_decimal("provision_coverage_ratio"),
+        shareholder_return_note=payload.get("shareholder_return_note"),
+        source_url=payload["source_url"],
+    )
+
+
+def _etf_snapshot_from_dict(payload: dict) -> EtfSnapshot:
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    def optional_decimal(field: str) -> Decimal | None:
+        value = payload.get(field)
+        return Decimal(value) if value is not None else None
+
+    return EtfSnapshot(
+        symbol=payload["symbol"],
+        trade_date=date.fromisoformat(payload["trade_date"]),
+        observed_at=datetime.fromisoformat(payload["observed_at"]),
+        nav_per_share=optional_decimal("nav_per_share"),
+        net_assets=optional_decimal("net_assets"),
+        premium_discount_pct=optional_decimal("premium_discount_pct"),
+        tracking_error_pct=optional_decimal("tracking_error_pct"),
+        total_expense_ratio_pct=optional_decimal("total_expense_ratio_pct"),
+        top10_weight_pct=optional_decimal("top10_weight_pct"),
         source_url=payload["source_url"],
     )
 

@@ -10,7 +10,9 @@ from .models import (
     Catalyst,
     CatalystStatus,
     CompanyKind,
+    EtfSnapshot,
     Evidence,
+    FinancialCompanySnapshot,
     FinancialSnapshot,
     FinancingEvent,
     ManagementRisk,
@@ -26,6 +28,8 @@ class ScreenRequest:
     security: Security
     bars: list[OHLCV]
     financial: FinancialSnapshot | None
+    financial_company: FinancialCompanySnapshot | None
+    etf_snapshot: EtfSnapshot | None
     financing_events: tuple[FinancingEvent, ...]
     management_risks: tuple[ManagementRisk, ...]
     catalysts: tuple[Catalyst, ...]
@@ -126,6 +130,50 @@ def parse_financial(value: Any) -> FinancialSnapshot | None:
     )
 
 
+def _optional_decimal(item: dict[str, Any], field: str) -> Decimal | None:
+    value = item.get(field)
+    return _decimal(value, field) if value is not None else None
+
+
+def parse_financial_company(value: Any) -> FinancialCompanySnapshot | None:
+    if value is None:
+        return None
+    item = _object(value, "financial_company")
+    return FinancialCompanySnapshot(
+        symbol=str(item["symbol"]),
+        period_end=_date(item["period_end"], "financial_company.period_end"),
+        published_at=_datetime(item["published_at"], "financial_company.published_at"),
+        capital_adequacy_ratio=_optional_decimal(item, "capital_adequacy_ratio"),
+        return_on_equity=_optional_decimal(item, "return_on_equity"),
+        non_performing_loan_ratio=_optional_decimal(item, "non_performing_loan_ratio"),
+        delinquency_ratio=_optional_decimal(item, "delinquency_ratio"),
+        provision_coverage_ratio=_optional_decimal(item, "provision_coverage_ratio"),
+        shareholder_return_note=(
+            str(item["shareholder_return_note"])
+            if item.get("shareholder_return_note") is not None else None
+        ),
+        source_url=str(item["source_url"]),
+    )
+
+
+def parse_etf_snapshot(value: Any) -> EtfSnapshot | None:
+    if value is None:
+        return None
+    item = _object(value, "etf_snapshot")
+    return EtfSnapshot(
+        symbol=str(item["symbol"]),
+        trade_date=_date(item["trade_date"], "etf_snapshot.trade_date"),
+        observed_at=_datetime(item["observed_at"], "etf_snapshot.observed_at"),
+        nav_per_share=_optional_decimal(item, "nav_per_share"),
+        net_assets=_optional_decimal(item, "net_assets"),
+        premium_discount_pct=_optional_decimal(item, "premium_discount_pct"),
+        tracking_error_pct=_optional_decimal(item, "tracking_error_pct"),
+        total_expense_ratio_pct=_optional_decimal(item, "total_expense_ratio_pct"),
+        top10_weight_pct=_optional_decimal(item, "top10_weight_pct"),
+        source_url=str(item["source_url"]),
+    )
+
+
 def parse_screen_request(value: Any) -> ScreenRequest:
     item = _object(value, "screen request")
     financing = []
@@ -165,5 +213,7 @@ def parse_screen_request(value: Any) -> ScreenRequest:
         security=parse_security(item["security"]),
         bars=[parse_bar(value) for value in _array(item["bars"], "bars")],
         financial=parse_financial(item.get("financial")),
+        financial_company=parse_financial_company(item.get("financial_company")),
+        etf_snapshot=parse_etf_snapshot(item.get("etf_snapshot")),
         financing_events=tuple(financing), management_risks=tuple(management), catalysts=tuple(catalysts),
     )

@@ -5,7 +5,9 @@ from .models import (
     Catalyst,
     CatalystStatus,
     CompanyKind,
+    EtfSnapshot,
     Evidence,
+    FinancialCompanySnapshot,
     FinancialSnapshot,
     FinancingEvent,
     Holding,
@@ -19,7 +21,9 @@ __all__ = [
     "Catalyst",
     "CatalystStatus",
     "CompanyKind",
+    "EtfSnapshot",
     "Evidence",
+    "FinancialCompanySnapshot",
     "FinancialSnapshot",
     "FinancingEvent",
     "Holding",
@@ -27,4 +31,3 @@ __all__ = [
     "OHLCV",
     "Security",
 ]
-

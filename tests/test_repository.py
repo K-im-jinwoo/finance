@@ -8,7 +8,8 @@ from pathlib import Path
 
 from stock_assistant.models import Decision, Holding, ScreeningResult
 from stock_assistant.models import (
-    AssetType, Catalyst, CatalystStatus, CompanyKind, Evidence, FinancialSnapshot,
+    AssetType, Catalyst, CatalystStatus, CompanyKind, EtfSnapshot, Evidence,
+    FinancialCompanySnapshot, FinancialSnapshot,
     FinancingEvent, ManagementRisk, Market, OHLCV, Security,
 )
 from stock_assistant.repository import StockRepository
@@ -76,6 +77,32 @@ class RepositoryTests(unittest.TestCase):
             self.assertEqual(repository.list_securities(), [security])
             self.assertEqual(len(repository.bars_for("005930", as_of=as_of)), 80)
             self.assertEqual(repository.latest_financial("005930", as_of=as_of), snapshot)
+
+    def test_etf_and_financial_company_snapshots_are_point_in_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = StockRepository(Path(directory) / "stock.sqlite3")
+            observed = datetime(2026, 9, 18, 15, tzinfo=UTC)
+            etf = EtfSnapshot(
+                "069500", date(2026, 9, 18), observed,
+                Decimal("42050"), Decimal("7800000000000"), Decimal("0.1"),
+                None, None, None, "https://data.krx.co.kr/example",
+            )
+            financial_company = FinancialCompanySnapshot(
+                "105560", date(2025, 12, 31), datetime(2026, 3, 20, tzinfo=UTC),
+                Decimal("14"), Decimal("9"), Decimal("0.7"), Decimal("0.5"),
+                Decimal("180"), "배당", "https://fss.or.kr/example",
+            )
+            repository.save_etf_snapshots([etf])
+            repository.save_financial_company_snapshot(financial_company)
+            self.assertIsNone(repository.latest_etf_snapshot(
+                "069500", as_of=datetime(2026, 9, 18, 14, tzinfo=UTC),
+            ))
+            self.assertEqual(repository.latest_etf_snapshot(
+                "069500", as_of=datetime(2026, 9, 18, 16, tzinfo=UTC),
+            ), etf)
+            self.assertEqual(repository.latest_financial_company(
+                "105560", as_of=datetime(2026, 9, 20, tzinfo=UTC),
+            ), financial_company)
 
     def test_market_history_keeps_revisions_and_respects_as_of(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -146,6 +146,8 @@ def _screen(request):
         request.bars,
         as_of=request.as_of,
         financial=request.financial,
+        financial_company=request.financial_company,
+        etf_snapshot=request.etf_snapshot,
         financing_events=request.financing_events,
         management_risks=request.management_risks,
         catalysts=request.catalysts,

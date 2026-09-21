@@ -73,10 +73,11 @@ class Security:
             raise ValueError("security name is required")
         if self.delisted_on is not None and self.listed_on is not None and self.delisted_on < self.listed_on:
             raise ValueError("delisted_on cannot precede listed_on")
-        if self.asset_type is AssetType.ETF and self.company_kind is not CompanyKind.FUND:
-            raise ValueError("ETF must use FUND company_kind")
-        if self.company_kind is CompanyKind.FUND and self.asset_type is not AssetType.ETF:
-            raise ValueError("FUND company_kind is reserved for ETF")
+        etf_types = {AssetType.ETF, AssetType.LEVERAGED_ETF, AssetType.INVERSE_ETF}
+        if self.asset_type in etf_types and self.company_kind is not CompanyKind.FUND:
+            raise ValueError("ETF types must use FUND company_kind")
+        if self.company_kind is CompanyKind.FUND and self.asset_type not in etf_types:
+            raise ValueError("FUND company_kind is reserved for ETF types")
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +145,69 @@ class FinancialSnapshot:
         object.__setattr__(self, "published_at", _utc(self.published_at))
         if not self.source_url.strip():
             raise ValueError("financial source_url is required")
+
+
+@dataclass(frozen=True, slots=True)
+class FinancialCompanySnapshot:
+    """Point-in-time specialist metrics; thresholds remain a human policy decision."""
+
+    symbol: str
+    period_end: date
+    published_at: datetime
+    capital_adequacy_ratio: Decimal | None
+    return_on_equity: Decimal | None
+    non_performing_loan_ratio: Decimal | None
+    delinquency_ratio: Decimal | None
+    provision_coverage_ratio: Decimal | None
+    shareholder_return_note: str | None
+    source_url: str
+
+    def __post_init__(self) -> None:
+        if not (self.symbol.isdigit() and len(self.symbol) == 6):
+            raise ValueError("financial-company symbol must be six digits")
+        object.__setattr__(self, "published_at", _utc(self.published_at))
+        for field_name in (
+            "capital_adequacy_ratio",
+            "non_performing_loan_ratio",
+            "delinquency_ratio",
+            "provision_coverage_ratio",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                raise ValueError(f"{field_name} cannot be negative")
+        if self.shareholder_return_note is not None and not self.shareholder_return_note.strip():
+            raise ValueError("shareholder_return_note cannot be blank")
+        if not self.source_url.strip():
+            raise ValueError("financial-company source_url is required")
+
+
+@dataclass(frozen=True, slots=True)
+class EtfSnapshot:
+    symbol: str
+    trade_date: date
+    observed_at: datetime
+    nav_per_share: Decimal | None
+    net_assets: Decimal | None
+    premium_discount_pct: Decimal | None
+    tracking_error_pct: Decimal | None
+    total_expense_ratio_pct: Decimal | None
+    top10_weight_pct: Decimal | None
+    source_url: str
+
+    def __post_init__(self) -> None:
+        if not (self.symbol.isdigit() and len(self.symbol) == 6):
+            raise ValueError("ETF symbol must be six digits")
+        object.__setattr__(self, "observed_at", _utc(self.observed_at))
+        if self.nav_per_share is not None and self.nav_per_share <= 0:
+            raise ValueError("nav_per_share must be positive when present")
+        for field_name in ("nav_per_share", "net_assets", "tracking_error_pct", "total_expense_ratio_pct"):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                raise ValueError(f"{field_name} cannot be negative")
+        if self.top10_weight_pct is not None and not Decimal("0") <= self.top10_weight_pct <= Decimal("100"):
+            raise ValueError("top10_weight_pct must be between 0 and 100")
+        if not self.source_url.strip():
+            raise ValueError("ETF source_url is required")
 
 
 @dataclass(frozen=True, slots=True)

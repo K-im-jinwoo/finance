@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
-from ..models import AssetType, CompanyKind, Market, OHLCV, Security
+from ..models import AssetType, CompanyKind, EtfSnapshot, Market, OHLCV, Security
 from ..validation import ContractError, parse_krx_ohlcv_rows
 from .http import AuthenticationError, ProviderError, UpstreamSchemaError, get_json
 
@@ -28,6 +29,7 @@ KRX_SECURITY_ENDPOINTS = {
 class KrxDailySnapshot:
     bars: tuple[OHLCV, ...]
     names: dict[str, str]
+    etf_snapshots: tuple[EtfSnapshot, ...] = ()
 
 
 def _compact_date(value: Any, field: str) -> date:
@@ -49,6 +51,27 @@ def _asset_type(name: str, certificate_type: str) -> AssetType:
     if "보통" in certificate_type:
         return AssetType.COMMON
     return AssetType.OTHER
+
+
+def classify_etf_asset_type(name: str) -> AssetType:
+    normalized = name.casefold().replace(" ", "")
+    if "인버스" in normalized or "곱버스" in normalized:
+        return AssetType.INVERSE_ETF
+    if "레버리지" in normalized or "2x" in normalized:
+        return AssetType.LEVERAGED_ETF
+    return AssetType.ETF
+
+
+def _optional_decimal(value: Any, field: str) -> Decimal | None:
+    if value is None or str(value).strip() in {"", "-"}:
+        return None
+    try:
+        parsed = Decimal(str(value).replace(",", "").replace("%", "").strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise UpstreamSchemaError(f"{field} must be numeric when present") from exc
+    if not parsed.is_finite():
+        raise UpstreamSchemaError(f"{field} must be finite")
+    return parsed
 
 
 def normalize_krx_security_payload(payload: dict[str, Any], *, market: str) -> list[Security]:
@@ -99,7 +122,7 @@ def normalize_krx_daily_payload(
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise UpstreamSchemaError(f"KRX row {index} must be an object")
-        symbol = row.get("ISU_SRT_CD") or row.get("symbol")
+        symbol = row.get("ISU_CD") or row.get("ISU_SRT_CD") or row.get("symbol")
         base_date = row.get("BAS_DD") or row.get("trade_date")
         if isinstance(base_date, str) and len(base_date) == 8 and base_date.isdigit():
             base_date = f"{base_date[:4]}-{base_date[4:6]}-{base_date[6:]}"
@@ -123,18 +146,46 @@ def normalize_krx_daily_snapshot(
     *,
     observed_at: datetime,
     source: str = "KRX_OPEN_API",
+    market: str | None = None,
 ) -> KrxDailySnapshot:
     bars = normalize_krx_daily_payload(payload, observed_at=observed_at, source=source)
     rows = payload["OutBlock_1"]
     names: dict[str, str] = {}
+    etf_snapshots: list[EtfSnapshot] = []
     for index, row in enumerate(rows):
-        symbol = str(row.get("ISU_SRT_CD") or row.get("symbol") or "").strip()
+        symbol = str(row.get("ISU_CD") or row.get("ISU_SRT_CD") or row.get("symbol") or "").strip()
         name = str(row.get("ISU_ABBRV") or row.get("ISU_NM") or row.get("name") or "").strip()
         if name:
             if symbol in names and names[symbol] != name:
                 raise UpstreamSchemaError(f"KRX row {index} changes a symbol name inside one response")
             names[symbol] = name
-    return KrxDailySnapshot(tuple(bars), names)
+        if market == "ETF":
+            raw_date = str(row.get("BAS_DD") or row.get("trade_date") or "").replace("-", "")
+            trade_date = _compact_date(raw_date, "BAS_DD")
+            nav = _optional_decimal(row.get("NAV"), "NAV")
+            net_assets = _optional_decimal(row.get("INVSTASST_NETASST_TOTAMT"), "INVSTASST_NETASST_TOTAMT")
+            close = _optional_decimal(row.get("TDD_CLSPRC", row.get("close")), "TDD_CLSPRC")
+            premium_discount = None
+            if nav is not None and close is not None:
+                if nav <= 0:
+                    raise UpstreamSchemaError("NAV must be positive when present")
+                premium_discount = (close / nav - Decimal("1")) * Decimal("100")
+            try:
+                etf_snapshots.append(EtfSnapshot(
+                    symbol=symbol,
+                    trade_date=trade_date,
+                    observed_at=observed_at,
+                    nav_per_share=nav,
+                    net_assets=net_assets,
+                    premium_discount_pct=premium_discount,
+                    tracking_error_pct=None,
+                    total_expense_ratio_pct=None,
+                    top10_weight_pct=None,
+                    source_url=KRX_DAILY_ENDPOINTS["ETF"],
+                ))
+            except ValueError as exc:
+                raise UpstreamSchemaError(f"invalid KRX ETF row {index}: {exc}") from exc
+    return KrxDailySnapshot(tuple(bars), names, tuple(etf_snapshots))
 
 
 class KrxClient:
@@ -163,7 +214,7 @@ class KrxClient:
             query={"basDd": business_date.strftime("%Y%m%d")},
             headers={"AUTH_KEY": self.auth_key},
         )
-        return normalize_krx_daily_snapshot(response.payload, observed_at=observed_at)
+        return normalize_krx_daily_snapshot(response.payload, observed_at=observed_at, market=market)
 
     def securities(self, market: str, business_date: date) -> list[Security]:
         try:

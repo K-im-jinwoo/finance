@@ -9,7 +9,7 @@ from typing import Callable
 from .disclosures import classify_dart_filing_signals
 from .models import AssetType, CompanyKind, Evidence, Market, Security
 from .providers.dart import DART_FINANCING_ENDPOINTS, KST, DartClient
-from .providers.krx import KrxClient
+from .providers.krx import KrxClient, classify_etf_asset_type
 from .repository import StockRepository
 
 
@@ -61,12 +61,13 @@ class KrxHistoryIngestor:
             if market in {"KOSPI", "KOSDAQ"} and bars:
                 day_has_equity = True
             if market == "ETF":
+                self.repository.save_etf_snapshots(list(snapshot.etf_snapshots))
                 for bar in bars:
                     name = snapshot.names.get(bar.symbol)
                     if name:
                         etfs.append(Security(
                             bar.symbol, name, Market.KOSPI,
-                            AssetType.ETF, CompanyKind.FUND, None,
+                            classify_etf_asset_type(name), CompanyKind.FUND, None,
                         ))
         securities: list[Security] = []
         if day_has_equity:
@@ -117,6 +118,7 @@ class KrxHistoryIngestor:
                 if market in {"KOSPI", "KOSDAQ"} and bars:
                     day_has_equity = True
                 if market == "ETF":
+                    self.repository.save_etf_snapshots(list(snapshot.etf_snapshots))
                     for bar in bars:
                         name = snapshot.names.get(bar.symbol)
                         if name:
@@ -124,7 +126,7 @@ class KrxHistoryIngestor:
                                 bar.symbol,
                                 name,
                                 Market.KOSPI,
-                                AssetType.ETF,
+                                classify_etf_asset_type(name),
                                 CompanyKind.FUND,
                                 None,
                             )
@@ -156,6 +158,7 @@ class DartEnrichmentSummary:
     missing_annual_filing: int
     missing_statement: int
     unknown_company_kind: int
+    requires_specialist_metrics: int
     already_current: int
 
 
@@ -199,12 +202,14 @@ class DartFinancialEnricher:
         for symbol in unique_symbols:
             security = securities.get(symbol)
             existing = self.repository.latest_financial(symbol, as_of=as_of)
+            specialist = self.repository.latest_financial_company(symbol, as_of=as_of)
+            current_snapshot = specialist if security is not None and security.company_kind is CompanyKind.FINANCIAL else existing
             if (
                 security is not None
                 and security.asset_type is AssetType.COMMON
                 and security.company_kind is not CompanyKind.UNKNOWN
-                and existing is not None
-                and existing.period_end.year >= business_year
+                and current_snapshot is not None
+                and current_snapshot.period_end.year >= business_year
             ):
                 already_current += 1
             else:
@@ -213,7 +218,8 @@ class DartFinancialEnricher:
             return DartEnrichmentSummary(
                 requested=len(unique_symbols), enriched=0, missing_corp_code=0,
                 missing_annual_filing=0, missing_statement=0,
-                unknown_company_kind=0, already_current=already_current,
+                unknown_company_kind=0, requires_specialist_metrics=0,
+                already_current=already_current,
             )
         corp_codes = self.client.corp_codes()
         self._pace()
@@ -222,6 +228,7 @@ class DartFinancialEnricher:
         missing_annual_filing = 0
         missing_statement = 0
         unknown_company_kind = 0
+        requires_specialist_metrics = 0
         for symbol in pending:
             security = securities.get(symbol)
             if security is None or security.asset_type is not AssetType.COMMON:
@@ -245,6 +252,9 @@ class DartFinancialEnricher:
             self.repository.save_securities([updated])
             if profile.kind is CompanyKind.UNKNOWN or profile.fiscal_month is None:
                 unknown_company_kind += 1
+                continue
+            if profile.kind is CompanyKind.FINANCIAL:
+                requires_specialist_metrics += 1
                 continue
             filing_start = date(business_year + 1, 1, 1)
             fully_observable_end = as_of.astimezone(KST).date() - timedelta(days=1)
@@ -298,6 +308,7 @@ class DartFinancialEnricher:
             missing_annual_filing=missing_annual_filing,
             missing_statement=missing_statement,
             unknown_company_kind=unknown_company_kind,
+            requires_specialist_metrics=requires_specialist_metrics,
             already_current=already_current,
         )
 

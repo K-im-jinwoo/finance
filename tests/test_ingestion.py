@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from stock_assistant.ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
-from stock_assistant.models import AssetType, CompanyKind, Evidence, FinancialSnapshot, FinancingEvent, Market, OHLCV, Security
+from stock_assistant.models import AssetType, CompanyKind, EtfSnapshot, Evidence, FinancialSnapshot, FinancingEvent, Market, OHLCV, Security
 from stock_assistant.providers.dart import DartCompanyProfile, DartFilingPage
 from stock_assistant.providers.krx import KrxDailySnapshot
 from stock_assistant.repository import StockRepository
@@ -33,7 +33,14 @@ class FakeKrxClient:
             symbol, business_date, price, price + 1000, price - 1000, price,
             100000, "KRX_OPEN_API", observed_at,
         )
-        return KrxDailySnapshot((bar,), {symbol: name})
+        etf_snapshots = ()
+        if market == "ETF":
+            etf_snapshots = (EtfSnapshot(
+                symbol, business_date, observed_at, Decimal("99900"),
+                Decimal("100000000000"), Decimal("0.1"), None, None, None,
+                "https://data.krx.co.kr/example",
+            ),)
+        return KrxDailySnapshot((bar,), {symbol: name}, etf_snapshots)
 
     def securities(self, market, business_date):
         if market == "KOSDAQ":
@@ -96,6 +103,11 @@ class FakeDartClient:
         )]
 
 
+class FakeFinancialDartClient(FakeDartClient):
+    def company_profile(self, corp_code):
+        return DartCompanyProfile(CompanyKind.FINANCIAL, "64992", 12)
+
+
 class IngestionTests(unittest.TestCase):
     def test_backfill_persists_equity_etf_and_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -115,6 +127,7 @@ class IngestionTests(unittest.TestCase):
             self.assertEqual(securities[1].asset_type, AssetType.ETF)
             self.assertIsNone(securities[1].listed_on)
             self.assertGreaterEqual(len(repository.bars_for("005930", as_of=observed_at)), 61)
+            self.assertIsNotNone(repository.latest_etf_snapshot("069500", as_of=observed_at))
 
     def test_backfill_bounds_request_window(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -174,6 +187,22 @@ class IngestionTests(unittest.TestCase):
             ).enrich(symbols=["005930"], as_of=as_of, business_year=2025)
             self.assertEqual(repeated.enriched, 0)
             self.assertEqual(repeated.already_current, 1)
+
+    def test_dart_enrichment_does_not_apply_general_cashflow_contract_to_financial_company(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = StockRepository(Path(directory) / "stock.sqlite3")
+            repository.save_securities([Security(
+                "005930", "테스트금융", Market.KOSPI,
+                AssetType.COMMON, CompanyKind.UNKNOWN, date(1975, 6, 11),
+            )])
+            as_of = datetime(2026, 9, 21, tzinfo=UTC)
+            summary = DartFinancialEnricher(
+                repository, FakeFinancialDartClient(), request_interval_seconds=0,
+            ).enrich(symbols=["005930"], as_of=as_of, business_year=2025)
+            self.assertEqual(summary.enriched, 0)
+            self.assertEqual(summary.requires_specialist_metrics, 1)
+            self.assertIsNone(repository.latest_financial("005930", as_of=as_of))
+            self.assertEqual(repository.list_securities()[0].company_kind, CompanyKind.FINANCIAL)
 
     def test_dart_disclosure_enrichment_marks_zero_safe_coverage_and_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

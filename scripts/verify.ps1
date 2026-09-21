@@ -15,6 +15,23 @@ try {
         throw "Workflow audit failed with exit code $LASTEXITCODE."
     }
 
+    $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
+    if ($null -ne $dockerCommand) {
+        $previousDockerConfig = $env:DOCKER_CONFIG
+        $dockerConfig = Join-Path $projectRoot '.cache\docker'
+        New-Item -ItemType Directory -Force -Path $dockerConfig | Out-Null
+        $env:DOCKER_CONFIG = $dockerConfig
+        try {
+            & docker compose --env-file deploy/candidate.env.example -f deploy/compose.yaml --profile candidate config --quiet
+            if ($LASTEXITCODE -ne 0) {
+                throw "Docker Compose validation failed with exit code $LASTEXITCODE."
+            }
+        }
+        finally {
+            $env:DOCKER_CONFIG = $previousDockerConfig
+        }
+    }
+
     if ($env:STOCK_PYTHON) {
         $python = $env:STOCK_PYTHON
     }

@@ -11,8 +11,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .models import Holding, to_json_value
+from .contract_io import parse_screen_request
 from .repository import StockRepository
-from .reports import build_journal_draft
+from .reports import build_candidate_report, build_journal_draft, report_to_dict
+from .screening import screen_security, select_top_candidates
 
 
 MAX_BODY_BYTES = 1_000_000
@@ -68,9 +70,47 @@ class StockApi:
             if route == "/v1/journal/preview" and method == "POST":
                 draft = _parse_journal_preview(payload)
                 return ApiResponse(200, {"draft": to_json_value(draft), "written": False})
+            if route == "/v1/screen" and method == "POST":
+                request = parse_screen_request(payload)
+                result = _screen(request)
+                return ApiResponse(200, {"contract_version": "1.0", "result": to_json_value(result)})
+            if route == "/v1/candidates" and method == "POST":
+                if not isinstance(payload, dict):
+                    raise TypeError("body must be an object")
+                raw_items = payload.get("items")
+                if not isinstance(raw_items, list) or not raw_items:
+                    raise TypeError("items must be a non-empty array")
+                limit = int(payload.get("limit", 5))
+                requests = [parse_screen_request(item) for item in raw_items]
+                as_of_values = {item.as_of for item in requests}
+                if len(as_of_values) != 1:
+                    raise ValueError("all candidate inputs must share the same as_of")
+                selected = select_top_candidates([_screen(item) for item in requests], limit=limit)
+                report = build_candidate_report(
+                    requests[0].as_of,
+                    selected,
+                    facts=_string_tuple(payload.get("facts"), "facts"),
+                    inferences=_string_tuple(payload.get("inferences"), "inferences"),
+                    assumptions=_string_tuple(payload.get("assumptions"), "assumptions"),
+                    unavailable=_string_tuple(payload.get("unavailable"), "unavailable"),
+                )
+                self.repository.save_screening_results(report.report_id, selected)
+                return ApiResponse(200, {"report": report_to_dict(report)})
         except (KeyError, TypeError, ValueError, InvalidOperation) as exc:
             return ApiResponse(422, {"error": str(exc)})
         return ApiResponse(404, {"error": "route not found"})
+
+
+def _screen(request):
+    return screen_security(
+        request.security,
+        request.bars,
+        as_of=request.as_of,
+        financial=request.financial,
+        financing_events=request.financing_events,
+        management_risks=request.management_risks,
+        catalysts=request.catalysts,
+    )
 
 
 def _parse_holding(payload: dict[str, Any]) -> Holding:
@@ -161,4 +201,3 @@ def serve(*, host: str, port: int, database_path: Path, secret_file: Path | None
 
     server = ThreadingHTTPServer((host, port), Handler)
     server.serve_forever()
-

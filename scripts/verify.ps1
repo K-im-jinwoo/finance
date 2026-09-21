@@ -1,9 +1,20 @@
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$previousPythonPath = $env:PYTHONPATH
 Push-Location -LiteralPath $projectRoot
 
 try {
+    & npm.cmd test
+    if ($LASTEXITCODE -ne 0) {
+        throw "Node tests failed with exit code $LASTEXITCODE."
+    }
+
+    & npm.cmd run audit:workflows
+    if ($LASTEXITCODE -ne 0) {
+        throw "Workflow audit failed with exit code $LASTEXITCODE."
+    }
+
     if ($env:STOCK_PYTHON) {
         $python = $env:STOCK_PYTHON
     }
@@ -20,10 +31,9 @@ try {
         throw "Python 3.12+ is required. Found: $versionOutput"
     }
 
-    $previousPythonPath = $env:PYTHONPATH
     $env:PYTHONPATH = Join-Path $projectRoot 'src'
 
-    & $python -m unittest discover -s tests -v
+    & $python -m unittest discover -s tests -p 'test_*.py' -v
     if ($LASTEXITCODE -ne 0) {
         throw "Python tests failed with exit code $LASTEXITCODE."
     }
@@ -52,7 +62,7 @@ try {
         throw "git diff --check failed with exit code $LASTEXITCODE."
     }
 
-    Write-Output "Verification passed with Python $versionOutput."
+    Write-Output "Verification passed: Node workflow harness and Python $versionOutput stock engine."
 }
 finally {
     $env:PYTHONPATH = $previousPythonPath

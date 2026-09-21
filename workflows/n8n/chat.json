@@ -1,0 +1,227 @@
+{
+  "name": "chat",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const item = items[0].json;\n\n// 1. 유저의 질문 텍스트 추출 및 봇 멘션 태그(<@U...>) 제거\nlet cleanedPrompt = item.text || \"\";\ncleanedPrompt = cleanedPrompt.replace(/<@U[A-Z0-9]+>/g, \"\").trim();\n\n// 2. 답장을 달기 위한 쓰레드 TS 추출 (쓰레드가 없다면 부모 메시지의 TS 활용)\nconst threadTs = item.thread_ts || item.ts;\n\nreturn [{\n  json: {\n    user_prompt: cleanedPrompt,\n    channel_id: item.channel,\n    thread_ts: threadTs\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        0
+      ],
+      "id": "92c22d46-e04a-493d-a7c2-acf6329280d3",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.user_prompt }}",
+        "options": {
+          "systemMessage": "=[Role]\n당신은 시장 최전선에서 운용자와 소통하는 세계 최고 수준의 스마트 퀀트 트레이딩 비서입니다. \n\n[Behavior Rule]\n- 사용자가 종목(예: 삼성전자 등) 분석을 요청하는 즉시, 쓸데없는 도입부 인사말과 가이드는 생략하고 오직 본문 결과만 정량적/정성적으로 한 번에 출력하십시오.\n- 모든 답변은 슬랙(Slack) mrkdwn 규격을 100% 준수해야 합니다.\n  * 굵은 글씨는 무조건 별표 1개씩만 감싸야 합니다. (예: *굵은글씨* 형태만 허용, **굵은글씨** 절대 금지)\n  * 슬랙 가독성을 위해 본문에 표(Table) 대신 아래 제공하는 [정량 지표 요약] 고정 텍스트 레이아웃을 빈칸 없이 무조건 채워 출력하십시오.\n- 기준 일시는 임의로 과거 날짜를 조작하지 말고, 시스템이 제공하는 KST 시간 정보(2026-07-15)를 반영하십시오.\n\n[Output Format Specification]\n아래의 형식 규격을 단 한 자도 틀리지 말고 그대로 복사하여 데이터를 채워 출력하십시오.\n\n[필수 실행 지침 - 툴 미사용 금지]\n1. 사용자가 종목 분석을 요청하면, 절대로 본인의 사전 지식(LLM 내부 데이터)만으로 대답하지 마십시오.\n2. 반드시 하단에 연결된 'Execute a SQL query in Postgres' 도구를 먼저 실행하여 최근 24시간 내 수집된 데이터를 조회하십시오.\n3. 데이터베이스 조회 결과물이 존재한다면 그 데이터를 기반으로 분석 보고서를 작성하고, 만약 조회 결과가 없다면 'HTTP Request1' 도구를 사용해 실시간 정보를 가져와서 작성하십시오.\n\n\n📊 *[요청 종목 분석 보고서]*\n• *분석 대상:* {종목명 및 코드}\n• *기준 일시:* 2026-07-15 12:41 (KST)\n\n*■ 정량 지표 요약*\n=============================\n• *감성 점수 (Sentiment)*  ::  [ +0.65 (긍정 우세) ]\n  ㄴ AI 반도체 수요 및 글로벌 공급망 기대감 반영\n• *기술적 위치 (Tech)*      ::  [ 중립 (Neutral) ]\n  ㄴ 기간 조정 구간 및 이동평균선 매물대 지지 테스트 중\n• *핵심 리스크 (Risk)*      ::  [ 보통 (Medium) ]\n  ㄴ 경쟁사 추격 속도 및 대규모 인프라 투자 비용 부담\n=============================\n\n🔍 *핵심 데이터 브리핑 (Fact-based)*\n• *[뉴스/센티먼트]*: 최근 24시간 내 수집된 주요 헤드라인 요약 및 시장 심리 영향도 분석 결과 기술.\n• *[퀀트 시그널]*: 정량적 모멘텀 팩터 상태 및 가격 메커니즘 분석 내용 기술.\n• *[포지션 의견]*: \n  - *Support (손절선)*: {가격 제안} (이탈 시 추세 훼손 가능성 높음)\n  - *Target (목표가)*: {가격 제안}\n  - *전략*: 단기 리스크 관리와 진입 가격대 가이드라인 제시.\n\n⚠️ _Disclaimer: 모든 데이터는 계량 모델 및 뉴스 핸들링에 기반한 통계적 결과물이며, 투자 의사결정의 참고 자료로만 활용하십시오._"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        160,
+        0
+      ],
+      "id": "90821a16-a2a6-43f7-97d5-a3d9fdb174f4",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        32,
+        208
+      ],
+      "id": "b9115090-ffb0-4674-9eca-f37ca24024ac",
+      "name": "Google Gemini Chat Model"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT sentiment_score, market_scenario, created_at \nFROM quant_market_news \nWHERE created_at >= NOW() - INTERVAL '24 hours' \n  AND market_scenario ILIKE $1;",
+        "options": {
+          "queryReplacement": "=Value 1:  {{ $json.user_prompt }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgresTool",
+      "typeVersion": 2.6,
+      "position": [
+        256,
+        288
+      ],
+      "id": "49f3a5d5-e3b2-46cf-b181-fed5496223d3",
+      "name": "Execute a SQL query in Postgres"
+    },
+    {
+      "parameters": {
+        "url": "https://openapi.naver.com/v1/search/news.json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $json.user_prompt }}"
+            },
+            {
+              "name": "display",
+              "value": "10"
+            },
+            {
+              "name": "sort",
+              "value": "sim"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Naver-Client-Id",
+              "value": "={{ $env.X_NAVER_CLIENT_ID }}"
+            },
+            {
+              "name": "X-Naver-Client-Secret",
+              "value": "={{ $env.X_NAVER_CLIENT_SECRET }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        416,
+        304
+      ],
+      "id": "747fc8c3-4654-42e2-a178-d127d7eee219",
+      "name": "HTTP Request1"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "=C0BFM8NFFTL",
+          "mode": "id"
+        },
+        "text": "={{ $json.output }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        512,
+        0
+      ],
+      "id": "d3e6887e-38a1-423b-8a3e-6d59c5cc6999",
+      "name": "Send a message",
+      "webhookId": "c8bb1adb-c1ec-42c0-86ac-72918e6822f7"
+    },
+    {
+      "parameters": {
+        "trigger": [
+          "app_mention"
+        ],
+        "channelId": {
+          "__rl": true,
+          "value": "=C0BFM8NFFTL",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 1,
+      "position": [
+        -256,
+        0
+      ],
+      "id": "4ff76068-05fc-44f0-9ea4-ebe9c67ccb56",
+      "name": "Slack Trigger",
+      "webhookId": "83b9b829-b78a-421c-8ad6-e4412d5d9f6b"
+    }
+  ],
+  "connections": {
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query in Postgres": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Trigger": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "nodeGroups": []
+}

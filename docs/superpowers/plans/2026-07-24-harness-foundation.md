@@ -61,7 +61,7 @@ This foundation is followed by separate, independently reviewable plans:
 
 **Interfaces:**
 - Consumes: approved design at `docs/superpowers/specs/2026-07-24-stock-automation-harness-design.md`.
-- Produces: `npm test`, `npm run audit:workflows`, and `npm run verify` command contracts used by every later task.
+- Produces: `npm.cmd test`, `npm.cmd run audit:workflows`, and `npm.cmd run verify` command contracts used by every later task.
 
 - [ ] **Step 1: Create the repository agent map**
 
@@ -81,8 +81,8 @@ Create `AGENTS.md` with this exact content:
 ## Commands
 
 - Full verification: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1`
-- Node tests: `npm test`
-- Workflow audit: `npm run audit:workflows`
+- Node tests: `npm.cmd test`
+- Workflow audit: `npm.cmd run audit:workflows`
 
 ## Rules
 
@@ -176,7 +176,7 @@ Create `package.json`:
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tests",
+    "test": "node --test",
     "audit:workflows": "node scripts/audit-workflows.mjs workflows/n8n",
     "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1"
   }
@@ -457,7 +457,7 @@ Run:
 node --test tests/sanitize-n8n-export.test.mjs
 ```
 
-Expected: 5 tests pass and 0 tests fail.
+Expected: all discovered sanitizer tests pass and 0 tests fail.
 
 - [ ] **Step 6: Commit the sanitizer**
 
@@ -806,10 +806,10 @@ Run:
 
 ```powershell
 node --test tests/audit-workflows.test.mjs
-npm run audit:workflows
+npm.cmd run audit:workflows
 ```
 
-Expected: 4 tests pass, then the committed workflow directory audit exits `0`.
+Expected: all discovered audit tests pass with 0 failures, then the committed workflow directory audit exits `0`.
 
 - [ ] **Step 6: Commit workflow auditing**
 
@@ -826,7 +826,7 @@ git commit -m "test: enforce safe inactive workflow exports"
 - Create: `scripts/verify.ps1`
 
 **Interfaces:**
-- Consumes: `npm test` and `npm run audit:workflows`.
+- Consumes: `npm.cmd test` and `npm.cmd run audit:workflows`.
 - Produces: one PowerShell command that exits `0` only if both checks pass.
 
 - [ ] **Step 1: Create the PowerShell verification wrapper**
@@ -840,12 +840,12 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $projectRoot
 
 try {
-    & npm test
+    & npm.cmd test
     if ($LASTEXITCODE -ne 0) {
         throw "Node tests failed with exit code $LASTEXITCODE."
     }
 
-    & npm run audit:workflows
+    & npm.cmd run audit:workflows
     if ($LASTEXITCODE -ne 0) {
         throw "Workflow audit failed with exit code $LASTEXITCODE."
     }
@@ -864,7 +864,9 @@ Make a temporary copy outside the repository workflow directory and run the CLI 
 ```powershell
 $caseDir = Join-Path $env:TEMP 'stock-automation-invalid-workflow'
 New-Item -ItemType Directory -Force -Path $caseDir | Out-Null
-Set-Content -LiteralPath (Join-Path $caseDir 'active.json') -Encoding UTF8 -Value '{"name":"active","active":true,"nodes":[],"connections":{}}'
+$path = Join-Path $caseDir 'active.json'
+$value = '{"name":"active","active":true,"nodes":[],"connections":{}}'
+[System.IO.File]::WriteAllText($path, $value, (New-Object System.Text.UTF8Encoding($false)))
 node scripts/audit-workflows.mjs $caseDir
 ```
 
@@ -889,17 +891,8 @@ Run:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 ```
 
-Expected:
-
-```text
-tests 9
-pass 9
-fail 0
-Workflow audit passed:
-Verification passed.
-```
-
-Node may print additional timing lines. The required evidence is exit code `0`, 9 passing tests, 0 failing tests, and both final success messages.
+Expected: exit code `0`, all discovered Node tests passing with 0 failures,
+plus both `Workflow audit passed:` and `Verification passed.` messages.
 
 - [ ] **Step 4: Check documentation links and Git whitespace**
 
@@ -936,10 +929,28 @@ Run:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1
 git status --short
-git log -6 --oneline
+$requiredSubjects = @(
+    'docs: define stock automation harness design',
+    'docs: plan stock automation harness foundation',
+    'docs: add stock automation repository baseline',
+    'feat: add tested n8n export sanitizer',
+    'chore: add sanitized n8n workflow exports',
+    'test: enforce safe inactive workflow exports',
+    'test: add stock automation verification entrypoint',
+    'fix: use portable Node test discovery',
+    'fix: use Windows npm command shim',
+    'fix: use cmd shim for workflow audit'
+)
+$historySubjects = @(git log --format='%s')
+foreach ($subject in $requiredSubjects) {
+    if ($historySubjects -notcontains $subject) {
+        throw "Required commit subject missing from history: $subject"
+    }
+}
+git log --oneline
 ```
 
-Expected: verification exits `0`; `git status --short` is empty; the last six commits contain the design commit and the five foundation implementation commits.
+Expected: verification exits `0`; `git status --short` is empty; the actual history is listed; and the subjects required by this foundation plan are present. Later supplementary fix commits may also exist and are intentionally outside this required-subject check.
 
 ## Plan Completion Boundary
 

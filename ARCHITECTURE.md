@@ -2,15 +2,15 @@
 
 ## Outcome
 
-The stock engine is a channel-neutral, deterministic research service. Official Hermes Desktop, Telegram, and scheduled jobs call the same versioned JSON contract. The existing Telegram gateway is not treated as a Hermes backend.
+The stock engine is a channel-neutral, deterministic research service. Official Hermes Desktop, Telegram, and scheduled jobs call the same versioned JSON contract. The existing custom Telegram gateway is not treated as a Hermes backend.
 
-## Boundaries
+## Data Flow
 
 ```text
 KRX / DART / approved news sources / optional Toss read-only API
-  -> provider adapters
-  -> normalized point-in-time records
-  -> deterministic screening and event-study backtest
+  -> provider adapters and boundary validation
+  -> normalized point-in-time records and idempotent storage
+  -> deterministic indicators, screening and event-study backtest
   -> evidence bundle
   -> Hermes investment profiles (analysis only)
   -> Desktop or Telegram presentation
@@ -25,6 +25,8 @@ explicit one-time approval
   -> WIKI-approved path only
 ```
 
+The repository also keeps sanitized, inactive snapshots of the legacy n8n news workflows. They are evidence and migration inputs, not production-ready workflows.
+
 ## Hard Separation
 
 - `stock_assistant` owns contracts, validation, calculations, screening, backtests, portfolio state, approval state, and report IDs.
@@ -32,6 +34,7 @@ explicit one-time approval
 - The Telegram adapter owns transport and allow-list checks. It does not calculate investment signals.
 - The WIKI writer accepts only approved journal payloads and never receives arbitrary paths.
 - Brokerage order APIs are outside the MVP.
+- Gemini, when retained for news sentiment, cannot calculate entry, target, or stop prices.
 
 ## Data Freshness
 
@@ -45,15 +48,20 @@ explicit one-time approval
 
 ```text
 src/stock_assistant/       domain and application code
-tests/                     network-free tests
-tests/fixtures/            sanitized external-response samples
+tests/                     Python and Node network-free tests
+tests/fixtures/            normalized provider samples
 hermes/profiles/           profile templates without secrets
-docs/contracts/            JSON contracts and reason codes
-docs/findings/              verified environment findings
+workflows/n8n/             sanitized inactive legacy snapshots
+scripts/lib/               workflow sanitizer and audit libraries
+docs/                      decisions, contracts, findings and plans
 scripts/verify.ps1         single verification entrypoint
 ```
 
+## Remaining Legacy Workflow Risks
+
+The n8n snapshots still require separate fixes for hard-coded dates, empty-news behavior, Gemini error visibility, deterministic signal formulas, and verified database constraints before any import or activation.
+
 ## Completion Claims
 
-Local tests prove only deterministic behavior against fixtures. Live collection, Desktop connectivity, Telegram delivery, WIKI persistence, and scheduled operation each require separate operational evidence.
+Local tests prove deterministic behavior against fixtures and workflow safety checks. They do not prove live KRX/DART collection, production PostgreSQL state, Desktop connectivity, Telegram/Slack delivery, WIKI persistence, n8n execution, or scheduled Oracle operation.
 

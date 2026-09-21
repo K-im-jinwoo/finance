@@ -1,2 +1,15 @@
 .worktrees/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.cache/
+data/
+logs/
+*.sqlite3
+*.db
+.env
+*.key
+*.pem
+
 .superpowers/

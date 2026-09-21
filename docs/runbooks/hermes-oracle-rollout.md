@@ -1,6 +1,6 @@
 # Official Hermes and Stock Assistant Oracle Rollout
 
-Status: prepared, not executed
+Status: Gate 2 candidate API deployed; provider credentials and Gates 3-6 pending
 
 ## Gate 1 - Inputs
 
@@ -12,6 +12,8 @@ Status: prepared, not executed
 - approved Oracle backup and rollback window
 
 ## Gate 2 - Stock API candidate
+
+Completed on 2026-09-21 with release `08c10af`. The loopback health and 401/403/report round-trip smoke passed. See `docs/reports/2026-09-21-oracle-candidate-deployment.md`.
 
 Deploy `deploy/compose.yaml` with port 9120 published only to Oracle loopback. Keep the existing private Docker network for future internal consumers and verify the candidate smoke gate in `deploy/README.md`. Give each Hermes profile only its own role-token file; never mount the complete role-secret JSON into Hermes.
 

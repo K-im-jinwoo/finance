@@ -1,10 +1,10 @@
-# Hermes 국내주식 리서치 비서 로컬 MVP 상태
+# Hermes 국내주식 리서치 비서 MVP 및 Oracle 후보 상태
 
 기준일: 2026-09-21
 
 ## 결론
 
-로컬 MVP의 코드와 안전장치는 구현·검증했다. 실제 주문 기능은 없으며, Oracle 배포·공식 Hermes 설치·Desktop 연결·Telegram 알림·실제 WIKI 기록은 운영 변경 승인 전까지 실행하지 않았다.
+로컬 MVP의 코드와 안전장치를 구현·검증했고 Oracle에 loopback-only 후보 API를 배포했다. 실제 주문 기능은 없으며, 공식 Hermes 설치·Desktop 연결·Telegram 알림·실제 WIKI 기록은 아직 실행하지 않았다.
 
 ## 확인된 사실
 
@@ -29,11 +29,12 @@
 ## 실행한 검증
 
 - Node 테스트: 27/27 통과
-- Python 테스트: 105/105 통과
+- Python 테스트: 106/106 통과
 - 비활성 n8n 워크플로 보안 감사: 통과
 - Docker Compose 정적 구성 검증: 통과. API는 Oracle의 `127.0.0.1:9120`에만 게시하도록 제한했다.
 - Python compileall, JSON fixture, 비밀정보 스캔, `git diff --check`: 통과
 - 로컬 HTTP 스모크: `GET /health`가 `status=ok`, `orders_enabled=false` 반환
+- Oracle 후보 smoke: health, 미인증 401, 주문 403, 전문가 보유정보 403, CIO 생성 보고서의 전문가 동일 ID 조회 통과
 
 ## 미확인 항목과 남은 위험
 
@@ -41,9 +42,9 @@
 - 계약의 금액·매출 대비 비중·이행/변경/해지 상세와 DART 밖 판결·기소·제재·대주주 뉴스는 아직 자동 적재하지 않는다. 비표준 재무계정 때문에 회전율을 계산할 수 없는 경우도 `확인 불가` 또는 추가확인으로 표시한다.
 - ETF 추적오차·총보수·구성종목 집중도와 금융회사 전용 지표의 공식 자동 수집기는 아직 없다. 값이 없으면 `BUY_HOLD`로 실패 폐쇄한다.
 - Toss Securities read-only OAuth와 실제 보유자산 동기화는 실행하지 않았다. 미래에셋은 공식 국내주식 개인용 API 경로를 확인하지 못해 MVP에서 수동 입력으로 유지한다.
-- 로컬 Docker 데몬이 실행 중이 아니어서 이미지 빌드와 컨테이너 런타임 검증은 하지 못했다.
+- Oracle arm64에서 이미지를 빌드하고 별도 `stock-assistant` Compose 프로젝트, read-only root filesystem, `127.0.0.1:9120` 바인딩과 영속 DB를 검증했다.
 - Oracle에는 현재 공식 Hermes가 아니라 기존 커스텀 Telegram gateway가 실행 중이다. 공식 Hermes Desktop은 이 gateway에 직접 연결되지 않는다.
-- Oracle 배포, 공식 Hermes 프로필 생성, ChatGPT/Codex OAuth, Desktop 원격 연결, 테스트 Telegram Bot, 실제 WIKI 기록은 실행하지 않았다.
+- 공식 Hermes 프로필 생성, ChatGPT/Codex OAuth, Desktop 원격 연결, 테스트 Telegram Bot, 실제 WIKI 기록은 실행하지 않았다.
 - 공식 Hermes 문서상 OpenAI Codex는 ChatGPT OAuth를 지원하지만, 구독 등급별 사용 한도 산정 방식은 문서화되어 있지 않다. 각 프로필의 인증 상태도 독립적으로 검증해야 한다.
 - 현재 성과는 구조·테스트 검증이며 실제 투자 수익률을 입증하지 않는다.
 - 각 후보 보고서는 `ruleset_version`을 포함하며, 다음 거래일 시가 진입과 왕복 비용을 적용한 5·20·60거래일 가상성과를 전용 DB에 누적한다.
@@ -52,7 +53,7 @@
 
 ## 운영 전환 권고안
 
-1. 기존 운영 Telegram gateway를 유지한 채 Oracle에 stock-assistant와 공식 Hermes를 별도 후보 서비스로 설치한다.
+1. 기존 운영 Telegram gateway와 배포된 stock-assistant를 유지한 채 공식 Hermes를 별도 후보 서비스로 설치한다.
 2. Desktop은 공개 포트 노출 대신 SSH 또는 Tailscale 경로를 사용한다. 최초 전환은 기존 SSH 접근을 이용하는 방식이 가장 변경 범위가 작다.
 3. CIO 프로필 하나에만 별도 테스트 Telegram Bot을 연결하고, 전문 프로필은 Desktop/Bot Mode와 CIO 위임에 사용한다.
 4. KRX·OpenDART 키로 실데이터 smoke를 통과한 후 08:30/20:00/토요일 12:00 스케줄을 활성화한다.
@@ -62,7 +63,7 @@
 
 다음 작업은 서버·외부 채널·credential·실제 WIKI를 변경하므로 별도 승인이 필요하다.
 
-- Oracle 후보 배포와 공식 Hermes 설치
+- 공식 Hermes 설치
 - Desktop 원격 연결 방식 확정
 - 별도 테스트 Telegram Bot token과 허용 user ID 등록
 - KRX·OpenDART 키 등록

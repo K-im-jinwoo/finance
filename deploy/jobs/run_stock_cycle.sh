@@ -10,7 +10,13 @@ esac
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_root=$(CDPATH= cd -- "$script_dir/../.." && pwd)
 compose_file="$project_root/deploy/compose.yaml"
-env_file="${STOCK_CANDIDATE_ENV_FILE:-$project_root/deploy/candidate.env}"
+if [ -n "${STOCK_CANDIDATE_ENV_FILE:-}" ]; then
+  env_file="$STOCK_CANDIDATE_ENV_FILE"
+elif [ -f /srv/stock-assistant/candidate.env ]; then
+  env_file=/srv/stock-assistant/candidate.env
+else
+  env_file="$project_root/deploy/candidate.env"
+fi
 database=/var/lib/stock/stock-assistant.sqlite3
 
 if [ ! -f "$env_file" ]; then

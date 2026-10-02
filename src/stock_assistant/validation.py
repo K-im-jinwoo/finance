@@ -83,3 +83,19 @@ def assert_point_in_time(
         if value is not None and value.astimezone(timezone.utc) > cutoff:
             raise ContractError(f"{label} {name} is later than as_of")
 
+
+def validate_analysis_time(
+    as_of: datetime,
+    *,
+    now: datetime | None = None,
+    label: str = "as_of",
+) -> datetime:
+    if as_of.tzinfo is None:
+        raise ValueError(f"{label} must be timezone-aware")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    normalized = as_of.astimezone(timezone.utc)
+    if normalized > current.astimezone(timezone.utc):
+        raise ValueError(f"{label} cannot be in the future")
+    return normalized

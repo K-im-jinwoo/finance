@@ -54,7 +54,7 @@ class PerformanceTests(unittest.TestCase):
             self.assertEqual(stored, list(evaluation.records))
             summary = summarize_performance(stored)
             self.assertEqual(summary[0]["sample_count"], 1)
-            self.assertEqual(summary[0]["ruleset_version"], "2026-09-21.1")
+            self.assertEqual(summary[0]["ruleset_version"], "2026-09-28.1")
             self.assertEqual(summary[0]["strategy"], "UNAVAILABLE")
 
     def test_not_yet_observed_future_bars_remain_pending(self) -> None:

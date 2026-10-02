@@ -19,6 +19,7 @@ from .models import (
     OHLCV,
     ScreeningResult,
     Security,
+    ReviewTier,
     StrategyType,
 )
 from .validation import assert_point_in_time
@@ -374,6 +375,17 @@ def screen_security(
     else:
         decision = Decision.CANDIDATE
 
+    if decision is Decision.EXCLUDED:
+        review_tier = ReviewTier.EXCLUDED
+    elif decision is Decision.CANDIDATE or (
+        score >= Decimal("80")
+        and not warnings
+        and (bottom_rebound or momentum)
+    ):
+        review_tier = ReviewTier.PRIORITY_REVIEW
+    else:
+        review_tier = ReviewTier.STANDARD_REVIEW
+
     metrics = {
         "close": features.close,
         "sma20": features.sma20,
@@ -418,6 +430,7 @@ def screen_security(
         tuple(dict.fromkeys(catalyst_states)),
         tuple(dict.fromkeys(invalidation_conditions)),
         tuple(sorted(evidence_urls)),
+        review_tier,
     )
 
 
@@ -425,4 +438,9 @@ def select_top_candidates(results: list[ScreeningResult], limit: int = 5) -> lis
     if limit < 1:
         raise ValueError("limit must be positive")
     eligible = [item for item in results if item.decision is not Decision.EXCLUDED]
-    return sorted(eligible, key=lambda item: (-item.score, item.symbol))[:limit]
+    priority = {
+        ReviewTier.PRIORITY_REVIEW: 0,
+        ReviewTier.STANDARD_REVIEW: 1,
+        ReviewTier.EXCLUDED: 2,
+    }
+    return sorted(eligible, key=lambda item: (priority[item.review_tier], -item.score, item.symbol))[:limit]

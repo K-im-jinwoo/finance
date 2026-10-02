@@ -32,6 +32,18 @@ _VISIBLE_METRICS = (
     ("shareholder_return_note", "금융회사 주주환원"),
 )
 
+_DECISION_LABELS = {
+    "CANDIDATE": "검토 후보",
+    "BUY_HOLD": "매수 보류",
+    "EXCLUDED": "제외",
+}
+
+_REVIEW_TIER_LABELS = {
+    "PRIORITY_REVIEW": "우선 검토 후보",
+    "STANDARD_REVIEW": "일반 검토",
+    "EXCLUDED": "제외",
+}
+
 
 def _visible_metrics(value: Any) -> str:
     if not isinstance(value, dict):
@@ -72,7 +84,8 @@ def render_candidate_report(report: dict[str, Any], *, max_chars: int = 3500) ->
         lines = [
             f"후보 {index}. {item.get('name') or '종목명 확인 불가'} ({item.get('symbol', '확인 불가')})",
             f"시장/유형: {item.get('market', '확인 불가')} / {item.get('asset_type', '확인 불가')}",
-            f"판정: {item.get('decision', '확인 불가')} / 점수: {item.get('score', '확인 불가')}",
+            f"검토 등급: {_REVIEW_TIER_LABELS.get(str(item.get('review_tier')), '일반 검토')}",
+            f"행동 판정: {_DECISION_LABELS.get(str(item.get('decision')), '확인 불가')} / 점수: {item.get('score', '확인 불가')}",
             f"전략/예상 기간: {item.get('strategy', '확인 불가')} / {item.get('expected_holding_period', '확인 불가')}",
             "핵심지표:",
             _visible_metrics(item.get("metrics")),

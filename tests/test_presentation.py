@@ -21,6 +21,7 @@ class PresentationTests(unittest.TestCase):
                     "symbol": f"{index:06d}",
                     "name": f"회사-{index}",
                     "decision": "CANDIDATE",
+                    "review_tier": "PRIORITY_REVIEW",
                     "score": "80",
                     "market": "KOSPI",
                     "asset_type": "COMMON",
@@ -46,6 +47,9 @@ class PresentationTests(unittest.TestCase):
         self.assertIn("추론\n- 실적 모멘텀 가능성", combined)
         self.assertIn("확인 불가\n- 장중 체결 데이터", combined)
         self.assertIn("회사-1 (000001)", combined)
+        self.assertIn("검토 등급: 우선 검토 후보", combined)
+        self.assertIn("행동 판정: 검토 후보", combined)
+        self.assertNotIn("행동 판정: CANDIDATE", combined)
         self.assertIn("규칙 버전: 2026-09-21.1", combined)
         self.assertIn("전략/예상 기간: MOMENTUM_CONTINUATION / SEVERAL_DAYS", combined)
         self.assertIn("근거 출처:\n- https://dart.fss.or.kr/example", combined)

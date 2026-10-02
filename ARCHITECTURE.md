@@ -41,7 +41,7 @@ The repository also keeps sanitized, inactive snapshots of the legacy n8n news w
 
 - KRX Open API is the baseline for official daily KOSPI, KOSDAQ, and ETF data.
 - DART is the baseline for filings and financial statements.
-- Toss Securities may later provide authenticated current/real-time prices and read-only holdings. It is optional and disabled by default.
+- Toss Securities provides optional authenticated read-only current prices and one-minute candles for holdings plus the latest five candidates. It is disabled until a credential-gated live smoke passes.
 - Mirae Asset Securities holdings are manual until a verified official securities API is selected.
 - Intraday alerts remain unavailable when no authenticated real-time provider is configured.
 

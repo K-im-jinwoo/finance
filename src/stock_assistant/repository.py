@@ -5,8 +5,10 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
+from .identifiers import require_korean_security_symbol
 from .models import (
     AssetType,
     Catalyst,
@@ -20,6 +22,8 @@ from .models import (
     Holding,
     ManagementRisk,
     Market,
+    MarketQuote,
+    IntradayCandle,
     OHLCV,
     ScreeningResult,
     Security,
@@ -28,7 +32,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _REPORT_ID = re.compile(r"^R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8}$")
 _DATASET = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
@@ -155,6 +159,20 @@ class StockRepository:
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY (report_id, symbol, trading_days)
                 );
+                CREATE TABLE IF NOT EXISTS market_quotes (
+                    symbol TEXT NOT NULL,
+                    source_timestamp TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (symbol, source_timestamp, observed_at)
+                );
+                CREATE TABLE IF NOT EXISTS intraday_candles (
+                    symbol TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (symbol, timestamp, observed_at)
+                );
                 """
             )
             connection.execute(
@@ -180,6 +198,10 @@ class StockRepository:
             raise ValueError("report_id has an invalid format")
         if payload.get("report_id") != report_id:
             raise ValueError("report payload id does not match report_id")
+        parsed_as_of = datetime.fromisoformat(as_of)
+        if parsed_as_of.tzinfo is None:
+            raise ValueError("report as_of must be timezone-aware")
+        normalized_as_of = parsed_as_of.astimezone(timezone.utc).isoformat()
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         with self._connect() as connection:
             existing = connection.execute(
@@ -190,7 +212,7 @@ class StockRepository:
             connection.execute(
                 "INSERT INTO reports(report_id, as_of, payload_json) VALUES (?, ?, ?) "
                 "ON CONFLICT(report_id) DO NOTHING",
-                (report_id, as_of, serialized),
+                (report_id, normalized_as_of, serialized),
             )
 
     def get_report(self, report_id: str) -> dict | None:
@@ -199,6 +221,17 @@ class StockRepository:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT payload_json FROM reports WHERE report_id = ?", (report_id,),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row is not None else None
+
+    def latest_report(self, *, as_of: datetime) -> dict | None:
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM reports WHERE as_of<=? "
+                "ORDER BY as_of DESC, report_id DESC LIMIT 1",
+                (as_of.astimezone(timezone.utc).isoformat(),),
             ).fetchone()
         return json.loads(row["payload_json"]) if row is not None else None
 
@@ -214,6 +247,83 @@ class StockRepository:
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
         return [str(row["report_id"]) for row in rows]
+
+    def watch_symbols(self, *, as_of: datetime, candidate_limit: int = 5) -> list[str]:
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        if isinstance(candidate_limit, bool) or not isinstance(candidate_limit, int) or candidate_limit < 0:
+            raise ValueError("candidate_limit must be a non-negative integer")
+        symbols = {item.symbol for item in self.list_holdings()}
+        report = self.latest_report(as_of=as_of)
+        if report is not None:
+            candidates = report.get("candidates")
+            if not isinstance(candidates, list):
+                raise ValueError("latest report candidates must be an array")
+            for candidate in candidates[:candidate_limit]:
+                if not isinstance(candidate, dict):
+                    raise ValueError("latest report candidate must be an object")
+                symbol = require_korean_security_symbol(candidate.get("symbol"), field="candidate symbol")
+                symbols.add(symbol)
+        return sorted(symbols)
+
+    def save_market_quotes(self, quotes: list[MarketQuote]) -> None:
+        with self._connect() as connection:
+            for quote in quotes:
+                payload = json.dumps(to_json_value(quote), ensure_ascii=False, sort_keys=True)
+                connection.execute(
+                    "INSERT INTO market_quotes(symbol,source_timestamp,observed_at,payload_json) "
+                    "VALUES(?,?,?,?) ON CONFLICT(symbol,source_timestamp,observed_at) "
+                    "DO UPDATE SET payload_json=excluded.payload_json",
+                    (quote.symbol, quote.source_timestamp.isoformat(), quote.observed_at.isoformat(), payload),
+                )
+
+    def latest_market_quote(self, symbol: str, *, as_of: datetime) -> MarketQuote | None:
+        require_korean_security_symbol(symbol)
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM market_quotes WHERE symbol=? AND observed_at<=? "
+                "ORDER BY source_timestamp DESC, observed_at DESC LIMIT 1",
+                (symbol, as_of.astimezone(timezone.utc).isoformat()),
+            ).fetchone()
+        return _market_quote_from_dict(json.loads(row["payload_json"])) if row else None
+
+    def save_intraday_candles(self, candles: list[IntradayCandle]) -> None:
+        with self._connect() as connection:
+            for candle in candles:
+                payload = json.dumps(to_json_value(candle), ensure_ascii=False, sort_keys=True)
+                connection.execute(
+                    "INSERT INTO intraday_candles(symbol,timestamp,observed_at,payload_json) "
+                    "VALUES(?,?,?,?) ON CONFLICT(symbol,timestamp,observed_at) "
+                    "DO UPDATE SET payload_json=excluded.payload_json",
+                    (candle.symbol, candle.timestamp.isoformat(), candle.observed_at.isoformat(), payload),
+                )
+
+    def intraday_candles_for(
+        self,
+        symbol: str,
+        *,
+        as_of: datetime,
+        limit: int = 100,
+    ) -> list[IntradayCandle]:
+        require_korean_security_symbol(symbol)
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT current.payload_json FROM intraday_candles AS current "
+                "WHERE current.symbol=? AND current.timestamp<=? AND current.observed_at<=? "
+                "AND current.observed_at=(SELECT MAX(history.observed_at) FROM intraday_candles AS history "
+                "WHERE history.symbol=current.symbol AND history.timestamp=current.timestamp "
+                "AND history.observed_at<=?) ORDER BY current.timestamp DESC LIMIT ?",
+                (symbol, as_of.astimezone(timezone.utc).isoformat(), as_of.astimezone(timezone.utc).isoformat(),
+                 as_of.astimezone(timezone.utc).isoformat(), limit),
+            ).fetchall()
+        candles = [_intraday_candle_from_dict(json.loads(row["payload_json"])) for row in rows]
+        return sorted(candles, key=lambda item: item.timestamp)
 
     def save_securities(self, securities: list[Security]) -> None:
         with self._connect() as connection:
@@ -231,6 +341,21 @@ class StockRepository:
                 "SELECT payload_json FROM securities ORDER BY symbol",
             ).fetchall()
         return [_security_from_dict(json.loads(row["payload_json"])) for row in rows]
+
+    def security_names(self, symbols: list[str]) -> dict[str, str]:
+        normalized = sorted({require_korean_security_symbol(symbol) for symbol in symbols})
+        if not normalized:
+            return {}
+        placeholders = ",".join("?" for _ in normalized)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT symbol, payload_json FROM securities WHERE symbol IN ({placeholders})",
+                normalized,
+            ).fetchall()
+        return {
+            str(row["symbol"]): _security_from_dict(json.loads(row["payload_json"])).name
+            for row in rows
+        }
 
     def save_bars(self, bars: list[OHLCV]) -> None:
         with self._connect() as connection:
@@ -417,8 +542,7 @@ class StockRepository:
         end_date: str,
         observed_at: datetime,
     ) -> None:
-        if not (symbol.isdigit() and len(symbol) == 6):
-            raise ValueError("coverage symbol must be six digits")
+        require_korean_security_symbol(symbol, field="coverage symbol")
         if not _DATASET.fullmatch(dataset):
             raise ValueError("coverage dataset has an invalid format")
         from datetime import date
@@ -488,7 +612,11 @@ class StockRepository:
                 "AND announced_at<=? ORDER BY announced_at, category, source_url",
                 (symbol, since_utc.isoformat(), as_of_utc.isoformat()),
             ).fetchall()
-        return [_catalyst_from_dict(json.loads(row["payload_json"])) for row in rows]
+        catalysts = [_catalyst_from_dict(json.loads(row["payload_json"])) for row in rows]
+        return [
+            catalyst for catalyst in catalysts
+            if all(item.observed_at <= as_of_utc for item in catalyst.evidence)
+        ]
 
     def save_management_risks(self, risks: list[ManagementRisk]) -> None:
         with self._connect() as connection:
@@ -524,7 +652,12 @@ class StockRepository:
                     as_of.astimezone(timezone.utc).isoformat(),
                 ),
             ).fetchall()
-        return [_management_risk_from_dict(json.loads(row["payload_json"])) for row in rows]
+        risks = [_management_risk_from_dict(json.loads(row["payload_json"])) for row in rows]
+        as_of_utc = as_of.astimezone(timezone.utc)
+        return [
+            risk for risk in risks
+            if all(item.observed_at <= as_of_utc for item in risk.evidence)
+        ]
 
     def replace_holding(self, holding: Holding) -> None:
         with self._connect() as connection:
@@ -639,6 +772,33 @@ def _bar_from_dict(payload: dict) -> OHLCV:
         volume=int(payload["volume"]),
         source=payload["source"],
         observed_at=datetime.fromisoformat(payload["observed_at"]),
+    )
+
+
+def _market_quote_from_dict(payload: dict) -> MarketQuote:
+    return MarketQuote(
+        symbol=payload["symbol"],
+        last_price=Decimal(payload["last_price"]),
+        currency=payload["currency"],
+        source_timestamp=datetime.fromisoformat(payload["source_timestamp"]),
+        observed_at=datetime.fromisoformat(payload["observed_at"]),
+        source=payload["source"],
+    )
+
+
+def _intraday_candle_from_dict(payload: dict) -> IntradayCandle:
+    return IntradayCandle(
+        symbol=payload["symbol"],
+        timestamp=datetime.fromisoformat(payload["timestamp"]),
+        open=Decimal(payload["open"]),
+        high=Decimal(payload["high"]),
+        low=Decimal(payload["low"]),
+        close=Decimal(payload["close"]),
+        volume=int(payload["volume"]),
+        currency=payload["currency"],
+        interval=payload["interval"],
+        observed_at=datetime.fromisoformat(payload["observed_at"]),
+        source=payload["source"],
     )
 
 

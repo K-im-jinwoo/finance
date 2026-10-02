@@ -8,6 +8,7 @@ from typing import Any, Callable
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
+from ..identifiers import is_korean_security_symbol
 from ..models import CompanyKind, Evidence, FinancialSnapshot, FinancingEvent
 from .http import AuthenticationError, ProviderError, RateLimitError, UpstreamSchemaError, get_bytes, get_json
 
@@ -150,8 +151,10 @@ def normalize_dart_corp_codes(payload: bytes) -> dict[str, str]:
         stock_code = (item.findtext("stock_code") or "").strip()
         if not stock_code:
             continue
-        if not (stock_code.isdigit() and len(stock_code) == 6):
-            raise UpstreamSchemaError("DART stock_code must be six digits")
+        if not is_korean_security_symbol(stock_code):
+            raise UpstreamSchemaError(
+                "DART stock_code must be a six-character uppercase alphanumeric code"
+            )
         if not (corp_code.isdigit() and len(corp_code) == 8):
             raise UpstreamSchemaError("DART corp_code must be eight digits")
         if stock_code in mapping and mapping[stock_code] != corp_code:

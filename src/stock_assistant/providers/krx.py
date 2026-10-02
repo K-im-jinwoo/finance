@@ -74,6 +74,41 @@ def _optional_decimal(value: Any, field: str) -> Decimal | None:
     return parsed
 
 
+def _is_non_trading_row(row: dict[str, Any]) -> bool:
+    """Detect KRX's zero-volume sentinel, which is not a valid OHLCV bar."""
+    volume = _optional_decimal(row.get("ACC_TRDVOL", row.get("volume")), "ACC_TRDVOL")
+    prices = tuple(
+        _optional_decimal(row.get(provider_name, row.get(normalized_name)), provider_name)
+        for provider_name, normalized_name in (
+            ("TDD_OPNPRC", "open"),
+            ("TDD_HGPRC", "high"),
+            ("TDD_LWPRC", "low"),
+        )
+    )
+    return volume == 0 and all(value == 0 for value in prices)
+
+
+def _is_blank_market_row(row: dict[str, Any]) -> bool:
+    fields = (
+        ("ACC_TRDVOL", "volume"),
+        ("TDD_OPNPRC", "open"),
+        ("TDD_HGPRC", "high"),
+        ("TDD_LWPRC", "low"),
+        ("TDD_CLSPRC", "close"),
+    )
+    return all(
+        str(row.get(provider_name, row.get(normalized_name)) or "").strip() == ""
+        for provider_name, normalized_name in fields
+    )
+
+
+def _is_blank_market_payload(rows: list[Any]) -> bool:
+    return bool(rows) and all(
+        isinstance(row, dict) and _is_blank_market_row(row)
+        for row in rows
+    )
+
+
 def normalize_krx_security_payload(payload: dict[str, Any], *, market: str) -> list[Security]:
     try:
         market_enum = Market(market)
@@ -118,10 +153,14 @@ def normalize_krx_daily_payload(
     rows = payload.get("OutBlock_1")
     if not isinstance(rows, list):
         raise UpstreamSchemaError("KRX response requires OutBlock_1 array")
+    if _is_blank_market_payload(rows):
+        return []
     normalized: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise UpstreamSchemaError(f"KRX row {index} must be an object")
+        if _is_non_trading_row(row):
+            continue
         symbol = row.get("ISU_CD") or row.get("ISU_SRT_CD") or row.get("symbol")
         base_date = row.get("BAS_DD") or row.get("trade_date")
         if isinstance(base_date, str) and len(base_date) == 8 and base_date.isdigit():
@@ -150,9 +189,13 @@ def normalize_krx_daily_snapshot(
 ) -> KrxDailySnapshot:
     bars = normalize_krx_daily_payload(payload, observed_at=observed_at, source=source)
     rows = payload["OutBlock_1"]
+    if _is_blank_market_payload(rows):
+        return KrxDailySnapshot(tuple(bars), {}, ())
     names: dict[str, str] = {}
     etf_snapshots: list[EtfSnapshot] = []
     for index, row in enumerate(rows):
+        if _is_non_trading_row(row):
+            continue
         symbol = str(row.get("ISU_CD") or row.get("ISU_SRT_CD") or row.get("symbol") or "").strip()
         name = str(row.get("ISU_ABBRV") or row.get("ISU_NM") or row.get("name") or "").strip()
         if name:

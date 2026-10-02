@@ -5,10 +5,14 @@
     "POST /v1/holdings",
     "POST /v1/screen",
     "POST /v1/candidates",
+    "POST /v1/repository/screen",
+    "POST /v1/repository/candidates",
+    "GET /v1/reports/latest",
     "GET /v1/reports/{report_id}",
     "POST /v1/performance/evaluate",
     "GET /v1/performance/{report_id}",
-    "POST /v1/journal/preview"
+    "POST /v1/journal/preview",
+    "EXEC /home/ubuntu/.hermes/profiles/stock-cio/scripts/stock-live-market-query.sh <1-5 symbols>"
   ],
   "forbidden": ["/v1/orders", "direct WIKI write", "broker credentials"]
 }

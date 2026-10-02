@@ -1,0 +1,19 @@
+{
+  "role": "live_market",
+  "allowed": [
+    "EXEC /home/ubuntu/.hermes/profiles/stock-live-market/scripts/stock-intraday.sh <1-5 symbols>",
+    "Toss read-only current prices",
+    "Toss read-only one-minute candles"
+  ],
+  "forbidden": [
+    "stock report mutation",
+    "holdings",
+    "journal",
+    "orders",
+    "account data",
+    "buying power",
+    "conditional orders",
+    "personal order events",
+    "broker credentials"
+  ]
+}

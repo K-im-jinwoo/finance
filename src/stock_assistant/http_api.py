@@ -4,7 +4,7 @@ import hmac
 import json
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -12,11 +12,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .models import Holding, to_json_value
+from .pipeline import CandidatePipeline, PipelineSummary
 from .performance import evaluate_report_performance, summarize_performance
 from .contract_io import parse_screen_request
 from .repository import StockRepository
 from .reports import build_candidate_report, build_journal_draft, report_to_dict
 from .screening import screen_security, select_top_candidates
+from .validation import validate_analysis_time
 
 
 MAX_BODY_BYTES = 1_000_000
@@ -59,15 +61,23 @@ class StockApi:
         if role == "cio":
             return True
         if role in self.SPECIALIST_ROLES:
-            return (method == "POST" and route in {"/v1/screen", "/v1/candidates"}) or (
+            return (method == "POST" and route in {
+                "/v1/screen", "/v1/repository/screen",
+            }) or (
                 method == "GET" and (
+                    route == "/v1/reports/latest"
+                    or
                     self._REPORT_ROUTE.fullmatch(route) is not None
                     or self._PERFORMANCE_ROUTE.fullmatch(route) is not None
                 )
             )
         if role == "scheduler":
-            return (method == "POST" and route in {"/v1/candidates", "/v1/performance/evaluate"}) or (
+            return (method == "POST" and route in {
+                "/v1/candidates", "/v1/repository/candidates", "/v1/performance/evaluate",
+            }) or (
                 method == "GET" and (
+                    route == "/v1/reports/latest"
+                    or
                     self._REPORT_ROUTE.fullmatch(route) is not None
                     or self._PERFORMANCE_ROUTE.fullmatch(route) is not None
                 )
@@ -111,6 +121,7 @@ class StockApi:
                 return ApiResponse(200, {"draft": to_json_value(draft), "written": False})
             if route == "/v1/screen" and method == "POST":
                 request = parse_screen_request(payload)
+                validate_analysis_time(request.as_of)
                 result = _screen(request)
                 return ApiResponse(200, {"contract_version": "1.0", "result": to_json_value(result)})
             if route == "/v1/candidates" and method == "POST":
@@ -121,6 +132,8 @@ class StockApi:
                     raise TypeError("items must be a non-empty array")
                 limit = int(payload.get("limit", 5))
                 requests = [parse_screen_request(item) for item in raw_items]
+                for request in requests:
+                    validate_analysis_time(request.as_of)
                 as_of_values = {item.as_of for item in requests}
                 if len(as_of_values) != 1:
                     raise ValueError("all candidate inputs must share the same as_of")
@@ -137,6 +150,33 @@ class StockApi:
                 self.repository.save_screening_results(report.report_id, selected)
                 self.repository.save_report(report.report_id, report.as_of.isoformat(), report_payload)
                 return ApiResponse(200, {"report": report_payload})
+            if route == "/v1/repository/screen" and method == "POST":
+                if not isinstance(payload, dict):
+                    raise TypeError("body must be an object")
+                as_of = _parse_as_of(payload)
+                result = CandidatePipeline(self.repository).screen_symbol(
+                    symbol=str(payload["symbol"]),
+                    as_of=as_of,
+                )
+                return ApiResponse(200, {
+                    "contract_version": "1.0",
+                    "result": to_json_value(result),
+                })
+            if route == "/v1/repository/candidates" and method == "POST":
+                if not isinstance(payload, dict):
+                    raise TypeError("body must be an object")
+                as_of = _parse_as_of(payload)
+                raw_limit = payload.get("limit", 5)
+                if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+                    raise TypeError("limit must be an integer")
+                if not 1 <= raw_limit <= 20:
+                    raise ValueError("limit must be between 1 and 20")
+                summary = CandidatePipeline(self.repository).run(as_of=as_of, limit=raw_limit)
+                return ApiResponse(200, {
+                    "contract_version": "1.0",
+                    "report": report_to_dict(summary.report),
+                    "summary": _pipeline_summary_to_dict(summary),
+                })
             if route == "/v1/performance/evaluate" and method == "POST":
                 if not isinstance(payload, dict):
                     raise TypeError("body must be an object")
@@ -153,6 +193,11 @@ class StockApi:
                     round_trip_cost_bps=Decimal(str(payload.get("round_trip_cost_bps", "30"))),
                 )
                 return ApiResponse(200, {"evaluation": to_json_value(evaluation)})
+            if route == "/v1/reports/latest" and method == "GET":
+                report = self.repository.latest_report(as_of=datetime.now(timezone.utc))
+                if report is None:
+                    return ApiResponse(404, {"error": "no report is available at the current time"})
+                return ApiResponse(200, {"report": report})
             report_match = self._REPORT_ROUTE.fullmatch(route)
             if report_match is not None and method == "GET":
                 report = self.repository.get_report(report_match.group(1))
@@ -201,6 +246,27 @@ def _parse_holding(payload: dict[str, Any]) -> Holding:
         average_price=Decimal(str(payload["average_price"])),
         acquired_on=date.fromisoformat(str(acquired)) if acquired else None,
     )
+
+
+def _parse_as_of(payload: dict[str, Any]) -> datetime:
+    as_of = datetime.fromisoformat(str(payload["as_of"]))
+    return validate_analysis_time(as_of)
+
+
+def _pipeline_summary_to_dict(summary: PipelineSummary) -> dict[str, int]:
+    return {
+        "scanned": summary.scanned,
+        "excluded": summary.excluded,
+        "insufficient_history": summary.insufficient_history,
+        "missing_financials": summary.missing_financials,
+        "missing_profit_periods": summary.missing_profit_periods,
+        "missing_turnover_metrics": summary.missing_turnover_metrics,
+        "missing_financial_company_metrics": summary.missing_financial_company_metrics,
+        "missing_etf_metrics": summary.missing_etf_metrics,
+        "missing_financing_histories": summary.missing_financing_histories,
+        "missing_management_histories": summary.missing_management_histories,
+        "missing_catalyst_histories": summary.missing_catalyst_histories,
+    }
 
 
 def _string_tuple(value: Any, field: str) -> tuple[str, ...]:

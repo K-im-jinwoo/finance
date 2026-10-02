@@ -32,8 +32,8 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(first.report_id, repeated.report_id)
         self.assertEqual(first.fact_summary, ("DART 공시",))
         self.assertEqual(first.unavailable, ("장중 데이터",))
-        self.assertEqual(first.ruleset_version, "2026-09-21.1")
-        self.assertEqual(first.contract_version, "1.1")
+        self.assertEqual(first.ruleset_version, "2026-09-28.1")
+        self.assertEqual(first.contract_version, "1.2")
 
     def test_journal_path_is_server_generated_and_schema_compatible(self) -> None:
         draft = build_journal_draft(

@@ -11,8 +11,11 @@ from .models import (
     FinancialSnapshot,
     FinancingEvent,
     Holding,
+    IntradayCandle,
     Market,
+    MarketQuote,
     OHLCV,
+    QuoteFreshness,
     Security,
 )
 
@@ -27,7 +30,10 @@ __all__ = [
     "FinancialSnapshot",
     "FinancingEvent",
     "Holding",
+    "IntradayCandle",
     "Market",
+    "MarketQuote",
     "OHLCV",
+    "QuoteFreshness",
     "Security",
 ]

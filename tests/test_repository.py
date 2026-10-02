@@ -57,6 +57,12 @@ class RepositoryTests(unittest.TestCase):
                     "2026-09-21T00:00:00+00:00",
                     {"report_id": report_id, "candidates": ["changed"]},
                 )
+            self.assertIsNone(repository.latest_report(
+                as_of=datetime(2026, 9, 20, tzinfo=UTC),
+            ))
+            self.assertEqual(repository.latest_report(
+                as_of=datetime(2026, 9, 21, 1, tzinfo=UTC),
+            ), payload)
 
     def test_normalized_market_and_financial_data_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -186,6 +192,13 @@ class RepositoryTests(unittest.TestCase):
             repository.save_management_risks([risk])
             as_of = datetime(2026, 9, 20, tzinfo=UTC)
             since = datetime(2025, 9, 20, tzinfo=UTC)
+            before_observation = datetime(2026, 9, 18, 23, tzinfo=UTC)
+            self.assertEqual(repository.catalysts_for(
+                "005930", as_of=before_observation, since=since,
+            ), [])
+            self.assertEqual(repository.management_risks_for(
+                "005930", as_of=before_observation, since=since,
+            ), [])
             self.assertEqual(repository.catalysts_for("005930", as_of=as_of, since=since), [catalyst])
             self.assertEqual(repository.management_risks_for("005930", as_of=as_of, since=since), [risk])
 

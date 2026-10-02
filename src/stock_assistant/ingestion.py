@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from calendar import monthrange
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import re
 from time import sleep
 from typing import Callable
@@ -217,9 +217,13 @@ class DartFinancialEnricher:
         symbols: list[str],
         as_of: datetime,
         business_year: int,
+        observed_at: datetime | None = None,
     ) -> DartEnrichmentSummary:
         if as_of.tzinfo is None:
             raise ValueError("as_of must be timezone-aware")
+        observed = observed_at or as_of
+        if observed.tzinfo is None:
+            raise ValueError("observed_at must be timezone-aware")
         unique_symbols = list(dict.fromkeys(symbols))
         if not unique_symbols or len(unique_symbols) > 50:
             raise ValueError("symbols must contain between 1 and 50 unique items")
@@ -300,7 +304,7 @@ class DartFinancialEnricher:
                 missing_annual_filing += 1
                 continue
             filings = self.client.filings(
-                observed_at=as_of,
+                observed_at=observed,
                 corp_code=corp_code,
                 begin_date=filing_start.strftime("%Y%m%d"),
                 end_date=fully_observable_end.strftime("%Y%m%d"),
@@ -452,9 +456,18 @@ class DartDisclosureEnricher:
             page_no += 1
         return receipt_dates, filings
 
-    def enrich(self, *, symbols: list[str], as_of: datetime) -> DartDisclosureSummary:
+    def enrich(
+        self,
+        *,
+        symbols: list[str],
+        as_of: datetime,
+        observed_at: datetime | None = None,
+    ) -> DartDisclosureSummary:
         if as_of.tzinfo is None:
             raise ValueError("as_of must be timezone-aware")
+        observed = observed_at or as_of
+        if observed.tzinfo is None:
+            raise ValueError("observed_at must be timezone-aware")
         unique_symbols = list(dict.fromkeys(symbols))
         if not unique_symbols or len(unique_symbols) > 50:
             raise ValueError("symbols must contain between 1 and 50 unique items")
@@ -483,7 +496,7 @@ class DartDisclosureEnricher:
                 corp_code=corp_code,
                 start_date=management_start,
                 end_date=end_date,
-                observed_at=as_of,
+                observed_at=observed,
             )
             events = []
             for event_type in DART_FINANCING_ENDPOINTS:
@@ -493,15 +506,20 @@ class DartDisclosureEnricher:
                     event_type=event_type,
                     begin_date=financing_start.strftime("%Y%m%d"),
                     end_date=end_date.strftime("%Y%m%d"),
-                    observed_at=as_of,
+                    observed_at=observed,
                     receipt_dates=receipt_dates,
                 ))
                 self._pace()
             self.repository.save_financing_events(events)
+            eligible_filings = [item for item in filings if item.published_at <= as_of]
+            classification_as_of = max(
+                as_of.astimezone(timezone.utc),
+                observed.astimezone(timezone.utc),
+            )
             catalysts, management_risks = classify_dart_filing_signals(
                 symbol,
-                filings,
-                as_of=as_of,
+                eligible_filings,
+                as_of=classification_as_of,
             )
             self.repository.save_catalysts(catalysts)
             self.repository.save_management_risks(management_risks)
@@ -510,7 +528,7 @@ class DartDisclosureEnricher:
                 dataset="DART_FINANCING",
                 start_date=financing_start.isoformat(),
                 end_date=end_date.isoformat(),
-                observed_at=as_of,
+                observed_at=observed,
             )
             for dataset in ("DART_CATALYST", "DART_MANAGEMENT_RISK"):
                 self.repository.save_coverage(
@@ -518,7 +536,7 @@ class DartDisclosureEnricher:
                     dataset=dataset,
                     start_date=management_start.isoformat(),
                     end_date=end_date.isoformat(),
-                    observed_at=as_of,
+                    observed_at=observed,
                 )
             covered += 1
             events_saved += len(events)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -123,6 +123,115 @@ class HttpApiTests(unittest.TestCase):
             body=b'{"items":[]}',
         )
         self.assertEqual(response.status, 422)
+
+    def test_repository_routes_screen_one_symbol_and_generate_persisted_report(self) -> None:
+        headers = {"Authorization": "Bearer secret"}
+        request = screen_payload("007660")
+        self.api.repository.save_securities([Security(
+            "007660", "이수페타시스", Market.KOSPI,
+            AssetType.COMMON, CompanyKind.GENERAL, date(2003, 10, 1),
+        )])
+        self.api.repository.save_bars(make_bars("007660"))
+        financial = request["financial"]
+        assert financial is not None
+        self.api.repository.save_financial_snapshot(FinancialSnapshot(
+            "007660", date.fromisoformat(financial["period_end"]),
+            datetime.fromisoformat(financial["published_at"]),
+            Decimal(financial["operating_income"]), Decimal(financial["operating_cash_flow"]),
+            Decimal(financial["free_cash_flow"]),
+            tuple(Decimal(value) for value in financial["receivable_turnover"]),
+            tuple(Decimal(value) for value in financial["inventory_turnover"]),
+            financial["source_url"],
+            annual_operating_income=Decimal(financial["annual_operating_income"]),
+            ttm_operating_income=Decimal(financial["ttm_operating_income"]),
+            ttm_period_end=date.fromisoformat(financial["ttm_period_end"]),
+            ttm_source_url=financial["ttm_source_url"],
+        ))
+        body = json.dumps({
+            "symbol": "007660",
+            "as_of": "2026-09-20T12:00:00+00:00",
+        }).encode("utf-8")
+        screened = self.api.dispatch(
+            "POST", "/v1/repository/screen", headers=headers, body=body,
+        )
+        self.assertEqual(screened.status, 200)
+        self.assertEqual(screened.body["result"]["symbol"], "007660")
+
+        generated = self.api.dispatch(
+            "POST", "/v1/repository/candidates", headers=headers,
+            body=json.dumps({
+                "as_of": "2026-09-20T12:00:00+00:00", "limit": 5,
+            }).encode("utf-8"),
+        )
+        self.assertEqual(generated.status, 200)
+        self.assertEqual(generated.body["summary"]["scanned"], 1)
+        report_id = generated.body["report"]["report_id"]
+        self.assertEqual(self.api.repository.get_report(report_id), generated.body["report"])
+
+    def test_repository_routes_validate_symbol_time_limit_and_role(self) -> None:
+        headers = {"Authorization": "Bearer secret"}
+        missing = self.api.dispatch(
+            "POST", "/v1/repository/screen", headers=headers,
+            body=b'{"symbol":"999999","as_of":"2026-09-20T12:00:00+00:00"}',
+        )
+        self.assertEqual(missing.status, 422)
+        naive = self.api.dispatch(
+            "POST", "/v1/repository/candidates", headers=headers,
+            body=b'{"as_of":"2026-09-20T12:00:00","limit":5}',
+        )
+        self.assertEqual(naive.status, 422)
+        invalid_limit = self.api.dispatch(
+            "POST", "/v1/repository/candidates", headers=headers,
+            body=b'{"as_of":"2026-09-20T12:00:00+00:00","limit":0}',
+        )
+        self.assertEqual(invalid_limit.status, 422)
+        future = self.api.dispatch(
+            "POST", "/v1/repository/candidates", headers=headers,
+            body=json.dumps({
+                "as_of": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                "limit": 5,
+            }).encode("utf-8"),
+        )
+        self.assertEqual(future.status, 422)
+        self.assertIn("future", future.body["error"])
+
+        scheduler = StockApi(self.api.repository, role_secrets={"scheduler": "s" * 32})
+        scheduler_headers = {"Authorization": f"Bearer {'s' * 32}"}
+        denied = scheduler.dispatch(
+            "POST", "/v1/repository/screen", headers=scheduler_headers, body=b"{}",
+        )
+        self.assertEqual(denied.status, 403)
+
+    def test_latest_report_is_read_only_and_ignores_future_reports(self) -> None:
+        past_id = "R-20260920T1200Z-ABCDEF12"
+        future_id = "R-20990101T0000Z-ABCDEF12"
+        self.api.repository.save_report(
+            past_id, "2026-09-20T12:00:00+00:00",
+            {"report_id": past_id, "candidates": []},
+        )
+        self.api.repository.save_report(
+            future_id, "2099-01-01T00:00:00+00:00",
+            {"report_id": future_id, "candidates": []},
+        )
+        response = self.api.dispatch(
+            "GET", "/v1/reports/latest",
+            headers={"Authorization": "Bearer secret"},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body["report"]["report_id"], past_id)
+
+        specialist = StockApi(
+            self.api.repository,
+            role_secrets={"market": "m" * 32},
+        )
+        specialist_headers = {"Authorization": f"Bearer {'m' * 32}"}
+        self.assertEqual(specialist.dispatch(
+            "GET", "/v1/reports/latest", headers=specialist_headers,
+        ).status, 200)
+        self.assertEqual(specialist.dispatch(
+            "POST", "/v1/repository/candidates", headers=specialist_headers,
+            body=b"{}",
+        ).status, 403)
 
     def test_performance_evaluation_and_read_endpoint_share_persisted_result(self) -> None:
         headers = {"Authorization": "Bearer secret"}

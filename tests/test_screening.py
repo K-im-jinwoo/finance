@@ -17,6 +17,7 @@ from stock_assistant.models import (
     FinancingEvent,
     ManagementRisk,
     Market,
+    ReviewTier,
     Security,
     StrategyType,
     HoldingPeriod,
@@ -66,6 +67,7 @@ class ScreeningTests(unittest.TestCase):
             financial=good_financial(), catalysts=(confirmed_catalyst(),),
         )
         self.assertEqual(result.decision, Decision.CANDIDATE)
+        self.assertEqual(result.review_tier, ReviewTier.PRIORITY_REVIEW)
         self.assertIn("MOMENTUM_CONTINUATION", result.reasons)
         self.assertIn("OCF_POSITIVE", result.reasons)
         self.assertIn("CATALYST_CONFIRMED", result.reasons)
@@ -92,6 +94,7 @@ class ScreeningTests(unittest.TestCase):
             management_risks=(ManagementRisk("005930", True, "EMBEZZLEMENT", (risk_evidence,)),),
         )
         self.assertEqual(result.decision, Decision.EXCLUDED)
+        self.assertEqual(result.review_tier, ReviewTier.EXCLUDED)
         self.assertIn("OPERATING_LOSS", result.warnings)
         self.assertIn("MANAGEMENT_RISK_CONFIRMED", result.warnings)
 
@@ -105,6 +108,7 @@ class ScreeningTests(unittest.TestCase):
         )
         result = screen_security(samsung(), make_bars(), as_of=AS_OF, financial=good_financial(), financing_events=events)
         self.assertEqual(result.decision, Decision.BUY_HOLD)
+        self.assertEqual(result.review_tier, ReviewTier.STANDARD_REVIEW)
         self.assertIn("REPEATED_DILUTION", result.warnings)
         self.assertIn("REFIXING_PRESENT", result.warnings)
         self.assertEqual(result.metrics["max_dilution_ratio_pct_5y"], Decimal("12.5"))
@@ -121,6 +125,25 @@ class ScreeningTests(unittest.TestCase):
         self.assertIn("DILUTION_HISTORY_UNAVAILABLE", result.warnings)
         self.assertIn("MANAGEMENT_HISTORY_UNAVAILABLE", result.warnings)
         self.assertIn("CATALYST_HISTORY_UNAVAILABLE", result.warnings)
+
+    def test_partial_catalyst_can_be_priority_review_without_becoming_buy_candidate(self) -> None:
+        catalyst = confirmed_catalyst()
+        partial = Catalyst(
+            catalyst.symbol,
+            catalyst.category,
+            CatalystStatus.PARTIAL,
+            catalyst.announced_at,
+            catalyst.valid_until,
+            catalyst.evidence,
+        )
+        result = screen_security(
+            samsung(), make_bars(), as_of=AS_OF,
+            financial=good_financial(), catalysts=(partial,),
+        )
+        self.assertEqual(result.decision, Decision.BUY_HOLD)
+        self.assertEqual(result.review_tier, ReviewTier.PRIORITY_REVIEW)
+        self.assertEqual(result.warnings, ())
+        self.assertTrue(result.checks)
 
     def test_official_allegation_requires_review_but_does_not_claim_conviction(self) -> None:
         evidence = Evidence(
@@ -240,6 +263,20 @@ class ScreeningTests(unittest.TestCase):
         self.assertEqual(len(selected), 5)
         self.assertNotIn("000006", [item.symbol for item in selected])
         self.assertEqual(selected, select_top_candidates(list(reversed(variants))))
+
+    def test_priority_review_ranks_ahead_of_higher_scoring_standard_review(self) -> None:
+        base = screen_security(samsung(), make_bars(), as_of=AS_OF, financial=good_financial())
+        standard = type(base)(
+            "000001", base.as_of, Decision.BUY_HOLD, Decimal("99"),
+            base.reasons, ("TURNOVER_WEAKENING",), base.checks, base.metrics,
+            review_tier=ReviewTier.STANDARD_REVIEW,
+        )
+        priority = type(base)(
+            "000002", base.as_of, Decision.BUY_HOLD, Decimal("80"),
+            base.reasons, (), ("공식 공시 확인",), base.metrics,
+            review_tier=ReviewTier.PRIORITY_REVIEW,
+        )
+        self.assertEqual(select_top_candidates([standard, priority], limit=2), [priority, standard])
 
 
 if __name__ == "__main__":

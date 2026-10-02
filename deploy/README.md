@@ -27,6 +27,8 @@ After the first approved 120-calendar-day backfill, `deploy/jobs/run_stock_cycle
 The script prints only the final report so Hermes cron can deliver it to Telegram. Set `STOCK_DART_BUSINESS_YEAR` explicitly; do not infer a fiscal year during unattended operation.
 Completed virtual outcomes are immutable. Pending horizons remain explicit and are excluded from return and win-rate aggregates.
 
+For Hermes cron, install `deploy/jobs/stock-morning.sh`, `stock-evening.sh`, and `stock-weekly.sh` under the CIO profile's `~/.hermes/scripts/`. They read `/srv/stock-assistant/schedule.env`; keep the approved `STOCK_DART_BUSINESS_YEAR` there and never put Telegram or provider credentials in that file.
+
 ## Static validation
 
 ```bash

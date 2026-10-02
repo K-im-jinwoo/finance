@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -250,9 +250,10 @@ class IngestionTests(unittest.TestCase):
                 AssetType.COMMON, CompanyKind.GENERAL, date(1975, 6, 11),
             )])
             as_of = datetime(2026, 9, 21, tzinfo=UTC)
+            observed_at = as_of + timedelta(hours=1)
             summary = DartDisclosureEnricher(
                 repository, FakeDartClient(), request_interval_seconds=0,
-            ).enrich(symbols=["005930"], as_of=as_of)
+            ).enrich(symbols=["005930"], as_of=as_of, observed_at=observed_at)
             self.assertEqual(summary.covered, 1)
             self.assertEqual(summary.events_saved, 1)
             self.assertEqual(summary.catalysts_saved, 1)
@@ -262,17 +263,26 @@ class IngestionTests(unittest.TestCase):
                 since=datetime(2021, 9, 17, tzinfo=UTC),
             )
             self.assertEqual(events[0].event_type, "CB")
-            self.assertTrue(repository.has_coverage(
+            self.assertFalse(repository.has_coverage(
                 symbol="005930", dataset="DART_FINANCING",
                 required_start_date="2021-09-20", required_end_date="2026-09-20",
                 as_of=as_of,
             ))
-            self.assertEqual(len(repository.catalysts_for(
+            self.assertTrue(repository.has_coverage(
+                symbol="005930", dataset="DART_FINANCING",
+                required_start_date="2021-09-20", required_end_date="2026-09-20",
+                as_of=observed_at,
+            ))
+            self.assertEqual(repository.catalysts_for(
                 "005930", as_of=as_of,
+                since=datetime(2025, 1, 1, tzinfo=UTC),
+            ), [])
+            self.assertEqual(len(repository.catalysts_for(
+                "005930", as_of=observed_at,
                 since=datetime(2025, 1, 1, tzinfo=UTC),
             )), 1)
             self.assertFalse(repository.management_risks_for(
-                "005930", as_of=as_of,
+                "005930", as_of=observed_at,
                 since=datetime(2016, 1, 1, tzinfo=UTC),
             )[0].confirmed)
 

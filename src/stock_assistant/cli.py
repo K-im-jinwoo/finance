@@ -4,13 +4,15 @@ import argparse
 import json
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
 from .client import StockClient, StockClientError
+from .alerts import AlertStore
 from .http_api import serve
 from .ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
+from .intraday import build_intraday_signal
 from .models import to_json_value
 from .performance import (
     evaluate_all_report_performance,
@@ -22,8 +24,13 @@ from .presentation import render_candidate_report
 from .providers.http import ProviderError
 from .providers.dart import DartClient
 from .providers.krx import KrxClient
+from .providers.toss import TossMarketDataClient
 from .repository import StockRepository
 from .reports import report_to_dict
+from .validation import validate_analysis_time
+
+
+KST = timezone(timedelta(hours=9), "Asia/Seoul")
 
 
 def _project_root() -> Path:
@@ -99,6 +106,14 @@ def main(argv: list[str] | None = None) -> int:
     all_performance_parser.add_argument("--as-of", type=datetime.fromisoformat, required=True)
     all_performance_parser.add_argument("--horizons", default="5,20,60")
     all_performance_parser.add_argument("--round-trip-cost-bps", type=Decimal, default=Decimal("30"))
+    intraday_parser = subparsers.add_parser("refresh-intraday")
+    intraday_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    intraday_parser.add_argument("--client-id-file", type=Path, required=True)
+    intraday_parser.add_argument("--client-secret-file", type=Path, required=True)
+    intraday_parser.add_argument("--candidate-limit", type=int, default=5)
+    intraday_parser.add_argument("--candle-count", type=int, default=30)
+    intraday_parser.add_argument("--symbols", help="comma-separated explicit symbols for a bounded smoke or on-demand query")
+    intraday_parser.add_argument("--alerts-only", action="store_true")
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -113,6 +128,106 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "isu-case":
         print(json.dumps(_isu_case(), ensure_ascii=False, indent=2))
         return 0
+    if args.command == "refresh-intraday":
+        try:
+            client_id = args.client_id_file.read_text(encoding="utf-8").strip()
+            client_secret = args.client_secret_file.read_text(encoding="utf-8").strip()
+            if not client_id or not client_secret:
+                raise ValueError("Toss credential files cannot be empty")
+            run_started_at = datetime.now(timezone.utc)
+            repository = StockRepository(args.database)
+            if args.symbols:
+                symbols = [item.strip().upper() for item in args.symbols.split(",") if item.strip()]
+                if not symbols or len(symbols) > 25 or len(set(symbols)) != len(symbols):
+                    raise ValueError("symbols must contain 1 to 25 unique items")
+            else:
+                symbols = repository.watch_symbols(
+                    as_of=run_started_at, candidate_limit=args.candidate_limit,
+                )
+            if not symbols:
+                if not args.alerts_only:
+                    print(json.dumps({"observed_at": run_started_at.isoformat(), "signals": [], "status": "NO_WATCH_SYMBOLS"}))
+                return 0
+            security_names = repository.security_names(symbols)
+            provider = TossMarketDataClient(client_id, client_secret)
+            quotes = provider.prices(symbols, observed_at=run_started_at)
+            repository.save_market_quotes(quotes)
+            signals = []
+            for quote in quotes:
+                candles = provider.candles(
+                    quote.symbol, observed_at=quote.observed_at, count=args.candle_count,
+                )
+                repository.save_intraday_candles(candles)
+                signal_observed_at = max(
+                    quote.observed_at,
+                    *(item.observed_at for item in candles),
+                    datetime.now(timezone.utc),
+                )
+                signals.append(build_intraday_signal(quote, candles, now=signal_observed_at))
+            observed_at = max(
+                (signal.observed_at for signal in signals),
+                default=run_started_at,
+            )
+            signal_payloads = []
+            for signal in signals:
+                payload = to_json_value(signal)
+                payload["name"] = security_names.get(signal.symbol)
+                signal_payloads.append(payload)
+            result_payload = {
+                "observed_at": observed_at.isoformat(),
+                "source": "TOSS_SECURITIES_OPEN_API",
+                "symbols": symbols,
+                "signals": signal_payloads,
+                "orders_enabled": False,
+            }
+            if args.alerts_only:
+                alert_store = AlertStore(args.database)
+                messages = []
+                for signal in signals:
+                    if "ONE_MINUTE_VOLUME_SPIKE" not in signal.warnings:
+                        continue
+                    if signal.volume_candle_at is None:
+                        raise ValueError("volume spike is missing its source candle timestamp")
+                    event_key = (
+                        f"intraday-volume:{signal.symbol}:"
+                        f"{signal.volume_candle_at.strftime('%Y%m%dT%H%MZ')}"
+                    )
+                    alert = alert_store.issue(
+                        event_key=event_key,
+                        symbol=signal.symbol,
+                        alert_type="ONE_MINUTE_VOLUME_SPIKE",
+                        observed_at=signal.observed_at,
+                        payload=to_json_value(signal),
+                        cooldown_seconds=1800,
+                    )
+                    if alert is None:
+                        continue
+                    ratio = f"{signal.volume_ratio:.2f}" if signal.volume_ratio is not None else "확인 불가"
+                    local_time = signal.observed_at.astimezone(KST).isoformat(timespec="seconds")
+                    candle_time = signal.volume_candle_at.astimezone(KST).isoformat(timespec="minutes")
+                    security_name = security_names.get(signal.symbol)
+                    security_label = (
+                        f"{security_name}({signal.symbol})"
+                        if security_name else f"종목명 확인 불가({signal.symbol})"
+                    )
+                    messages.append(
+                        f"장중 거래량 경고\n"
+                        f"종목: {security_label}\n"
+                        f"현재가: {signal.last_price:,.0f}원\n"
+                        f"기준시각: {local_time}\n"
+                        f"신선도: {signal.freshness.value} ({signal.age_seconds}초)\n"
+                        f"거래량 기준봉: {candle_time}\n"
+                        f"최근 완성 1분봉 거래량: 직전 20개 중앙값 대비 {ratio}배\n"
+                        f"이 경고는 매수·매도 지시가 아닙니다."
+                    )
+                if messages:
+                    print("\n\n".join(messages))
+                return 0
+            print(json.dumps(result_payload, ensure_ascii=False, indent=2))
+            return 0
+        except (OSError, ValueError, ProviderError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
     if args.command == "serve":
         secret_file = args.secret_file
         if secret_file is None and os.getenv("STOCK_API_SHARED_SECRET_FILE"):
@@ -177,8 +292,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 1
     if args.command == "generate-candidates":
-        as_of = args.as_of or datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        as_of = args.as_of or now
         try:
+            as_of = validate_analysis_time(as_of, now=now)
             summary = CandidatePipeline(StockRepository(args.database)).run(as_of=as_of, limit=args.limit)
             if args.format == "json":
                 print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
@@ -195,8 +312,10 @@ def main(argv: list[str] | None = None) -> int:
         if key_file is None:
             print(json.dumps({"error": "DART key file is required"}), file=sys.stderr)
             return 2
-        as_of = args.as_of or datetime.now(timezone.utc)
+        observed_at = datetime.now(timezone.utc)
+        as_of = args.as_of or observed_at
         try:
+            as_of = validate_analysis_time(as_of, now=observed_at)
             key = key_file.read_text(encoding="utf-8").strip()
             if not key:
                 raise ValueError("DART key file is empty")
@@ -208,6 +327,7 @@ def main(argv: list[str] | None = None) -> int:
                 symbols=symbols,
                 as_of=as_of,
                 business_year=args.business_year,
+                observed_at=observed_at,
             )
             print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
             return 0
@@ -221,8 +341,10 @@ def main(argv: list[str] | None = None) -> int:
         if key_file is None:
             print(json.dumps({"error": "DART key file is required"}), file=sys.stderr)
             return 2
-        as_of = args.as_of or datetime.now(timezone.utc)
+        observed_at = datetime.now(timezone.utc)
+        as_of = args.as_of or observed_at
         try:
+            as_of = validate_analysis_time(as_of, now=observed_at)
             key = key_file.read_text(encoding="utf-8").strip()
             if not key:
                 raise ValueError("DART key file is empty")
@@ -233,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
             summary = DartDisclosureEnricher(repository, DartClient(key)).enrich(
                 symbols=symbols,
                 as_of=as_of,
+                observed_at=observed_at,
             )
             print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
             return 0

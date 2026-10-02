@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
 
+from .identifiers import require_korean_security_symbol
+
 
 class DeliveryStatus(StrEnum):
     PENDING = "PENDING"
@@ -72,8 +74,7 @@ class AlertStore:
     ) -> Alert | None:
         if not event_key.strip() or not alert_type.strip():
             raise ValueError("event_key and alert_type are required")
-        if not (symbol.isdigit() and len(symbol) == 6):
-            raise ValueError("symbol must be six digits")
+        require_korean_security_symbol(symbol)
         if observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
         if cooldown_seconds < 0:
@@ -137,4 +138,3 @@ class AlertStore:
             datetime.fromisoformat(row["observed_at"]), DeliveryStatus(row["status"]),
             int(row["attempt_count"]), row["last_error_code"],
         )
-

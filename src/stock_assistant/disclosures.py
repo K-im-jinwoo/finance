@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from .identifiers import require_korean_security_symbol
 from .models import Catalyst, CatalystStatus, Evidence, ManagementRisk
 from .validation import assert_point_in_time
 
@@ -13,8 +14,7 @@ def classify_dart_filing_signals(
     as_of: datetime,
 ) -> tuple[list[Catalyst], list[ManagementRisk]]:
     """Classify only conservative title-level signals; detailed validity stays unresolved."""
-    if not (symbol.isdigit() and len(symbol) == 6):
-        raise ValueError("symbol must be six digits")
+    require_korean_security_symbol(symbol)
     if as_of.tzinfo is None:
         raise ValueError("as_of must be timezone-aware")
     catalysts: list[Catalyst] = []

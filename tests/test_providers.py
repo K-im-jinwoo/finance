@@ -46,6 +46,74 @@ class ProviderTests(unittest.TestCase):
         snapshot = normalize_krx_daily_snapshot(payload, observed_at=OBSERVED)
         self.assertEqual(snapshot.names, {"005930": "삼성전자"})
 
+    def test_krx_zero_volume_sentinel_is_not_invented_as_an_ohlcv_bar(self) -> None:
+        payload = {"OutBlock_1": [{
+            "BAS_DD": "20260918",
+            "ISU_CD": "000300",
+            "ISU_NM": "거래정지 예시",
+            "TDD_CLSPRC": "4,200",
+            "TDD_OPNPRC": "0",
+            "TDD_HGPRC": "0",
+            "TDD_LWPRC": "0",
+            "ACC_TRDVOL": "0",
+            "NAV": "4,210",
+            "INVSTASST_NETASST_TOTAMT": "1000000",
+        }]}
+        snapshot = normalize_krx_daily_snapshot(
+            payload, observed_at=OBSERVED, market="ETF",
+        )
+        self.assertEqual(snapshot.bars, ())
+        self.assertEqual(snapshot.names, {})
+        self.assertEqual(snapshot.etf_snapshots, ())
+
+    def test_krx_invalid_price_geometry_still_fails_closed(self) -> None:
+        payload = {"OutBlock_1": [{
+            "BAS_DD": "20260918",
+            "ISU_CD": "005930",
+            "TDD_CLSPRC": "100",
+            "TDD_OPNPRC": "90",
+            "TDD_HGPRC": "95",
+            "TDD_LWPRC": "80",
+            "ACC_TRDVOL": "1",
+        }]}
+        with self.assertRaisesRegex(UpstreamSchemaError, "high"):
+            normalize_krx_daily_payload(payload, observed_at=OBSERVED)
+
+    def test_krx_all_blank_holiday_payload_is_empty_but_mixed_payload_fails(self) -> None:
+        blank = {
+            "BAS_DD": "20260603",
+            "ISU_CD": "451060",
+            "ISU_NM": "1Q 200액티브",
+            "TDD_CLSPRC": "",
+            "TDD_OPNPRC": "",
+            "TDD_HGPRC": "",
+            "TDD_LWPRC": "",
+            "ACC_TRDVOL": "",
+            "NAV": "",
+            "INVSTASST_NETASST_TOTAMT": "",
+        }
+        snapshot = normalize_krx_daily_snapshot(
+            {"OutBlock_1": [blank]}, observed_at=OBSERVED, market="ETF",
+        )
+        self.assertEqual(snapshot.bars, ())
+        self.assertEqual(snapshot.names, {})
+        self.assertEqual(snapshot.etf_snapshots, ())
+
+        valid = {
+            "BAS_DD": "20260603",
+            "ISU_CD": "069500",
+            "ISU_NM": "KODEX 200",
+            "TDD_CLSPRC": "42,100",
+            "TDD_OPNPRC": "41,900",
+            "TDD_HGPRC": "42,200",
+            "TDD_LWPRC": "41,800",
+            "ACC_TRDVOL": "1,234",
+        }
+        with self.assertRaisesRegex(UpstreamSchemaError, "numeric"):
+            normalize_krx_daily_payload(
+                {"OutBlock_1": [blank, valid]}, observed_at=OBSERVED,
+            )
+
     def test_etf_daily_snapshot_preserves_official_nav_and_net_assets(self) -> None:
         payload = json.loads((FIXTURES / "krx_etf_daily_raw.json").read_text(encoding="utf-8"))
         snapshot = normalize_krx_daily_snapshot(payload, observed_at=OBSERVED, market="ETF")
@@ -104,6 +172,36 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(len(securities), 3)
         self.assertTrue(calls[0][0].endswith("/sto/stk_isu_base_info"))
         self.assertEqual(calls[0][1]["query"], {"basDd": "20260918"})
+
+    def test_krx_accepts_alphanumeric_common_stock_and_etf_short_codes(self) -> None:
+        security_payload = {"OutBlock_1": [{
+            "ISU_SRT_CD": "0030R0",
+            "ISU_NM": "대신밸류리츠보통주",
+            "ISU_ABBRV": "대신밸류리츠",
+            "LIST_DD": "20260901",
+            "KIND_STKCERT_TP_NM": "보통주",
+        }]}
+        securities = normalize_krx_security_payload(security_payload, market="KOSPI")
+        self.assertEqual(securities[0].symbol, "0030R0")
+        self.assertEqual(securities[0].asset_type, AssetType.COMMON)
+
+        daily_payload = {"OutBlock_1": [{
+            "BAS_DD": "20260918",
+            "ISU_CD": "0094L0",
+            "ISU_NM": "테스트 ETF",
+            "TDD_CLSPRC": "10,100",
+            "TDD_OPNPRC": "10,000",
+            "TDD_HGPRC": "10,200",
+            "TDD_LWPRC": "9,900",
+            "ACC_TRDVOL": "123,456",
+            "NAV": "10,050",
+            "INVSTASST_NETASST_TOTAMT": "1000000000",
+        }]}
+        snapshot = normalize_krx_daily_snapshot(
+            daily_payload, observed_at=OBSERVED, market="ETF",
+        )
+        self.assertEqual(snapshot.bars[0].symbol, "0094L0")
+        self.assertEqual(snapshot.etf_snapshots[0].symbol, "0094L0")
 
     def test_dart_normalization_and_error_codes(self) -> None:
         payload = json.loads((FIXTURES / "dart_filings_raw.json").read_text(encoding="utf-8"))
@@ -252,12 +350,19 @@ class ProviderTests(unittest.TestCase):
     def test_dart_corp_code_archive_and_company_kind_are_normalized(self) -> None:
         xml = (
             "<result><list><corp_code>00126380</corp_code><corp_name>삼성전자</corp_name>"
-            "<stock_code>005930</stock_code><modify_date>20260918</modify_date></list></result>"
+            "<stock_code>005930</stock_code><modify_date>20260918</modify_date></list>"
+            "<list><corp_code>12345678</corp_code><corp_name>영문혼합코드</corp_name>"
+            "<stock_code>0068Y0</stock_code><modify_date>20260918</modify_date></list>"
+            "<list><corp_code>87654321</corp_code><corp_name>비상장사</corp_name>"
+            "<stock_code></stock_code><modify_date>20260918</modify_date></list></result>"
         ).encode("utf-8")
         buffer = BytesIO()
         with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
             archive.writestr("CORPCODE.xml", xml)
-        self.assertEqual(normalize_dart_corp_codes(buffer.getvalue()), {"005930": "00126380"})
+        self.assertEqual(normalize_dart_corp_codes(buffer.getvalue()), {
+            "005930": "00126380",
+            "0068Y0": "12345678",
+        })
         self.assertEqual(
             normalize_dart_company_kind({"status": "000", "induty_code": "64992", "acc_mt": "12"}),
             CompanyKind.FINANCIAL,
@@ -268,6 +373,17 @@ class ProviderTests(unittest.TestCase):
         )
         profile = normalize_dart_company_profile({"status": "000", "induty_code": "26110", "acc_mt": "03"})
         self.assertEqual(profile.fiscal_month, 3)
+
+    def test_dart_numeric_stock_code_with_wrong_length_still_fails_closed(self) -> None:
+        xml = (
+            "<result><list><corp_code>00126380</corp_code><corp_name>잘못된 코드</corp_name>"
+            "<stock_code>05930</stock_code><modify_date>20260918</modify_date></list></result>"
+        ).encode("utf-8")
+        buffer = BytesIO()
+        with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("CORPCODE.xml", xml)
+        with self.assertRaisesRegex(UpstreamSchemaError, "six-character"):
+            normalize_dart_corp_codes(buffer.getvalue())
 
     def test_dart_client_keeps_binary_and_json_credentials_inside_provider_boundary(self) -> None:
         xml = (

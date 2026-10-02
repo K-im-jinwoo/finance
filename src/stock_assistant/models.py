@@ -6,6 +6,8 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
+from .identifiers import require_korean_security_symbol
+
 
 class Market(StrEnum):
     KOSPI = "KOSPI"
@@ -43,6 +45,12 @@ class Decision(StrEnum):
     EXCLUDED = "EXCLUDED"
 
 
+class ReviewTier(StrEnum):
+    PRIORITY_REVIEW = "PRIORITY_REVIEW"
+    STANDARD_REVIEW = "STANDARD_REVIEW"
+    EXCLUDED = "EXCLUDED"
+
+
 class StrategyType(StrEnum):
     BOTTOM_REBOUND = "BOTTOM_REBOUND"
     MOMENTUM_CONTINUATION = "MOMENTUM_CONTINUATION"
@@ -65,6 +73,12 @@ class ThesisStatus(StrEnum):
     CLOSED = "CLOSED"
 
 
+class QuoteFreshness(StrEnum):
+    FRESH = "FRESH"
+    DELAYED = "DELAYED"
+    STALE = "STALE"
+
+
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("datetime must be timezone-aware")
@@ -82,8 +96,7 @@ class Security:
     delisted_on: date | None = None
 
     def __post_init__(self) -> None:
-        if not (self.symbol.isdigit() and len(self.symbol) == 6):
-            raise ValueError("symbol must be a six-digit Korean security code")
+        require_korean_security_symbol(self.symbol)
         if not self.name.strip():
             raise ValueError("security name is required")
         if self.delisted_on is not None and self.listed_on is not None and self.delisted_on < self.listed_on:
@@ -108,8 +121,7 @@ class OHLCV:
     observed_at: datetime
 
     def __post_init__(self) -> None:
-        if not (self.symbol.isdigit() and len(self.symbol) == 6):
-            raise ValueError("OHLCV symbol must be six digits")
+        require_korean_security_symbol(self.symbol, field="OHLCV symbol")
         if any(value < 0 for value in (self.open, self.high, self.low, self.close)):
             raise ValueError("OHLCV prices cannot be negative")
         if self.high < max(self.open, self.low, self.close):
@@ -121,6 +133,69 @@ class OHLCV:
         if not self.source.strip():
             raise ValueError("OHLCV source is required")
         object.__setattr__(self, "observed_at", _utc(self.observed_at))
+
+
+@dataclass(frozen=True, slots=True)
+class MarketQuote:
+    symbol: str
+    last_price: Decimal
+    currency: str
+    source_timestamp: datetime
+    observed_at: datetime
+    source: str
+
+    def __post_init__(self) -> None:
+        require_korean_security_symbol(self.symbol, field="quote symbol")
+        if self.last_price <= 0:
+            raise ValueError("last_price must be positive")
+        if self.currency != "KRW":
+            raise ValueError("only KRW quotes are supported")
+        if not self.source.strip():
+            raise ValueError("quote source is required")
+        source_timestamp = _utc(self.source_timestamp)
+        observed_at = _utc(self.observed_at)
+        if source_timestamp > observed_at:
+            raise ValueError("quote source_timestamp cannot be after observed_at")
+        object.__setattr__(self, "source_timestamp", source_timestamp)
+        object.__setattr__(self, "observed_at", observed_at)
+
+
+@dataclass(frozen=True, slots=True)
+class IntradayCandle:
+    symbol: str
+    timestamp: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: int
+    currency: str
+    interval: str
+    observed_at: datetime
+    source: str
+
+    def __post_init__(self) -> None:
+        require_korean_security_symbol(self.symbol, field="intraday candle symbol")
+        if self.interval != "1m":
+            raise ValueError("only 1m intraday candles are supported")
+        if any(value <= 0 for value in (self.open, self.high, self.low, self.close)):
+            raise ValueError("intraday candle prices must be positive")
+        if self.high < max(self.open, self.low, self.close):
+            raise ValueError("high is below another intraday price")
+        if self.low > min(self.open, self.high, self.close):
+            raise ValueError("low is above another intraday price")
+        if self.volume < 0:
+            raise ValueError("intraday candle volume cannot be negative")
+        if self.currency != "KRW":
+            raise ValueError("only KRW candles are supported")
+        if not self.source.strip():
+            raise ValueError("intraday candle source is required")
+        timestamp = _utc(self.timestamp)
+        observed_at = _utc(self.observed_at)
+        if timestamp > observed_at:
+            raise ValueError("intraday candle timestamp cannot be after observed_at")
+        object.__setattr__(self, "timestamp", timestamp)
+        object.__setattr__(self, "observed_at", observed_at)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,8 +234,7 @@ class FinancialSnapshot:
     ttm_source_url: str | None = None
 
     def __post_init__(self) -> None:
-        if not (self.symbol.isdigit() and len(self.symbol) == 6):
-            raise ValueError("financial symbol must be six digits")
+        require_korean_security_symbol(self.symbol, field="financial symbol")
         object.__setattr__(self, "published_at", _utc(self.published_at))
         if not self.source_url.strip():
             raise ValueError("financial source_url is required")
@@ -186,8 +260,7 @@ class FinancialCompanySnapshot:
     source_url: str
 
     def __post_init__(self) -> None:
-        if not (self.symbol.isdigit() and len(self.symbol) == 6):
-            raise ValueError("financial-company symbol must be six digits")
+        require_korean_security_symbol(self.symbol, field="financial-company symbol")
         object.__setattr__(self, "published_at", _utc(self.published_at))
         for field_name in (
             "capital_adequacy_ratio",
@@ -218,8 +291,7 @@ class EtfSnapshot:
     source_url: str
 
     def __post_init__(self) -> None:
-        if not (self.symbol.isdigit() and len(self.symbol) == 6):
-            raise ValueError("ETF symbol must be six digits")
+        require_korean_security_symbol(self.symbol, field="ETF symbol")
         object.__setattr__(self, "observed_at", _utc(self.observed_at))
         if self.nav_per_share is not None and self.nav_per_share <= 0:
             raise ValueError("nav_per_share must be positive when present")
@@ -247,8 +319,7 @@ class FinancingEvent:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "announced_at", _utc(self.announced_at))
-        if not (self.symbol.isdigit() and len(self.symbol) == 6):
-            raise ValueError("financing symbol must be six digits")
+        require_korean_security_symbol(self.symbol, field="financing symbol")
         if not self.event_type.strip():
             raise ValueError("financing event_type is required")
         if not self.source_url.strip():
@@ -301,8 +372,7 @@ class Holding:
     def __post_init__(self) -> None:
         if not self.broker.strip():
             raise ValueError("broker is required")
-        if not (self.symbol.isdigit() and len(self.symbol) == 6):
-            raise ValueError("holding symbol must be six digits")
+        require_korean_security_symbol(self.symbol, field="holding symbol")
         if self.quantity <= 0 or self.average_price <= 0:
             raise ValueError("quantity and average_price must be positive")
 
@@ -346,6 +416,7 @@ class ScreeningResult:
     catalyst_states: tuple[str, ...] = ()
     invalidation_conditions: tuple[str, ...] = ()
     evidence_urls: tuple[str, ...] = ()
+    review_tier: ReviewTier = ReviewTier.STANDARD_REVIEW
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "as_of", _utc(self.as_of))

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+from .validation import validate_analysis_time
 
 
 class StockClientError(RuntimeError):
@@ -69,6 +72,9 @@ class StockClient:
             raise ValueError("report_id is invalid")
         return self._request("GET", f"/v1/reports/{report_id}")["report"]
 
+    def latest_report(self) -> dict[str, Any]:
+        return self._request("GET", "/v1/reports/latest")["report"]
+
     def list_holdings(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/holdings")["holdings"]
 
@@ -77,6 +83,24 @@ class StockClient:
 
     def candidates(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/v1/candidates", payload)["report"]
+
+    def screen_stored(self, symbol: str, *, as_of: datetime) -> dict[str, Any]:
+        if not symbol.strip():
+            raise ValueError("symbol is required")
+        as_of = validate_analysis_time(as_of)
+        return self._request("POST", "/v1/repository/screen", {
+            "symbol": symbol.strip(),
+            "as_of": as_of.isoformat(),
+        })["result"]
+
+    def generate_candidates(self, *, as_of: datetime, limit: int = 5) -> dict[str, Any]:
+        as_of = validate_analysis_time(as_of)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+            raise ValueError("limit must be an integer between 1 and 20")
+        return self._request("POST", "/v1/repository/candidates", {
+            "as_of": as_of.isoformat(),
+            "limit": limit,
+        })
 
     def evaluate_performance(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/v1/performance/evaluate", payload)["evaluation"]

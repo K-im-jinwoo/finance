@@ -22,6 +22,7 @@ Hermes Desktop과 Telegram이 함께 사용할 수 있는 채널 중립적 국�
 - KRX ETF NAV·순자산총액 보존과 괴리율 계산, 추적오차·총보수·집중도 결측 시 매수 보류
 - 금융회사는 일반기업 OCF 규칙을 적용하지 않고 전용 건전성 계약과 전문가 검토 전까지 매수 보류
 - Desktop·Telegram 공통 보고서 렌더링과 Hermes stock-research skill
+- 토스증권 공식 Open API 기반 선택적 현재가·1분봉 수집 경계(기본 비활성)
 - Hermes 네 개 profile용 SOUL 템플릿
 
 ## 검증
@@ -56,6 +57,19 @@ $env:PYTHONPATH='src'
 - Oracle 배포와 정기 스케줄
 - 공식 Hermes Desktop 연결과 Bot Mode 토론
 - Telegram 전달과 실제 WIKI 저장
+
+## 선택적 장중 시세
+
+장중 시세는 KRX 일봉과 분리해 저장합니다. 토스증권 Open API의 현재가와 1분봉만 사용하며,
+최신 후보 5개와 수동 등록 보유종목만 조회합니다. 계좌·주문 API는 사용하지 않습니다.
+자격증명 파일과 Oracle 허용 IP 설정을 완료하기 전에는 비활성 상태로 유지합니다.
+
+```powershell
+python -m stock_assistant refresh-intraday `
+  --database data/stock-assistant.sqlite3 `
+  --client-id-file C:\secure\toss-client-id `
+  --client-secret-file C:\secure\toss-client-secret
+```
 
 이 항목들은 credential과 운영 변경 승인을 받은 후 별도로 검증합니다.
 

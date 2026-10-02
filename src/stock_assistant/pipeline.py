@@ -8,6 +8,7 @@ from .providers.dart import KST
 from .reports import CandidateReport, build_candidate_report, report_to_dict
 from .repository import StockRepository
 from .screening import screen_security, select_top_candidates
+from .validation import validate_analysis_time
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,12 +33,15 @@ class CandidatePipeline:
     def __init__(self, repository: StockRepository) -> None:
         self.repository = repository
 
-    def _screen_results(self, *, as_of: datetime):
-        if as_of.tzinfo is None:
-            raise ValueError("as_of must be timezone-aware")
+    def _screen_results(self, *, as_of: datetime, symbols: frozenset[str] | None = None):
+        as_of = validate_analysis_time(as_of)
         securities = self.repository.list_securities()
         if not securities:
             raise ValueError("security universe is empty")
+        if symbols is not None:
+            securities = [security for security in securities if security.symbol in symbols]
+            if not securities:
+                raise ValueError("security is not in the stored universe")
         results = []
         insufficient_history = 0
         missing_financials = 0
@@ -172,6 +176,16 @@ class CandidatePipeline:
     def ranked_symbols(self, *, as_of: datetime, limit: int = 30) -> list[str]:
         _, results, _, _, _, _, _, _, _, _, _ = self._screen_results(as_of=as_of)
         return [item.symbol for item in select_top_candidates(results, limit=limit)]
+
+    def screen_symbol(self, *, symbol: str, as_of: datetime):
+        normalized_symbol = symbol.strip()
+        if not normalized_symbol:
+            raise ValueError("symbol is required")
+        _, results, _, _, _, _, _, _, _, _, _ = self._screen_results(
+            as_of=as_of,
+            symbols=frozenset({normalized_symbol}),
+        )
+        return results[0]
 
     def run(self, *, as_of: datetime, limit: int = 5) -> PipelineSummary:
         (

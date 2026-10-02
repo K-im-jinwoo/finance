@@ -20,10 +20,22 @@ UTC = timezone.utc
 
 class ModelTests(unittest.TestCase):
     def test_security_rejects_wrong_symbol_and_etf_kind_mismatch(self) -> None:
-        with self.assertRaisesRegex(ValueError, "six-digit"):
+        with self.assertRaisesRegex(ValueError, "six-character"):
             Security("ABC", "bad", Market.KOSPI, AssetType.COMMON, CompanyKind.GENERAL, date(2020, 1, 1))
         with self.assertRaisesRegex(ValueError, "ETF"):
             Security("123456", "ETF", Market.KOSPI, AssetType.ETF, CompanyKind.GENERAL, date(2020, 1, 1))
+
+    def test_security_accepts_uppercase_alphanumeric_krx_short_code(self) -> None:
+        security = Security(
+            "0030R0", "대신밸류리츠", Market.KOSPI,
+            AssetType.COMMON, CompanyKind.GENERAL, date(2026, 9, 1),
+        )
+        self.assertEqual(security.symbol, "0030R0")
+        with self.assertRaisesRegex(ValueError, "uppercase alphanumeric"):
+            Security(
+                "0030r0", "bad", Market.KOSPI,
+                AssetType.COMMON, CompanyKind.GENERAL, date(2026, 9, 1),
+            )
 
     def test_ohlcv_rejects_invalid_price_geometry(self) -> None:
         with self.assertRaisesRegex(ValueError, "high"):
@@ -49,4 +61,3 @@ class ModelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

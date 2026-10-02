@@ -28,6 +28,8 @@ services:
       - stock-api-roles
       - krx-auth-key
       - dart-api-key
+      - toss-client-id
+      - toss-client-secret
     tmpfs:
       - /tmp:size=32m,noexec,nosuid
     networks:
@@ -55,6 +57,10 @@ secrets:
     file: "${KRX_AUTH_KEY_HOST_FILE:?required}"
   dart-api-key:
     file: "${DART_API_KEY_HOST_FILE:?required}"
+  toss-client-id:
+    file: "${TOSS_CLIENT_ID_HOST_FILE:?required}"
+  toss-client-secret:
+    file: "${TOSS_CLIENT_SECRET_HOST_FILE:?required}"
 
 networks:
   n8n-private:

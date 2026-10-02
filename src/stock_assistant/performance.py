@@ -6,6 +6,7 @@ from decimal import Decimal
 from enum import StrEnum
 
 from .backtest import event_study
+from .identifiers import require_korean_security_symbol
 from .repository import StockRepository
 
 
@@ -44,8 +45,7 @@ class PerformanceRecord:
             raise ValueError("evaluated_at cannot be before signal_at")
         if self.trading_days < 1:
             raise ValueError("trading_days must be positive")
-        if not (self.symbol.isdigit() and len(self.symbol) == 6):
-            raise ValueError("symbol must be six digits")
+        require_korean_security_symbol(self.symbol)
 
 
 @dataclass(frozen=True, slots=True)

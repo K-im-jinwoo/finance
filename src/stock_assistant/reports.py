@@ -6,11 +6,12 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
+from .identifiers import require_korean_security_symbol
 from .models import ScreeningResult, to_json_value
 
 
-RULESET_VERSION = "2026-09-21.1"
-REPORT_CONTRACT_VERSION = "1.1"
+RULESET_VERSION = "2026-09-28.1"
+REPORT_CONTRACT_VERSION = "1.2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,8 +106,7 @@ def build_journal_draft(
     decisions: tuple[str, ...],
     private_position_lines: tuple[str, ...] = (),
 ) -> JournalDraft:
-    if not (symbol.isdigit() and len(symbol) == 6):
-        raise ValueError("symbol must be six digits")
+    require_korean_security_symbol(symbol)
     if not _EVENT_SLUG.fullmatch(event_slug):
         raise ValueError("event_slug must contain lowercase letters, numbers, and hyphens only")
     safe_name = re.sub(r"[^0-9A-Za-z가-힣_-]+", "-", company_name).strip("-")

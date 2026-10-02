@@ -4,6 +4,8 @@ Hermes 투자총괄의 **실제 최종 추천과 원문 보고서**를 읽는 �
 
 기준: 2026-09-30 KST. 작업 위치는 사용자가 선택한 `finance` 프로젝트입니다.
 
+코드 저장소: [K-im-jinwoo/finance](https://github.com/K-im-jinwoo/finance). 기준 브랜치는 `main`이며, GitHub 연결과 작업 절차는 [Git 관리 범위](docs/git-management.md)를 참고합니다.
+
 2026-10-02 추가 작업: 뉴스의 새로운 재료로 별도 검토 후보를 만들고 네이버 뉴스 API에 일 20회·월 500회 비용 안전장치를 적용했습니다. [Git 관리 범위와 원본 엔진 이력](docs/git-management.md), [비밀값을 제외한 운영 검증 결과](artifacts/news-api-cost-guard-verification.json)를 참고합니다. 아래 대시보드 설명과 검증 범위는 2026-09-30 당시 기준입니다.
 
 - [데이터 확보 조사](docs/data-coverage.md): 실제 확보/공식 제공 가능/미확인을 구분합니다.

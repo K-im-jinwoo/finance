@@ -22,6 +22,16 @@
 
 루트 `scripts/verify.ps1`은 이 비교, 대시보드 테스트, PowerShell 인증 입력 시험, JavaScript 문법, 엔진의 Node/Python 전체 검증 및 워크플로 감사, 설치된 Docker CLI의 Compose 설정 검사와 Git 공백 검사를 실행합니다. Linux 권한 검증은 Windows에서 건너뛰며 운영 배포나 실제 시장 동작을 증명하지 않습니다.
 
+## 확인한 결과
+
+새 checkout에서 대시보드 89개 중 87개 통과·Linux 전용 2개 건너뜀, 엔진 Python 181개 통과, Node 27개 통과, 합성 PowerShell 인증 입력 4건 통과를 확인했습니다. 워크플로 감사·JavaScript 문법·Compose 설정·공백 검사도 통과했습니다. 통합 wheel은 외부 패키지 설치 없이 만들었으며 대시보드와 최신 뉴스 엔진을 포함한 43개 Python 모듈의 포함 여부와 wheel에서의 import를 확인했습니다.
+
+기존 스냅샷과 새 엔진의 합성 사건 29개, 모의계좌 재생, 가격 계산 날짜 125개와 재무 검산 11건이 같습니다. 원본 135개 작업 파일과 HEAD·브랜치·인덱스·refs·상태, 고정 vendor·원문 문서·기존 입력·검증 자료의 보존을 대조했습니다. [검증 기록](../artifacts/stock-engine-integration-verification.json)에 검증한 코드 커밋과 범위를 기록합니다.
+
+전체 검증 중 기존 공개 시세 서비스의 Windows 거절 응답 연결 오류가 재현돼, 거절한 POST 본문을 한도 내에서 소비한 후 HTTP 403/404를 전달하도록 보완했습니다. 허용 요청의 2048바이트 제한과 인증·호스트·주문 차단 정책은 유지합니다. 회귀 검증은 작은 본문과 4096바이트 문자열 본문을 포함합니다. 운영 서버에는 적용하지 않았습니다.
+
+Docker 이미지 빌드·운영 배포·실제 시장 동작은 이번 검증의 대상에 포함되지 않습니다.
+
 ## 배포 경계
 
 엔진의 Docker 빌드 context는 `engine/`이고 Dockerfile은 `engine/deploy/Dockerfile`입니다. `engine/deploy/compose.yaml`의 기존 상대 경로와 실행 모듈을 유지합니다. 서버 DB·자격증명·프로필 상태 경로는 이 통합으로 이동하지 않습니다.

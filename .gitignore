@@ -33,3 +33,4 @@ artifacts/*
 !artifacts/observed-financial-calculation.json
 !artifacts/news-api-cost-guard-verification.json
 
+!artifacts/stock-engine-integration-verification.json

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ..models import Evidence
-from .http import AuthenticationError, UpstreamSchemaError, get_json
+from .http import AuthenticationError, RateLimitError, UpstreamSchemaError, get_json
 
 
 _TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -111,13 +111,16 @@ def normalize_naver_news(payload: dict, *, observed_at: datetime) -> list[NewsAr
 
 class NaverNewsClient:
     def __init__(self, client_id: str, client_secret: str, *, fetch_json: Callable = get_json,
-                 clock: Callable | None = None):
+                 clock: Callable | None = None, budget=None):
         if any(not value.strip() or len(value) > 256 or any(ord(c) < 32 for c in value)
                for value in (client_id, client_secret)):
             raise AuthenticationError("valid Naver client credential files are required")
         self._client_id, self._client_secret = client_id, client_secret
         self._fetch_json = fetch_json
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        # Lazy import keeps the shared provider exception definitions independent.
+        from ..news_cost import NewsApiBudget
+        self._budget = budget if budget is not None else NewsApiBudget()
 
     def collect(self, *, observed_at: datetime, queries=DEFAULT_DISCOVERY_QUERIES,
                 display: int = 100) -> list[NewsArticle]:
@@ -131,15 +134,20 @@ class NaverNewsClient:
             raise ValueError("news query must contain 1 to 80 characters")
         if len(set(queries)) != len(queries):
             raise ValueError("one to five unique news queries are required")
+        self._budget.reserve(len(queries), at=self._clock())
         articles = []
         for query in queries:
-            response = self._fetch_json(
-                NAVER_NEWS_URL,
-                query={"query": query, "display": str(display), "start": "1", "sort": "date", "format": "json"},
-                headers={"X-NCP-APIGW-API-KEY-ID": self._client_id,
-                         "X-NCP-APIGW-API-KEY": self._client_secret},
-                timeout_seconds=10,
-            )
+            try:
+                response = self._fetch_json(
+                    NAVER_NEWS_URL,
+                    query={"query": query, "display": str(display), "start": "1", "sort": "date", "format": "json"},
+                    headers={"X-NCP-APIGW-API-KEY-ID": self._client_id,
+                             "X-NCP-APIGW-API-KEY": self._client_secret},
+                    timeout_seconds=10,
+                )
+            except (RateLimitError, AuthenticationError):
+                self._budget.halt_provider(at=self._clock())
+                raise
             received_at = max(observed_at, self._clock())
             articles.extend(normalize_naver_news(response.payload, observed_at=received_at))
         return articles

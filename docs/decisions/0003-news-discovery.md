@@ -2,7 +2,7 @@
 
 Date: 2026-10-02 KST
 
-Status: Implemented locally; production activation and credential connection require approval.
+Status: Activated with explicit approval on 2026-10-02; further production changes require authorization.
 
 ## Behavior
 
@@ -84,7 +84,35 @@ configuration through the approved deployment procedure. Preserve existing repor
 do not delete operational data. The separate KRX daily-data freshness incident remains unresolved by
 this feature and still limits price-based judgments.
 
-## Verification boundaries
+## Zero-budget news API guard (2026-10-02)
+
+The official [overview](https://guide.ncloud-docs.com/docs/apihub-overview) and
+[pricing preparation guide](https://guide.ncloud-docs.com/docs/apihub-spec) currently state temporary
+free service. The console has been capped at 20 calls/day and 500 calls/month for this application.
+Console quota enforcement may briefly overshoot during configuration propagation, so it is also
+enforced before requests in the application. These are call limits, not article limits: one ordinary
+five-query collection reserves five calls for up to 500 articles.
+
+`news-api-usage.sqlite3` is a separate, durable ledger in the existing state mount. Initial counts
+must be supplied explicitly from the provider console. Runtime never recreates a missing ledger.
+Every batch atomically reserves all possible calls using SQLite BEGIN IMMEDIATE; failed or timed-out
+requests retain their reservation. KST midnight/month rollover resets the appropriate counter, and
+clock reversal or corrupt/unavailable state blocks all news requests. Limits are fixed in code.
+The same ledger protects credential verification. Calls from outside this installation rely on
+the provider-side limits, and cannot be counted by this local ledger.
+
+Every batch requires the exact current free-service statement in both official public guides.
+Changed/paid/unknown guidance or a failed check blocks the news API, without a paid fallback.
+The guide check uses no API credentials. Public documentation is the available policy signal; this
+does not guarantee that provider billing and published guidance always change simultaneously or
+control charges for other services. If zero total cloud spend must be guaranteed regardless of
+provider policy, disable news rather than assuming all future calls remain free.
+
+Collections within one hour reuse the stored result. A quota/auth rejection stops further attempts
+for that KST month; automatic retries are absent. Other guard refusals mark news UNAVAILABLE and the
+existing base report continues. No extra Telegram message is sent for guard tests.
+
+## Fixture verification
 
 Network-free fixtures cover receipt times, duplicate/stale/future news, exact/ambiguous issuer mapping,
 material categories, cancellations, provider failure, first observation, expiry, low-score lead

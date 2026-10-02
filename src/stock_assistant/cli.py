@@ -154,6 +154,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (OSError, ValueError, ProviderError, sqlite3.Error) as exc:
             code = getattr(exc, "code", "NEWS_STORE_ERROR" if isinstance(exc, sqlite3.Error) else "NEWS_INPUT_ERROR")
+            if code == "NEWS_REFRESH_COOLDOWN":
+                print(json.dumps({"status": "SKIPPED", "reason": code}))
+                return 0
             if store is not None:
                 try:
                     store.save({"status": "UNAVAILABLE", "observed_at": datetime.now(timezone.utc).isoformat(),

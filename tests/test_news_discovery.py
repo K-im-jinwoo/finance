@@ -9,13 +9,14 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from stock_assistant.cli import main
 from stock_assistant.client import StockClient
 from stock_assistant.http_api import StockApi
 from stock_assistant.models import AssetType, CompanyKind, Market, Security
 from stock_assistant.news_discovery import NewsDiscoveryStore, discover_news, latest_news_discovery
+from stock_assistant.news_cost import NewsCostBlocked
 from stock_assistant.pipeline import CandidatePipeline
 from stock_assistant.presentation import render_candidate_report
 from stock_assistant.providers.http import AuthenticationError, JsonResponse, RateLimitError, UpstreamSchemaError
@@ -53,7 +54,7 @@ class NewsProviderTests(unittest.TestCase):
             calls.append((url, kwargs))
             return JsonResponse(200, {"items": [raw_item()]})
         client = NaverNewsClient("fixture-id", "fixture-secret", fetch_json=fetch,
-                                 clock=lambda: NOW + timedelta(seconds=2))
+                                 clock=lambda: NOW + timedelta(seconds=2), budget=Mock())
         items = client.collect(observed_at=NOW, queries=("공급계약",), display=50)
         self.assertEqual(calls[0][0], "https://naverapihub.apigw.ntruss.com/search/v1/news")
         self.assertEqual(calls[0][1]["query"], {"query": "공급계약", "display": "50", "start": "1", "sort": "date", "format": "json"})
@@ -91,7 +92,7 @@ class NewsProviderTests(unittest.TestCase):
         def fail(*args, **kwargs):
             calls.append(1)
             raise RateLimitError("provider returned HTTP 429")
-        client = NaverNewsClient("fixture", "fixture", fetch_json=fail)
+        client = NaverNewsClient("fixture", "fixture", fetch_json=fail, budget=Mock())
         with self.assertRaises(RateLimitError):
             client.collect(observed_at=NOW)
         self.assertEqual(len(calls), 1)
@@ -297,6 +298,22 @@ class NewsIntegrationTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())["error_code"], "RATE_LIMITED")
             self.assertNotIn("fixture-secret", output.getvalue())
         self.assertEqual(latest_news_discovery(self.database, as_of=NOW + timedelta(minutes=1))["status"], "UNAVAILABLE")
+
+    def test_cost_guard_skips_cooldown_but_marks_limit_block_unavailable(self):
+        root = Path(self.temp.name)
+        (root / "id").write_text("fixture-id", encoding="utf-8")
+        (root / "secret").write_text("fixture-secret", encoding="utf-8")
+        args = ["discover-news", "--database", str(self.database), "--client-id-file", str(root / "id"),
+                "--client-secret-file", str(root / "secret")]
+        for code, expected in (("NEWS_REFRESH_COOLDOWN", 0), ("NEWS_COST_LIMIT_REACHED", 1)):
+            with self.subTest(code=code), patch("stock_assistant.cli.datetime") as clock, \
+                 patch("stock_assistant.cli.NaverNewsClient") as client, \
+                 patch("sys.stdout", new_callable=StringIO), patch("sys.stderr", new_callable=StringIO):
+                clock.now.return_value = NOW
+                client.return_value.collect.side_effect = NewsCostBlocked(code)
+                self.assertEqual(main(args), expected)
+            self.assertEqual(latest_news_discovery(self.database, as_of=NOW)["status"],
+                             "OK" if expected == 0 else "UNAVAILABLE")
 
     def test_api_opt_in_and_client_validate_boolean_without_changing_legacy_payload(self):
         api = StockApi(self.repo, shared_secret="fixture")

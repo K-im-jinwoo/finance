@@ -1,0 +1,14 @@
+{
+  "name": "stock-automation-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "audit:workflows": "node scripts/audit-workflows.mjs workflows/n8n",
+    "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1"
+  }
+}

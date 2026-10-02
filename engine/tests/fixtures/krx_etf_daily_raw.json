@@ -1,0 +1,16 @@
+{
+  "OutBlock_1": [
+    {
+      "BAS_DD": "20260918",
+      "ISU_CD": "069500",
+      "ISU_NM": "KODEX 200",
+      "TDD_CLSPRC": "42,100",
+      "TDD_OPNPRC": "41,900",
+      "TDD_HGPRC": "42,200",
+      "TDD_LWPRC": "41,800",
+      "ACC_TRDVOL": "1,234,567",
+      "NAV": "42,050.25",
+      "INVSTASST_NETASST_TOTAMT": "7,800,000,000,000"
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+services:
+  stock-assistant:
+    profiles: ["candidate"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: "${STOCK_IMAGE:-stock-investment-assistant:local}"
+    user: "${STOCK_CONTAINER_UID:-1001}:${STOCK_CONTAINER_GID:-1001}"
+    read_only: true
+    restart: unless-stopped
+    command:
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9120"
+      - --database
+      - /var/lib/stock/stock-assistant.sqlite3
+      - --role-secret-file
+      - /run/secrets/stock-api-roles
+    ports:
+      - "127.0.0.1:9120:9120"
+    volumes:
+      - type: bind
+        source: "${STOCK_STATE_HOST_DIR:-/srv/stock-assistant/state}"
+        target: /var/lib/stock
+    secrets:
+      - stock-api-roles
+      - krx-auth-key
+      - dart-api-key
+      - toss-client-id
+      - toss-client-secret
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    networks:
+      - n8n-private
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:9120/health', timeout=3)); assert data['status']=='ok' and data['orders_enabled'] is False"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+secrets:
+  stock-api-roles:
+    file: "${STOCK_API_ROLE_SECRET_HOST_FILE:?required}"
+  krx-auth-key:
+    file: "${KRX_AUTH_KEY_HOST_FILE:?required}"
+  dart-api-key:
+    file: "${DART_API_KEY_HOST_FILE:?required}"
+  toss-client-id:
+    file: "${TOSS_CLIENT_ID_HOST_FILE:?required}"
+  toss-client-secret:
+    file: "${TOSS_CLIENT_SECRET_HOST_FILE:?required}"
+
+networks:
+  n8n-private:
+    external: true
+    name: "${N8N_DOCKER_NETWORK:-n8n-infra_default}"

@@ -1,0 +1,37 @@
+{
+  "OutBlock_1": [
+    {
+      "ISU_CD": "KR7005930003",
+      "ISU_SRT_CD": "005930",
+      "ISU_NM": "삼성전자보통주",
+      "ISU_ABBRV": "삼성전자",
+      "LIST_DD": "19750611",
+      "MKT_TP_NM": "KOSPI",
+      "SECUGRP_NM": "주권",
+      "SECT_TP_NM": "",
+      "KIND_STKCERT_TP_NM": "보통주"
+    },
+    {
+      "ISU_CD": "KR7005931001",
+      "ISU_SRT_CD": "005935",
+      "ISU_NM": "삼성전자우선주",
+      "ISU_ABBRV": "삼성전자우",
+      "LIST_DD": "19890925",
+      "MKT_TP_NM": "KOSPI",
+      "SECUGRP_NM": "주권",
+      "SECT_TP_NM": "",
+      "KIND_STKCERT_TP_NM": "우선주"
+    },
+    {
+      "ISU_CD": "KR7123450000",
+      "ISU_SRT_CD": "123450",
+      "ISU_NM": "테스트기업인수목적",
+      "ISU_ABBRV": "테스트스팩",
+      "LIST_DD": "20260102",
+      "MKT_TP_NM": "KOSPI",
+      "SECUGRP_NM": "주권",
+      "SECT_TP_NM": "",
+      "KIND_STKCERT_TP_NM": "보통주"
+    }
+  ]
+}

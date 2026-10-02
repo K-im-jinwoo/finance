@@ -1,0 +1,11 @@
+{
+  "role": "risk",
+  "allowed": [
+    "POST /v1/screen",
+    "POST /v1/repository/screen",
+    "GET /v1/reports/latest",
+    "GET /v1/reports/{report_id}",
+    "GET /v1/performance/{report_id}"
+  ],
+  "forbidden": ["holdings", "journal", "orders", "broker credentials"]
+}

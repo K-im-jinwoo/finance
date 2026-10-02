@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch, Mock
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path.insert(0,str(ROOT/'vendor/stock-assistant/src'))
+sys.path.insert(0,str(ROOT/'engine/src'))
 
 def actor():
     namespace={}

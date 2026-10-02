@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "original_branch": "codex/news-discovery-cost-guard",
+  "original_commit": "e3be6821d2c60e1a8a6b1a98d3a430dc247ed3f6",
+  "original_tree": "ee168925cf3ab813f50ddf2293260a0243ac048e",
+  "original_commits": 33,
+  "imported_files": 130,
+  "import_prefix": "engine",
+  "import_method": "git subtree add without squash",
+  "finance_before_import": "f28db7b808388604d0e84641eb82dcc35b989756",
+  "subtree_import_commit": "c75e9e8e9e09cc8886db1ff5f5cd9d77881b0403",
+  "canonical_engine_path": "engine/src/stock_assistant",
+  "archived_validation_snapshot": "vendor/stock-assistant",
+  "production_deployment": false
+}

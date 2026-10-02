@@ -10,7 +10,7 @@ from urllib.error import HTTPError
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-sys.path.insert(0,str(ROOT/'vendor/stock-assistant/src'))
+sys.path.insert(0,str(ROOT/'engine/src'))
 import market_gateway as gateway
 import register_oracle_market_auth as registration
 from stock_assistant.providers.http import AuthenticationError

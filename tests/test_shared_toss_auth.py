@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-sys.path.insert(0,str(ROOT/'vendor/stock-assistant/src'))
+sys.path.insert(0,str(ROOT/'engine/src'))
 from shared_toss_auth import SharedTokenCache,SharedTossMarketDataClient
 from stock_assistant.providers.http import AuthenticationError
 

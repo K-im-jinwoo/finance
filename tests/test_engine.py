@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / "src"), str(ROOT / "vendor/stock-assistant/src"), str(ROOT / "scripts")]
+sys.path[:0] = [str(ROOT / "src"), str(ROOT / "engine/src"), str(ROOT / "scripts")]
 from make_validation_dataset import make
 from research_dashboard.contracts import validate_dataset, digest
 from research_dashboard.engine import Engine

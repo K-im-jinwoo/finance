@@ -1,0 +1,12 @@
+# Opt-in override. Load together with compose.yaml only after rollout approval.
+services:
+  stock-assistant:
+    secrets:
+      - naver-news-client-id
+      - naver-news-client-secret
+
+secrets:
+  naver-news-client-id:
+    file: "${NAVER_NEWS_CLIENT_ID_HOST_FILE:?required}"
+  naver-news-client-secret:
+    file: "${NAVER_NEWS_CLIENT_SECRET_HOST_FILE:?required}"

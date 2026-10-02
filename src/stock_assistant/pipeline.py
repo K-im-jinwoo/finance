@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from .models import AssetType, CompanyKind, Decision
+from .models import AssetType, CompanyKind, Decision, to_json_value
+from .news_discovery import latest_news_discovery
 from .providers.dart import KST
 from .reports import CandidateReport, build_candidate_report, report_to_dict
 from .repository import StockRepository
@@ -177,6 +178,14 @@ class CandidatePipeline:
         _, results, _, _, _, _, _, _, _, _, _ = self._screen_results(as_of=as_of)
         return [item.symbol for item in select_top_candidates(results, limit=limit)]
 
+    def enrichment_symbols(self, *, as_of: datetime, limit: int = 30, include_news: bool = False) -> list[str]:
+        symbols = self.ranked_symbols(as_of=as_of, limit=limit)
+        if include_news:
+            discovery = latest_news_discovery(self.repository.database_path, as_of=as_of, limit=10)
+            # Include research leads even when missing financials keep their score low.
+            symbols = list(dict.fromkeys(symbols + [c["symbol"] for c in discovery["candidates"]]))
+        return symbols
+
     def screen_symbol(self, *, symbol: str, as_of: datetime):
         normalized_symbol = symbol.strip()
         if not normalized_symbol:
@@ -187,7 +196,8 @@ class CandidatePipeline:
         )
         return results[0]
 
-    def run(self, *, as_of: datetime, limit: int = 5) -> PipelineSummary:
+    def run(self, *, as_of: datetime, limit: int = 5, include_news: bool = False,
+            news_fetch_failed: bool = False) -> PipelineSummary:
         (
             securities, results, insufficient_history, missing_financials,
             missing_profit_periods,
@@ -197,6 +207,31 @@ class CandidatePipeline:
             missing_catalyst_histories,
         ) = self._screen_results(as_of=as_of)
         selected = select_top_candidates(results, limit=limit)
+        discovery = None
+        if include_news:
+            discovery = latest_news_discovery(self.repository.database_path, as_of=as_of, limit=5)
+            if news_fetch_failed:
+                discovery = {"status": "UNAVAILABLE", "reason": "NEWS_FETCH_FAILED", "candidates": []}
+            previous = self.repository.latest_report(as_of=as_of)
+            previous_events = {
+                e["event_key"] for c in ((previous or {}).get("news_discovery") or {}).get("candidates", [])
+                for e in c.get("evidence", [])
+            }
+            screenings = {r.symbol: r for r in results}
+            visible = []
+            for candidate in discovery["candidates"]:
+                result = screenings.get(candidate["symbol"])
+                if result is None:
+                    continue
+                candidate["screening"] = to_json_value(result)
+                bars = self.repository.bars_for(candidate["symbol"], as_of=as_of, limit=1)
+                candidate["daily_price_date"] = bars[-1].trade_date.isoformat() if bars else None
+                candidate["change"] = "NEW" if any(e["event_key"] not in previous_events for e in candidate["evidence"]) else "UNCHANGED"
+                candidate["checks"] = ["기사에 보도된 재료를 DART 공시·회사 공식 발표와 대조할 것",
+                                       "최신 일봉 기준일·현재 가격·거래대금과 진입 가능성을 확인할 것"]
+                candidate["status"] = "EXCLUDED" if result.decision is Decision.EXCLUDED else "REVIEW_REQUIRED"
+                visible.append(candidate)
+            discovery["candidates"] = visible
         unavailable = [
             "실시간 장중 데이터",
             "공식 근거와 연결되지 않은 비공식 재료",
@@ -220,6 +255,11 @@ class CandidatePipeline:
             unavailable.append(f"10년 DART 경영진 위험 이력 미적재 종목 {missing_management_histories}개")
         if missing_catalyst_histories:
             unavailable.append(f"최근 1년 DART 계약·실적 공시 이력 미적재 종목 {missing_catalyst_histories}개")
+        if discovery is not None:
+            if discovery["status"] != "OK":
+                unavailable.append(f"뉴스 수집 확인 불가: {discovery['reason']}")
+            else:
+                unavailable.append("뉴스 검색은 제한된 검색어의 표본이며 시장 전체 기사와 모든 테마를 포괄하지 않음")
         report = build_candidate_report(
             as_of,
             selected,
@@ -227,6 +267,7 @@ class CandidatePipeline:
             inferences=(),
             assumptions=("입력 데이터의 공급자 관측시각과 공시시각이 정확하다는 전제",),
             unavailable=tuple(unavailable),
+            news_discovery=discovery,
         )
         payload = report_to_dict(report)
         self.repository.save_screening_results(report.report_id, selected)

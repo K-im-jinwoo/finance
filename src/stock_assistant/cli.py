@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -14,6 +15,7 @@ from .http_api import serve
 from .ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
 from .intraday import build_intraday_signal
 from .models import to_json_value
+from .news_discovery import NewsDiscoveryStore, discover_news
 from .performance import (
     evaluate_all_report_performance,
     evaluate_report_performance,
@@ -24,6 +26,7 @@ from .presentation import render_candidate_report
 from .providers.http import ProviderError
 from .providers.dart import DartClient
 from .providers.krx import KrxClient
+from .providers.news import NaverNewsClient
 from .providers.toss import TossMarketDataClient
 from .repository import StockRepository
 from .reports import report_to_dict
@@ -81,17 +84,27 @@ def main(argv: list[str] | None = None) -> int:
     candidates_parser.add_argument("--as-of", type=datetime.fromisoformat)
     candidates_parser.add_argument("--limit", type=int, default=5)
     candidates_parser.add_argument("--format", choices=("json", "text"), default="text")
+    candidates_parser.add_argument("--include-news", action="store_true")
+    candidates_parser.add_argument("--news-fetch-failed", action="store_true")
     dart_parser = subparsers.add_parser("enrich-dart")
     dart_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
     dart_parser.add_argument("--key-file", type=Path)
     dart_parser.add_argument("--as-of", type=datetime.fromisoformat)
     dart_parser.add_argument("--business-year", type=int, required=True)
     dart_parser.add_argument("--shortlist-limit", type=int, default=30)
+    dart_parser.add_argument("--include-news", action="store_true")
     disclosure_parser = subparsers.add_parser("enrich-dart-disclosures")
     disclosure_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
     disclosure_parser.add_argument("--key-file", type=Path)
     disclosure_parser.add_argument("--as-of", type=datetime.fromisoformat)
     disclosure_parser.add_argument("--shortlist-limit", type=int, default=30)
+    disclosure_parser.add_argument("--include-news", action="store_true")
+    news_parser = subparsers.add_parser("discover-news")
+    news_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    news_parser.add_argument("--client-id-file", type=Path, required=True)
+    news_parser.add_argument("--client-secret-file", type=Path, required=True)
+    news_parser.add_argument("--lookback-hours", type=int, default=48)
+    news_parser.add_argument("--display", type=int, default=100)
     performance_parser = subparsers.add_parser("evaluate-performance")
     performance_parser.add_argument("report_id")
     performance_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
@@ -115,6 +128,40 @@ def main(argv: list[str] | None = None) -> int:
     intraday_parser.add_argument("--symbols", help="comma-separated explicit symbols for a bounded smoke or on-demand query")
     intraday_parser.add_argument("--alerts-only", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.command == "discover-news":
+        observed_at = datetime.now(timezone.utc)
+        store = None
+        try:
+            if not 1 <= args.lookback_hours <= 72 or not 1 <= args.display <= 100:
+                raise ValueError("invalid news collection limits")
+            repository = StockRepository(args.database)
+            securities = repository.list_securities()
+            if not securities:
+                raise ValueError("news discovery requires a stored security universe")
+            store = NewsDiscoveryStore(args.database)
+            provider = NaverNewsClient(args.client_id_file.read_text(encoding="utf-8").strip(),
+                                       args.client_secret_file.read_text(encoding="utf-8").strip())
+            articles = provider.collect(observed_at=observed_at, display=args.display)
+            # Collection takes time: observations must not be assigned to the past.
+            completed_at = max(observed_at, datetime.now(timezone.utc))
+            run = discover_news(articles, securities, as_of=completed_at,
+                                lookback_hours=args.lookback_hours)
+            store.save(run)
+            print(json.dumps({"status": run["status"], "article_count": len(articles),
+                              "matched_events": len(run["events"]),
+                              "filter_counts": run["filter_counts"]}, ensure_ascii=False))
+            return 0
+        except (OSError, ValueError, ProviderError, sqlite3.Error) as exc:
+            code = getattr(exc, "code", "NEWS_STORE_ERROR" if isinstance(exc, sqlite3.Error) else "NEWS_INPUT_ERROR")
+            if store is not None:
+                try:
+                    store.save({"status": "UNAVAILABLE", "observed_at": datetime.now(timezone.utc).isoformat(),
+                                "error_code": code, "events": []})
+                except sqlite3.Error:
+                    pass  # The scheduled caller also passes --news-fetch-failed.
+            print(json.dumps({"status": "UNAVAILABLE", "error_code": code}), file=sys.stderr)
+            return 1
 
     if args.command == "status":
         print(json.dumps({
@@ -296,9 +343,14 @@ def main(argv: list[str] | None = None) -> int:
         as_of = args.as_of or now
         try:
             as_of = validate_analysis_time(as_of, now=now)
-            summary = CandidatePipeline(StockRepository(args.database)).run(as_of=as_of, limit=args.limit)
+            summary = CandidatePipeline(StockRepository(args.database)).run(
+                as_of=as_of, limit=args.limit, include_news=args.include_news or args.news_fetch_failed,
+                news_fetch_failed=args.news_fetch_failed,
+            )
             if args.format == "json":
-                print(json.dumps(to_json_value(summary), ensure_ascii=False, indent=2))
+                payload = to_json_value(summary)
+                payload["report"] = report_to_dict(summary.report)
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
             else:
                 print("\n\n".join(render_candidate_report(report_to_dict(summary.report))))
             return 0
@@ -320,8 +372,8 @@ def main(argv: list[str] | None = None) -> int:
             if not key:
                 raise ValueError("DART key file is empty")
             repository = StockRepository(args.database)
-            symbols = CandidatePipeline(repository).ranked_symbols(
-                as_of=as_of, limit=args.shortlist_limit,
+            symbols = CandidatePipeline(repository).enrichment_symbols(
+                as_of=as_of, limit=args.shortlist_limit, include_news=args.include_news,
             )
             summary = DartFinancialEnricher(repository, DartClient(key)).enrich(
                 symbols=symbols,
@@ -349,8 +401,8 @@ def main(argv: list[str] | None = None) -> int:
             if not key:
                 raise ValueError("DART key file is empty")
             repository = StockRepository(args.database)
-            symbols = CandidatePipeline(repository).ranked_symbols(
-                as_of=as_of, limit=args.shortlist_limit,
+            symbols = CandidatePipeline(repository).enrichment_symbols(
+                as_of=as_of, limit=args.shortlist_limit, include_news=args.include_news,
             )
             summary = DartDisclosureEnricher(repository, DartClient(key)).enrich(
                 symbols=symbols,

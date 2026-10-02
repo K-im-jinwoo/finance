@@ -171,7 +171,11 @@ class StockApi:
                     raise TypeError("limit must be an integer")
                 if not 1 <= raw_limit <= 20:
                     raise ValueError("limit must be between 1 and 20")
-                summary = CandidatePipeline(self.repository).run(as_of=as_of, limit=raw_limit)
+                include_news = payload.get("include_news", False)
+                if not isinstance(include_news, bool):
+                    raise TypeError("include_news must be a boolean")
+                summary = CandidatePipeline(self.repository).run(as_of=as_of, limit=raw_limit,
+                                                                 include_news=include_news)
                 return ApiResponse(200, {
                     "contract_version": "1.0",
                     "report": report_to_dict(summary.report),

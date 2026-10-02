@@ -93,14 +93,20 @@ class StockClient:
             "as_of": as_of.isoformat(),
         })["result"]
 
-    def generate_candidates(self, *, as_of: datetime, limit: int = 5) -> dict[str, Any]:
+    def generate_candidates(self, *, as_of: datetime, limit: int = 5,
+                            include_news: bool = False) -> dict[str, Any]:
         as_of = validate_analysis_time(as_of)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ValueError("limit must be an integer between 1 and 20")
-        return self._request("POST", "/v1/repository/candidates", {
+        if not isinstance(include_news, bool):
+            raise ValueError("include_news must be a boolean")
+        payload = {
             "as_of": as_of.isoformat(),
             "limit": limit,
-        })
+        }
+        if include_news:
+            payload["include_news"] = True
+        return self._request("POST", "/v1/repository/candidates", payload)
 
     def evaluate_performance(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/v1/performance/evaluate", payload)["evaluation"]

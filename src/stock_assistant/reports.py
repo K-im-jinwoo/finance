@@ -25,6 +25,7 @@ class CandidateReport:
     assumptions: tuple[str, ...]
     unavailable: tuple[str, ...]
     ruleset_version: str = RULESET_VERSION
+    news_discovery: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,17 +45,21 @@ def make_report_id(
     assumptions: tuple[str, ...] = (),
     unavailable: tuple[str, ...] = (),
     ruleset_version: str = RULESET_VERSION,
+    news_discovery: dict | None = None,
 ) -> str:
     timestamp = as_of.astimezone(timezone.utc).strftime("%Y%m%dT%H%MZ")
+    contents = {
+        "results": [to_json_value(item) for item in results],
+        "facts": facts,
+        "inferences": inferences,
+        "assumptions": assumptions,
+        "unavailable": unavailable,
+        "ruleset_version": ruleset_version,
+    }
+    if news_discovery is not None:
+        contents["news_discovery"] = news_discovery
     identity = json.dumps(
-        {
-            "results": [to_json_value(item) for item in results],
-            "facts": facts,
-            "inferences": inferences,
-            "assumptions": assumptions,
-            "unavailable": unavailable,
-            "ruleset_version": ruleset_version,
-        },
+        contents,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -72,11 +77,12 @@ def build_candidate_report(
     assumptions: tuple[str, ...] = (),
     unavailable: tuple[str, ...] = (),
     ruleset_version: str = RULESET_VERSION,
+    news_discovery: dict | None = None,
 ) -> CandidateReport:
     if as_of.tzinfo is None:
         raise ValueError("as_of must be timezone-aware")
     return CandidateReport(
-        REPORT_CONTRACT_VERSION,
+        "1.3" if news_discovery is not None else REPORT_CONTRACT_VERSION,
         make_report_id(
             as_of,
             results,
@@ -85,10 +91,11 @@ def build_candidate_report(
             assumptions=assumptions,
             unavailable=unavailable,
             ruleset_version=ruleset_version,
+            news_discovery=news_discovery,
         ),
         as_of.astimezone(timezone.utc),
         tuple(results),
-        facts, inferences, assumptions, unavailable, ruleset_version,
+        facts, inferences, assumptions, unavailable, ruleset_version, news_discovery,
     )
 
 
@@ -149,4 +156,7 @@ def build_journal_draft(
 
 
 def report_to_dict(report: CandidateReport) -> dict:
-    return to_json_value(report)
+    result = to_json_value(report)
+    if report.news_discovery is None:
+        result.pop("news_discovery")
+    return result

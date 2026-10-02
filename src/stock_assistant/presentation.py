@@ -104,6 +104,39 @@ def render_candidate_report(report: dict[str, Any], *, max_chars: int = 3500) ->
         ]
         sections.append("\n".join(lines))
 
+    discovery = report.get("news_discovery")
+    if discovery is not None:
+        if not isinstance(discovery, dict):
+            raise ValueError("news_discovery must be an object")
+        if discovery.get("status") != "OK":
+            sections.append("뉴스 발견 — 추가 검토\n뉴스 수집: 확인 불가\n기존 가격·재무 후보는 별도로 유지합니다.")
+        else:
+            sections.append("뉴스 발견 — 추가 검토\n기사에 보도된 재료이며, 공시·회사 발표와 대조가 필요합니다."
+                            f"\n수집시각: {discovery.get('observed_at', '확인 불가')}")
+            news_candidates = discovery.get("candidates", [])
+            if not news_candidates:
+                sections.append("검색한 최근 기사에서 새 검토 대상이 확인되지 않았습니다.")
+            for index, candidate in enumerate(news_candidates, start=1):
+                screening = candidate.get("screening", {})
+                label = "신규 재료" if candidate.get("change") == "NEW" else "기존 재료 유지"
+                status = "기존 규칙상 제외" if candidate.get("status") == "EXCLUDED" else "추가 검토 / 매수 보류"
+                sections.append(
+                    f"뉴스 후보 {index}. {candidate['name']} ({candidate['symbol']})\n변화: {label}"
+                    f"\n판정: {status}\n기존 선별 점수: {screening.get('score', '확인 불가')}"
+                    f"\n가격 기준일: {candidate.get('daily_price_date') or '확인 불가'}"
+                    "\n추가 확인:\n" + _bullets(candidate.get("checks", []))
+                )
+                if candidate.get("status") == "EXCLUDED":
+                    sections.append(f"{candidate['name']} 기존 규칙 제외 근거:\n" + _bullets(screening.get("warnings", [])))
+                for evidence in candidate.get("evidence", []):
+                    sections.append(
+                        f"{candidate['name']} 기사: {evidence['title']}"
+                        f"\n재료 분류: {evidence['category']}"
+                        f"\n공급자 기사시각: {evidence['published_at']}"
+                        f"\n최초 발견시각: {evidence.get('first_seen_at', evidence['observed_at'])}"
+                        f"\n원문: {evidence['url']}"
+                    )
+
     prefix = f"[{report_id}]\n"
     chunks: list[str] = []
     current = prefix

@@ -25,19 +25,43 @@ if [ ! -f "$env_file" ]; then
 fi
 
 compose() {
-  docker compose --env-file "$env_file" -f "$compose_file" --profile candidate "$@"
+  if [ "${STOCK_NEWS_ENABLED:-false}" = true ]; then
+    docker compose --env-file "$env_file" -f "$compose_file" \
+      -f "$project_root/deploy/compose.news.yaml" --profile candidate "$@"
+  else
+    docker compose --env-file "$env_file" -f "$compose_file" --profile candidate "$@"
+  fi
 }
+
+case "${STOCK_NEWS_ENABLED:-false}" in
+  true|false) ;;
+  *) echo "STOCK_NEWS_ENABLED must be true or false" >&2; exit 2 ;;
+esac
 
 if [ "$mode" = evening ]; then
   compose exec -T stock-assistant python -m stock_assistant ingest-krx \
     --database "$database" --key-file /run/secrets/krx-auth-key --mode daily >/dev/null
 fi
 
-if [ "$mode" = evening ] || [ "$mode" = weekly ]; then
+news_report_args=""
+news_enrichment_args=""
+if [ "${STOCK_NEWS_ENABLED:-false}" = true ]; then
+  if compose exec -T stock-assistant python -m stock_assistant discover-news \
+    --database "$database" --client-id-file /run/secrets/naver-news-client-id \
+    --client-secret-file /run/secrets/naver-news-client-secret >/dev/null; then
+    news_report_args="--include-news"
+    news_enrichment_args="--include-news"
+  else
+    news_report_args="--include-news --news-fetch-failed"
+    echo "News collection unavailable; continuing with existing research inputs." >&2
+  fi
+fi
+
+if [ "$mode" = evening ] || [ "$mode" = weekly ] || [ -n "$news_enrichment_args" ]; then
   : "${STOCK_DART_BUSINESS_YEAR:?set the approved DART business year}"
   compose exec -T stock-assistant python -m stock_assistant enrich-dart \
     --database "$database" --key-file /run/secrets/dart-api-key \
-    --business-year "$STOCK_DART_BUSINESS_YEAR" >/dev/null
+    --business-year "$STOCK_DART_BUSINESS_YEAR" $news_enrichment_args >/dev/null
 fi
 
 if [ "$mode" = weekly ]; then
@@ -46,7 +70,7 @@ if [ "$mode" = weekly ]; then
 fi
 
 compose exec -T stock-assistant python -m stock_assistant enrich-dart-disclosures \
-  --database "$database" --key-file /run/secrets/dart-api-key >/dev/null
+  --database "$database" --key-file /run/secrets/dart-api-key $news_enrichment_args >/dev/null
 
 compose exec -T stock-assistant python -m stock_assistant generate-candidates \
-  --database "$database" --limit 5 --format text
+  --database "$database" --limit 5 --format text $news_report_args

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import html
 import re
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
+from collections.abc import Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ..models import Evidence
-from .http import UpstreamSchemaError
+from .http import AuthenticationError, UpstreamSchemaError, get_json
 
 
 _TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -57,4 +60,87 @@ def normalize_news_items(items: list[dict[str, Any]], *, observed_at: datetime) 
             facts=tuple(str(value) for value in item.get("facts", []) if str(value).strip()),
         ))
     return results
+
+
+NAVER_NEWS_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
+DEFAULT_DISCOVERY_QUERIES = ("특징주", "공급계약", "흑자전환", "허가 승인", "정책 수혜")
+
+
+@dataclass(frozen=True, slots=True)
+class NewsArticle:
+    title: str
+    url: str
+    published_at: datetime
+    observed_at: datetime
+    description: str = ""
+    source: str = "NAVER_NEWS_SEARCH"
+    timestamp_basis: str = "PROVIDER_PUBDATE"
+
+
+def normalize_naver_news(payload: dict, *, observed_at: datetime) -> list[NewsArticle]:
+    """Keep search snippets and provider times; never fetch or certify article bodies."""
+    if observed_at.tzinfo is None:
+        raise ValueError("observed_at must be timezone-aware")
+    if not isinstance(payload, dict):
+        raise UpstreamSchemaError("Naver news response must be an object")
+    items = payload.get("items")
+    if not isinstance(items, list) or len(items) > 100:
+        raise UpstreamSchemaError("Naver news response requires at most 100 items")
+    articles = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise UpstreamSchemaError("Naver news item must be an object")
+        try:
+            title = _clean_text(str(item.get("title", "")))
+            url = _canonical_url(str(item.get("originallink") or item.get("link") or ""))
+            parts = urlsplit(url)
+            published = parsedate_to_datetime(str(item.get("pubDate", "")))
+            if not title or len(url) > 2048 or not parts.hostname or parts.scheme not in {"https", "http"}:
+                raise ValueError("invalid article identity")
+            if parts.username or parts.password or published.tzinfo is None:
+                raise ValueError("invalid article boundary")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise UpstreamSchemaError("Naver news item has invalid identity or pubDate") from exc
+        articles.append(NewsArticle(
+            title[:240], url, published.astimezone(timezone.utc),
+            observed_at.astimezone(timezone.utc),
+            _clean_text(str(item.get("description", "")))[:280],
+        ))
+    return articles
+
+
+class NaverNewsClient:
+    def __init__(self, client_id: str, client_secret: str, *, fetch_json: Callable = get_json,
+                 clock: Callable | None = None):
+        if any(not value.strip() or len(value) > 256 or any(ord(c) < 32 for c in value)
+               for value in (client_id, client_secret)):
+            raise AuthenticationError("valid Naver client credential files are required")
+        self._client_id, self._client_secret = client_id, client_secret
+        self._fetch_json = fetch_json
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def collect(self, *, observed_at: datetime, queries=DEFAULT_DISCOVERY_QUERIES,
+                display: int = 100) -> list[NewsArticle]:
+        if observed_at.tzinfo is None:
+            raise ValueError("observed_at must be timezone-aware")
+        if isinstance(display, bool) or not isinstance(display, int) or not 1 <= display <= 100:
+            raise ValueError("display must be between 1 and 100")
+        if not isinstance(queries, (tuple, list)) or not 1 <= len(queries) <= 5:
+            raise ValueError("one to five unique news queries are required")
+        if any(not isinstance(q, str) or not q.strip() or len(q) > 80 for q in queries):
+            raise ValueError("news query must contain 1 to 80 characters")
+        if len(set(queries)) != len(queries):
+            raise ValueError("one to five unique news queries are required")
+        articles = []
+        for query in queries:
+            response = self._fetch_json(
+                NAVER_NEWS_URL,
+                query={"query": query, "display": str(display), "start": "1", "sort": "date", "format": "json"},
+                headers={"X-NCP-APIGW-API-KEY-ID": self._client_id,
+                         "X-NCP-APIGW-API-KEY": self._client_secret},
+                timeout_seconds=10,
+            )
+            received_at = max(observed_at, self._clock())
+            articles.extend(normalize_naver_news(response.payload, observed_at=received_at))
+        return articles
 

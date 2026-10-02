@@ -84,10 +84,15 @@ class ApiTests(unittest.TestCase):
         initial=self.request("GET","/api/status",authorized=True)[2]
         self.assertFalse(initial['production_db_accessed'])
         self.assertIsNone(initial['actual_financial_validation'])
-        for name in ('oracle-data-coverage.json','observed-price-calculation.json','observed-financial-calculation.json'):
+        # Keep local operational inventories outside Git; use explicit fixture metadata.
+        inventory={'checked_at_kst':'2026-01-01T00:00:00+09:00','fixture':True}
+        (self.server.root/'artifacts/oracle-data-coverage.json').write_text(
+            json.dumps(inventory),encoding='utf-8')
+        for name in ('observed-price-calculation.json','observed-financial-calculation.json'):
             shutil.copyfile(ROOT/'artifacts'/name,self.server.root/'artifacts'/name)
         status=self.request("GET","/api/status",authorized=True)[2]
         self.assertTrue(status['production_db_accessed'])
+        self.assertEqual(status['oracle_inventory'],inventory)
         self.assertFalse(status['production_db_changed'])
         self.assertEqual(status['data_status'],'THREE_YEAR_INCOMPLETE_ORACLE_INVENTORY')
         self.assertFalse(status['actual_price_validation']['historical_decisions_certified'])

@@ -1,0 +1,423 @@
+{
+  "checked_at_kst": "2026-09-30T11:38:54.219631+09:00",
+  "source_head": "f3af37a66765e5fb0e500baf4e845c25210a67c9",
+  "source_status": [
+    " M ARCHITECTURE.md",
+    " M README.md",
+    " M deploy/README.md",
+    " M deploy/candidate.env.example",
+    " M deploy/compose.yaml",
+    " M deploy/jobs/run_stock_cycle.sh",
+    " M docs/reports/2026-09-21-completion-audit.md",
+    " M docs/runbooks/hermes-oracle-rollout.md",
+    " M hermes/profiles/README.md",
+    " M hermes/profiles/stock-cio/SOUL.md",
+    " M hermes/profiles/stock-cio/env.example",
+    " M hermes/profiles/stock-cio/tool-policy.json",
+    " M hermes/profiles/stock-fundamentals/SOUL.md",
+    " M hermes/profiles/stock-fundamentals/tool-policy.json",
+    " M hermes/profiles/stock-market/SOUL.md",
+    " M hermes/profiles/stock-market/tool-policy.json",
+    " M hermes/profiles/stock-risk/SOUL.md",
+    " M hermes/profiles/stock-risk/tool-policy.json",
+    " M hermes/skills/stock-research/SKILL.md",
+    " M src/stock_assistant/__init__.py",
+    " M src/stock_assistant/alerts.py",
+    " M src/stock_assistant/cli.py",
+    " M src/stock_assistant/client.py",
+    " M src/stock_assistant/disclosures.py",
+    " M src/stock_assistant/http_api.py",
+    " M src/stock_assistant/ingestion.py",
+    " M src/stock_assistant/models.py",
+    " M src/stock_assistant/performance.py",
+    " M src/stock_assistant/pipeline.py",
+    " M src/stock_assistant/presentation.py",
+    " M src/stock_assistant/providers/__init__.py",
+    " M src/stock_assistant/providers/dart.py",
+    " M src/stock_assistant/providers/http.py",
+    " M src/stock_assistant/providers/krx.py",
+    " M src/stock_assistant/reports.py",
+    " M src/stock_assistant/repository.py",
+    " M src/stock_assistant/screening.py",
+    " M src/stock_assistant/validation.py",
+    " M tests/test_client.py",
+    " M tests/test_deploy_assets.py",
+    " M tests/test_hermes_assets.py",
+    " M tests/test_http_api.py",
+    " M tests/test_ingestion.py",
+    " M tests/test_models.py",
+    " M tests/test_performance.py",
+    " M tests/test_presentation.py",
+    " M tests/test_providers.py",
+    " M tests/test_reports.py",
+    " M tests/test_repository.py",
+    " M tests/test_screening.py",
+    "?? deploy/install_toss_credentials.sh",
+    "?? deploy/jobs/run_intraday_watch.sh",
+    "?? deploy/jobs/stock-evening.sh",
+    "?? deploy/jobs/stock-intraday-alerts.sh",
+    "?? deploy/jobs/stock-intraday.sh",
+    "?? deploy/jobs/stock-morning.sh",
+    "?? deploy/jobs/stock-weekly.sh",
+    "?? docs/decisions/0002-toss-read-only-intraday.md",
+    "?? docs/reports/2026-09-30-stock-research-dashboard-handoff-report.md",
+    "?? docs/superpowers/plans/2026-09-30-stock-research-dashboard-handoff-plan.md",
+    "?? hermes/profiles/stock-cio/scripts/",
+    "?? hermes/profiles/stock-live-market/",
+    "?? src/stock_assistant/identifiers.py",
+    "?? src/stock_assistant/intraday.py",
+    "?? src/stock_assistant/providers/toss.py",
+    "?? src/stock_investment_assistant.egg-info/",
+    "?? tests/test_toss_market_data.py",
+    "?? uv.lock"
+  ],
+  "snapshot_files": [
+    {
+      "path": "src/stock_assistant/__init__.py",
+      "sha256": "eb6c68f1c8c5d99d9aba5ac97bfa3e1d1a6f2a5973976d50b1a5280cd9e62bac",
+      "source_sha256": "eb6c68f1c8c5d99d9aba5ac97bfa3e1d1a6f2a5973976d50b1a5280cd9e62bac"
+    },
+    {
+      "path": "src/stock_assistant/__main__.py",
+      "sha256": "76fa916e93e0ae1a6c1bb51dcc0bcf289c014e9f760a47165f8a84401ccf41d7",
+      "source_sha256": "76fa916e93e0ae1a6c1bb51dcc0bcf289c014e9f760a47165f8a84401ccf41d7"
+    },
+    {
+      "path": "src/stock_assistant/alerts.py",
+      "sha256": "5fbfe28be385c05cad751636307c3d88566b249f94175abd4d6ddd331c8cf42f",
+      "source_sha256": "5fbfe28be385c05cad751636307c3d88566b249f94175abd4d6ddd331c8cf42f"
+    },
+    {
+      "path": "src/stock_assistant/approvals.py",
+      "sha256": "13ef783541e6693292bbd07d1bc86d160cf9794d1dddbb365c54fe22595ca671",
+      "source_sha256": "13ef783541e6693292bbd07d1bc86d160cf9794d1dddbb365c54fe22595ca671"
+    },
+    {
+      "path": "src/stock_assistant/backtest.py",
+      "sha256": "f6be8687ba8fb6ff6e0ce4de06715c1a1bacd73d07788746d8aeeb7c48846212",
+      "source_sha256": "f6be8687ba8fb6ff6e0ce4de06715c1a1bacd73d07788746d8aeeb7c48846212"
+    },
+    {
+      "path": "src/stock_assistant/cli.py",
+      "sha256": "d38049e2d2340bae6bc0b07422a5f728af9a34523bd46620b327b9eab03862c7",
+      "source_sha256": "d38049e2d2340bae6bc0b07422a5f728af9a34523bd46620b327b9eab03862c7"
+    },
+    {
+      "path": "src/stock_assistant/client.py",
+      "sha256": "71fedce9f1dd7612885174679f487a412a64d2f639865d3ced8b34bb7e1a710a",
+      "source_sha256": "71fedce9f1dd7612885174679f487a412a64d2f639865d3ced8b34bb7e1a710a"
+    },
+    {
+      "path": "src/stock_assistant/contract_io.py",
+      "sha256": "295202392c03dc6ba57001c540f10a3ba9e77d718f763a9d56a4f98de9216788",
+      "source_sha256": "295202392c03dc6ba57001c540f10a3ba9e77d718f763a9d56a4f98de9216788"
+    },
+    {
+      "path": "src/stock_assistant/disclosures.py",
+      "sha256": "b65e192d490a88ec0c03f2d10659c9891c64dd429dd6766a74cc74b0eea02787",
+      "source_sha256": "b65e192d490a88ec0c03f2d10659c9891c64dd429dd6766a74cc74b0eea02787"
+    },
+    {
+      "path": "src/stock_assistant/http_api.py",
+      "sha256": "6f74449b89fa1c6216fba72f7d4b71d01018eb719b17df7c2f402ced97d89ec6",
+      "source_sha256": "6f74449b89fa1c6216fba72f7d4b71d01018eb719b17df7c2f402ced97d89ec6"
+    },
+    {
+      "path": "src/stock_assistant/identifiers.py",
+      "sha256": "8fcdf2dc9ac4a87a0362cd15b3f2254e3c2615283aad423a2ba8819a7927724c",
+      "source_sha256": "8fcdf2dc9ac4a87a0362cd15b3f2254e3c2615283aad423a2ba8819a7927724c"
+    },
+    {
+      "path": "src/stock_assistant/indicators.py",
+      "sha256": "68588ff496992f106351d99e6a38349905d0a312a4dd3d49e5e25a182f03bdeb",
+      "source_sha256": "68588ff496992f106351d99e6a38349905d0a312a4dd3d49e5e25a182f03bdeb"
+    },
+    {
+      "path": "src/stock_assistant/ingestion.py",
+      "sha256": "d1fc6e358d6b0771c3e123ae5628eb04cd3fefa31106ed7d4304ef6e5febe8e5",
+      "source_sha256": "d1fc6e358d6b0771c3e123ae5628eb04cd3fefa31106ed7d4304ef6e5febe8e5"
+    },
+    {
+      "path": "src/stock_assistant/intraday.py",
+      "sha256": "953248f1ea025f0111079f11ee37b2c453b5bf3f036fe0b0272b86a5fe26c22d",
+      "source_sha256": "953248f1ea025f0111079f11ee37b2c453b5bf3f036fe0b0272b86a5fe26c22d"
+    },
+    {
+      "path": "src/stock_assistant/journal_writer.py",
+      "sha256": "dbb9dd5de7f5edb7519c1a4c94a55423e4b9919bcf885e451b1f2e430d7fd1b0",
+      "source_sha256": "dbb9dd5de7f5edb7519c1a4c94a55423e4b9919bcf885e451b1f2e430d7fd1b0"
+    },
+    {
+      "path": "src/stock_assistant/models.py",
+      "sha256": "3cb9287769908e6b42cf87f7d09d6262ad4683c25633dbbb63c1e191543ddaf1",
+      "source_sha256": "3cb9287769908e6b42cf87f7d09d6262ad4683c25633dbbb63c1e191543ddaf1"
+    },
+    {
+      "path": "src/stock_assistant/performance.py",
+      "sha256": "61bde04be01c6f2a7c330e236685ba86c8585a9b63cecf115518bac81fc62424",
+      "source_sha256": "61bde04be01c6f2a7c330e236685ba86c8585a9b63cecf115518bac81fc62424"
+    },
+    {
+      "path": "src/stock_assistant/pipeline.py",
+      "sha256": "465f6774d8a5553f88b996cb8d34e8516b5c10ab5b120ffdd4a19637be72707d",
+      "source_sha256": "465f6774d8a5553f88b996cb8d34e8516b5c10ab5b120ffdd4a19637be72707d"
+    },
+    {
+      "path": "src/stock_assistant/portfolio.py",
+      "sha256": "15b93e05c576fd7f8806d8820608ab4bfbf7f81d38f1ac27032d127ff559a86f",
+      "source_sha256": "15b93e05c576fd7f8806d8820608ab4bfbf7f81d38f1ac27032d127ff559a86f"
+    },
+    {
+      "path": "src/stock_assistant/presentation.py",
+      "sha256": "e20691c3726a2130478beb8fa58da5298d597107a6aef7b223c8cf10f626bae5",
+      "source_sha256": "e20691c3726a2130478beb8fa58da5298d597107a6aef7b223c8cf10f626bae5"
+    },
+    {
+      "path": "src/stock_assistant/providers/__init__.py",
+      "sha256": "2c95932995d1f537a2d7f7007120f696d04c60859fb35a63d6cf7cd9005452d0",
+      "source_sha256": "2c95932995d1f537a2d7f7007120f696d04c60859fb35a63d6cf7cd9005452d0"
+    },
+    {
+      "path": "src/stock_assistant/providers/dart.py",
+      "sha256": "b8a10b087ae54c1b16023314f23b5ddab46d90145999815a43b8b976c6a7407d",
+      "source_sha256": "b8a10b087ae54c1b16023314f23b5ddab46d90145999815a43b8b976c6a7407d"
+    },
+    {
+      "path": "src/stock_assistant/providers/http.py",
+      "sha256": "907e436feb5828d54da07c55cfc9170447c51d906ba4f19549afca860172d1d6",
+      "source_sha256": "907e436feb5828d54da07c55cfc9170447c51d906ba4f19549afca860172d1d6"
+    },
+    {
+      "path": "src/stock_assistant/providers/krx.py",
+      "sha256": "b374d4c98ef9abc2dd114aa7cd391431cb48b65a62027665beef44d9ffef5f64",
+      "source_sha256": "b374d4c98ef9abc2dd114aa7cd391431cb48b65a62027665beef44d9ffef5f64"
+    },
+    {
+      "path": "src/stock_assistant/providers/news.py",
+      "sha256": "2d6c47f85ff8e6472edfd0ec35145909f4d830f44602e41d2571a040e0c827d7",
+      "source_sha256": "2d6c47f85ff8e6472edfd0ec35145909f4d830f44602e41d2571a040e0c827d7"
+    },
+    {
+      "path": "src/stock_assistant/providers/toss.py",
+      "sha256": "65333010f27dc8f0dc4294985dee7cb69a0130b4f17d027b1456d3413feaa7e4",
+      "source_sha256": "65333010f27dc8f0dc4294985dee7cb69a0130b4f17d027b1456d3413feaa7e4"
+    },
+    {
+      "path": "src/stock_assistant/reports.py",
+      "sha256": "d2427110015622bb893ef25daac73b6fb0a7930d535b60b41bddcefda30285e3",
+      "source_sha256": "d2427110015622bb893ef25daac73b6fb0a7930d535b60b41bddcefda30285e3"
+    },
+    {
+      "path": "src/stock_assistant/repository.py",
+      "sha256": "7b6d9bce17760cf2fb98c9edfdb2a5cd3aba77bad411b8f238821e12d250ed5d",
+      "source_sha256": "7b6d9bce17760cf2fb98c9edfdb2a5cd3aba77bad411b8f238821e12d250ed5d"
+    },
+    {
+      "path": "src/stock_assistant/schedules.py",
+      "sha256": "390ebf57f700a6b72284790f816c2d47c1ac8042b18b486fcab379039384e951",
+      "source_sha256": "390ebf57f700a6b72284790f816c2d47c1ac8042b18b486fcab379039384e951"
+    },
+    {
+      "path": "src/stock_assistant/screening.py",
+      "sha256": "3886a933f2752a3801f619c78231856fd7aab8bd838eb83d9f50b58a63e86046",
+      "source_sha256": "3886a933f2752a3801f619c78231856fd7aab8bd838eb83d9f50b58a63e86046"
+    },
+    {
+      "path": "src/stock_assistant/validation.py",
+      "sha256": "2bd0156aec9292a289dd07aa4d5b9ee72da95aaf52480651f36e946245ab754e",
+      "source_sha256": "2bd0156aec9292a289dd07aa4d5b9ee72da95aaf52480651f36e946245ab754e"
+    },
+    {
+      "path": "tests/__init__.py",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "source_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "tests/fixtures/dart_filings_raw.json",
+      "sha256": "2b7c7819945ea91c7ff96e4bed03727edf4a7d2871d07e0089adf1e01b1a9a0e",
+      "source_sha256": "2b7c7819945ea91c7ff96e4bed03727edf4a7d2871d07e0089adf1e01b1a9a0e"
+    },
+    {
+      "path": "tests/fixtures/dart_financial_raw.json",
+      "sha256": "656eb8fbd0a6ef346dbd2810cb463378a19be007d112d46b90507830e2bda665",
+      "source_sha256": "656eb8fbd0a6ef346dbd2810cb463378a19be007d112d46b90507830e2bda665"
+    },
+    {
+      "path": "tests/fixtures/isu_petasis_manual_case.json",
+      "sha256": "3faa3e5ba86733b305bb3b2ea950ab37d2a01c977cf0e2283c40a9d6b3f2b71f",
+      "source_sha256": "3faa3e5ba86733b305bb3b2ea950ab37d2a01c977cf0e2283c40a9d6b3f2b71f"
+    },
+    {
+      "path": "tests/fixtures/krx_daily_raw.json",
+      "sha256": "68cc475badc9103cba4560feeba51bc95beb635c4ad5873366be54fceb65e459",
+      "source_sha256": "68cc475badc9103cba4560feeba51bc95beb635c4ad5873366be54fceb65e459"
+    },
+    {
+      "path": "tests/fixtures/krx_etf_daily_raw.json",
+      "sha256": "b888b5ab3b08578136cdca4c736d6d5d845c4e201b709e4b4c16bdf5bc0dede2",
+      "source_sha256": "b888b5ab3b08578136cdca4c736d6d5d845c4e201b709e4b4c16bdf5bc0dede2"
+    },
+    {
+      "path": "tests/fixtures/krx_ohlcv_normalized.json",
+      "sha256": "e22a6e7cdc5dbfd6423f063b66e9898e1136008db51f67b769bdf3b9f9f98af1",
+      "source_sha256": "e22a6e7cdc5dbfd6423f063b66e9898e1136008db51f67b769bdf3b9f9f98af1"
+    },
+    {
+      "path": "tests/fixtures/krx_security_raw.json",
+      "sha256": "df9e6f5053b0ec195f462035002a8558f1570881364725a5fa3d155d7103b691",
+      "source_sha256": "df9e6f5053b0ec195f462035002a8558f1570881364725a5fa3d155d7103b691"
+    },
+    {
+      "path": "tests/helpers.py",
+      "sha256": "a9d6246d4443df3977c985b35041a3092252e8903473f879b7c2b65342d090d5",
+      "source_sha256": "a9d6246d4443df3977c985b35041a3092252e8903473f879b7c2b65342d090d5"
+    },
+    {
+      "path": "tests/test_alerts.py",
+      "sha256": "6728d56c66ef422b9141f1c9c45bb609b0ed24fb592735c75518d82a50dbb0b6",
+      "source_sha256": "6728d56c66ef422b9141f1c9c45bb609b0ed24fb592735c75518d82a50dbb0b6"
+    },
+    {
+      "path": "tests/test_approvals.py",
+      "sha256": "147196d3d8bf176d0a10e851b3d87458b13a4863d98cd0610b8b4054e9666247",
+      "source_sha256": "147196d3d8bf176d0a10e851b3d87458b13a4863d98cd0610b8b4054e9666247"
+    },
+    {
+      "path": "tests/test_backtest.py",
+      "sha256": "0fad83300a7669a428704263da3b521b28b11a5eba9cc5695035937c0e642006",
+      "source_sha256": "0fad83300a7669a428704263da3b521b28b11a5eba9cc5695035937c0e642006"
+    },
+    {
+      "path": "tests/test_client.py",
+      "sha256": "708059d0ff18ed8fe1f90b6cc4fb813ea79cac7cadc9596a9d7d111852ac7579",
+      "source_sha256": "708059d0ff18ed8fe1f90b6cc4fb813ea79cac7cadc9596a9d7d111852ac7579"
+    },
+    {
+      "path": "tests/test_deploy_assets.py",
+      "sha256": "220219dbaec6679de3e497abc20ff2af6b7c396e53acad45932b7658e6b5dcc3",
+      "source_sha256": "220219dbaec6679de3e497abc20ff2af6b7c396e53acad45932b7658e6b5dcc3"
+    },
+    {
+      "path": "tests/test_disclosures.py",
+      "sha256": "118b864f0dc21cb41a17a3662031fa40764f3f1ed4448148e474bdf9255f7db2",
+      "source_sha256": "118b864f0dc21cb41a17a3662031fa40764f3f1ed4448148e474bdf9255f7db2"
+    },
+    {
+      "path": "tests/test_hermes_assets.py",
+      "sha256": "e86c044cd9736767490f3b7b5f9ba0ef8dc971b3e8965b4fdbe9ef5fbb2e6229",
+      "source_sha256": "e86c044cd9736767490f3b7b5f9ba0ef8dc971b3e8965b4fdbe9ef5fbb2e6229"
+    },
+    {
+      "path": "tests/test_http_api.py",
+      "sha256": "726d203a77c6675ff232094511416bb2c1cdbd508cf423eb18da5f28d9dc86a0",
+      "source_sha256": "726d203a77c6675ff232094511416bb2c1cdbd508cf423eb18da5f28d9dc86a0"
+    },
+    {
+      "path": "tests/test_indicators.py",
+      "sha256": "504586c800f1af6655d4265e0f228e0e6f9a7959bc61d9c1b30ed526fe00b998",
+      "source_sha256": "504586c800f1af6655d4265e0f228e0e6f9a7959bc61d9c1b30ed526fe00b998"
+    },
+    {
+      "path": "tests/test_ingestion.py",
+      "sha256": "d2fc434dfe0b4f5a428e96d14badce6034d3df0211c8931240b3685c4da7e991",
+      "source_sha256": "d2fc434dfe0b4f5a428e96d14badce6034d3df0211c8931240b3685c4da7e991"
+    },
+    {
+      "path": "tests/test_journal_writer.py",
+      "sha256": "fdf36e2c2b84aa7ea238d51ab3a32608c9cb2b2c1eae4ba8615628c221c61e88",
+      "source_sha256": "fdf36e2c2b84aa7ea238d51ab3a32608c9cb2b2c1eae4ba8615628c221c61e88"
+    },
+    {
+      "path": "tests/test_models.py",
+      "sha256": "326817c776562672958e6a132e6b7f1e546a9473e63f98051ad2d46e267b9fd1",
+      "source_sha256": "326817c776562672958e6a132e6b7f1e546a9473e63f98051ad2d46e267b9fd1"
+    },
+    {
+      "path": "tests/test_performance.py",
+      "sha256": "2b65493c8e1f213bcea7ac26741df9b578634cd69ae921d4fbde08dcef7100c5",
+      "source_sha256": "2b65493c8e1f213bcea7ac26741df9b578634cd69ae921d4fbde08dcef7100c5"
+    },
+    {
+      "path": "tests/test_pipeline.py",
+      "sha256": "a7898f89ad968ca22229cf6a0e6b46d36ab519568933f200eb991dc5a0b74de2",
+      "source_sha256": "a7898f89ad968ca22229cf6a0e6b46d36ab519568933f200eb991dc5a0b74de2"
+    },
+    {
+      "path": "tests/test_portfolio.py",
+      "sha256": "1279ac5cfd471db9e06d25662080ed65bb1a36a330862fb703df107bc5eba75d",
+      "source_sha256": "1279ac5cfd471db9e06d25662080ed65bb1a36a330862fb703df107bc5eba75d"
+    },
+    {
+      "path": "tests/test_presentation.py",
+      "sha256": "087848014e0d8ba76cfffa095401a2e1d60352e3bf003158b578e99ee143f141",
+      "source_sha256": "087848014e0d8ba76cfffa095401a2e1d60352e3bf003158b578e99ee143f141"
+    },
+    {
+      "path": "tests/test_providers.py",
+      "sha256": "a9f9a375c85672d11bc068ea93215f7f32240c13a88561e5555bb1d90bdce104",
+      "source_sha256": "a9f9a375c85672d11bc068ea93215f7f32240c13a88561e5555bb1d90bdce104"
+    },
+    {
+      "path": "tests/test_reports.py",
+      "sha256": "85db200dfc58d573bd3052f0f2afc1cee5d39b0f44b55ee6172c14012f0e37eb",
+      "source_sha256": "85db200dfc58d573bd3052f0f2afc1cee5d39b0f44b55ee6172c14012f0e37eb"
+    },
+    {
+      "path": "tests/test_repository.py",
+      "sha256": "6d5c857e60c29bfac52a54cf553690355fbe56e1842340edc4dedc6f3a8b456e",
+      "source_sha256": "6d5c857e60c29bfac52a54cf553690355fbe56e1842340edc4dedc6f3a8b456e"
+    },
+    {
+      "path": "tests/test_schedules.py",
+      "sha256": "3a574da2dd9b179a1264a0be70350bf00cf8e8d99d89ce7e6b5aeef4f24cfdba",
+      "source_sha256": "3a574da2dd9b179a1264a0be70350bf00cf8e8d99d89ce7e6b5aeef4f24cfdba"
+    },
+    {
+      "path": "tests/test_screening.py",
+      "sha256": "b2591f750729d1610fad973b646e2cdc04cc1412a675b3bb5c0978326b27d443",
+      "source_sha256": "b2591f750729d1610fad973b646e2cdc04cc1412a675b3bb5c0978326b27d443"
+    },
+    {
+      "path": "tests/test_toss_market_data.py",
+      "sha256": "08b2bb6ae9cce021ee21f5519537683a79dc8962da42084b509a6c897e66a832",
+      "source_sha256": "08b2bb6ae9cce021ee21f5519537683a79dc8962da42084b509a6c897e66a832"
+    },
+    {
+      "path": "tests/test_validation.py",
+      "sha256": "700257bf4a1ab44c2fe5362953e65d77a98948db9326a8e20c92159b6cf8ca67",
+      "source_sha256": "700257bf4a1ab44c2fe5362953e65d77a98948db9326a8e20c92159b6cf8ca67"
+    }
+  ],
+  "all_snapshot_hashes_match": true,
+  "local_database_aggregate_only": [
+    {
+      "path": ".cache/http-smoke.sqlite3",
+      "tables": {
+        "metadata": {
+          "rows": 1
+        },
+        "screening_results": {
+          "rows": 0
+        },
+        "holdings": {
+          "rows": 0
+        },
+        "thesis_cards": {
+          "rows": 0
+        }
+      }
+    }
+  ],
+  "environment_key_presence_only": {
+    "KRX_AUTH_KEY": false,
+    "KRX_API_KEY": false,
+    "DART_API_KEY": false
+  },
+  "production_db_accessed": false,
+  "target_window_proposed": {
+    "start": "2023-09-30",
+    "end": "2026-09-29",
+    "status": "PENDING_DATA"
+  },
+  "real_three_year_replay": "BLOCKED_NO_POINT_IN_TIME_DATASET"
+}

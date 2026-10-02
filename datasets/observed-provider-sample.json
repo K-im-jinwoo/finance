@@ -1,0 +1,157 @@
+{
+  "checked_at_kst": "2026-09-30T12:20:44.598080+09:00",
+  "scope": "bounded provider sample; no production database access or writes",
+  "observed_at": "2026-09-30T03:20:44.598094+00:00",
+  "krx": [
+    {
+      "market": "KOSPI",
+      "date": "2023-11-01",
+      "status": "NORMALIZED",
+      "bars": 935,
+      "symbols": 935
+    },
+    {
+      "market": "KOSDAQ",
+      "date": "2023-11-01",
+      "status": "NORMALIZED",
+      "bars": 1616,
+      "symbols": 1616
+    },
+    {
+      "market": "KOSPI",
+      "date": "2026-09-29",
+      "status": "NORMALIZED",
+      "bars": 914,
+      "symbols": 914
+    },
+    {
+      "market": "KOSDAQ",
+      "date": "2026-09-29",
+      "status": "NORMALIZED",
+      "bars": 1742,
+      "symbols": 1742
+    },
+    {
+      "market": "ETF",
+      "date": "2026-09-29",
+      "status": "NORMALIZED",
+      "bars": 1167,
+      "symbols": 1167
+    }
+  ],
+  "dart": {
+    "status_code": "000",
+    "business_year": 2023,
+    "report_code": "11011",
+    "division": "CFS",
+    "rows": 177,
+    "receipt_numbers": [
+      "20240320001697"
+    ],
+    "historical_version_certified": false,
+    "limitation": "API fiscal-year query does not prove original contemporaneous revision"
+  },
+  "price_rows": [
+    {
+      "symbol": "044450",
+      "trade_date": "2023-11-01",
+      "open": "7850",
+      "high": "8060",
+      "low": "7850",
+      "close": "7930",
+      "volume": 27636,
+      "source": "KRX_OPEN_API",
+      "observed_at": "2026-09-30T03:20:44.598094+00:00"
+    },
+    {
+      "symbol": "053800",
+      "trade_date": "2023-11-01",
+      "open": "64300",
+      "high": "65600",
+      "low": "64200",
+      "close": "65000",
+      "volume": 48151,
+      "source": "KRX_OPEN_API",
+      "observed_at": "2026-09-30T03:20:44.598094+00:00"
+    },
+    {
+      "symbol": "054920",
+      "trade_date": "2023-11-01",
+      "open": "2705",
+      "high": "2760",
+      "low": "2700",
+      "close": "2715",
+      "volume": 51782,
+      "source": "KRX_OPEN_API",
+      "observed_at": "2026-09-30T03:20:44.598094+00:00"
+    },
+    {
+      "symbol": "240810",
+      "trade_date": "2023-11-01",
+      "open": "30200",
+      "high": "30950",
+      "low": "30100",
+      "close": "30350",
+      "volume": 117959,
+      "source": "KRX_OPEN_API",
+      "observed_at": "2026-09-30T03:20:44.598094+00:00"
+    },
+    {
+      "symbol": "044450",
+      "trade_date": "2026-09-29",
+      "open": "12410",
+      "high": "12570",
+      "low": "12180",
+      "close": "12430",
+      "volume": 181312,
+      "source": "KRX_OPEN_API",
+      "observed_at": "2026-09-30T03:20:44.598094+00:00"
+    },
+    {
+      "symbol": "062040",
+      "trade_date": "2026-09-29",
+      "open": "200500",
+      "high": "206000",
+      "low": "199800",
+      "close": "206000",
+      "volume": 160867,
+      "source": "KRX_OPEN_API",
+      "observed_at": "2026-09-30T03:20:44.598094+00:00"
+    },
+    {
+      "symbol": "053800",
+      "trade_date": "2026-09-29",
+      "open": "74700",
+      "high": "76700",
+      "low": "72200",
+      "close": "76700",
+      "volume": 101594,
+      "source": "KRX_OPEN_API",
+      "observed_at": "2026-09-30T03:20:44.598094+00:00"
+    },
+    {
+      "symbol": "054920",
+      "trade_date": "2026-09-29",
+      "open": "4850",
+      "high": "4925",
+      "low": "4585",
+      "close": "4620",
+      "volume": 592120,
+      "source": "KRX_OPEN_API",
+      "observed_at": "2026-09-30T03:20:44.598094+00:00"
+    },
+    {
+      "symbol": "240810",
+      "trade_date": "2026-09-29",
+      "open": "122600",
+      "high": "130400",
+      "low": "122600",
+      "close": "130300",
+      "volume": 1030260,
+      "source": "KRX_OPEN_API",
+      "observed_at": "2026-09-30T03:20:44.598094+00:00"
+    }
+  ],
+  "three_year_certified": false,
+  "sample_dataset_id": "4150b7cbfb3a48f48ce3c7a17cd8e6ce8f8140d98b6a791687ca0066d0085491"
+}

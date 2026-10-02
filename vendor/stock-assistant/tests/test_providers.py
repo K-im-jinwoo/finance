@@ -1,0 +1,438 @@
+from __future__ import annotations
+
+import json
+import unittest
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from io import BytesIO
+from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
+
+from stock_assistant.models import AssetType, CompanyKind
+from stock_assistant.providers.dart import (
+    DartClient,
+    normalize_dart_company_kind,
+    normalize_dart_company_profile,
+    normalize_dart_corp_codes,
+    normalize_dart_filings,
+    normalize_dart_filing_page,
+    normalize_dart_financing_events,
+    normalize_dart_financial_statement,
+    normalize_dart_operating_income_periods,
+)
+from stock_assistant.providers.http import AuthenticationError, BinaryResponse, JsonResponse, RateLimitError, UpstreamSchemaError
+from stock_assistant.providers.krx import (
+    KrxClient,
+    classify_etf_asset_type,
+    normalize_krx_daily_payload,
+    normalize_krx_daily_snapshot,
+    normalize_krx_security_payload,
+)
+from stock_assistant.providers.news import normalize_news_items
+
+
+UTC = timezone.utc
+FIXTURES = Path(__file__).parent / "fixtures"
+OBSERVED = datetime(2026, 9, 18, 15, tzinfo=UTC)
+
+
+class ProviderTests(unittest.TestCase):
+    def test_raw_krx_payload_normalizes_prices_and_volume(self) -> None:
+        payload = json.loads((FIXTURES / "krx_daily_raw.json").read_text(encoding="utf-8"))
+        rows = normalize_krx_daily_payload(payload, observed_at=OBSERVED)
+        self.assertEqual(rows[0].symbol, "005930")
+        self.assertEqual(str(rows[0].close), "82000")
+        self.assertEqual(rows[0].volume, 12_345_678)
+        snapshot = normalize_krx_daily_snapshot(payload, observed_at=OBSERVED)
+        self.assertEqual(snapshot.names, {"005930": "삼성전자"})
+
+    def test_krx_zero_volume_sentinel_is_not_invented_as_an_ohlcv_bar(self) -> None:
+        payload = {"OutBlock_1": [{
+            "BAS_DD": "20260918",
+            "ISU_CD": "000300",
+            "ISU_NM": "거래정지 예시",
+            "TDD_CLSPRC": "4,200",
+            "TDD_OPNPRC": "0",
+            "TDD_HGPRC": "0",
+            "TDD_LWPRC": "0",
+            "ACC_TRDVOL": "0",
+            "NAV": "4,210",
+            "INVSTASST_NETASST_TOTAMT": "1000000",
+        }]}
+        snapshot = normalize_krx_daily_snapshot(
+            payload, observed_at=OBSERVED, market="ETF",
+        )
+        self.assertEqual(snapshot.bars, ())
+        self.assertEqual(snapshot.names, {})
+        self.assertEqual(snapshot.etf_snapshots, ())
+
+    def test_krx_invalid_price_geometry_still_fails_closed(self) -> None:
+        payload = {"OutBlock_1": [{
+            "BAS_DD": "20260918",
+            "ISU_CD": "005930",
+            "TDD_CLSPRC": "100",
+            "TDD_OPNPRC": "90",
+            "TDD_HGPRC": "95",
+            "TDD_LWPRC": "80",
+            "ACC_TRDVOL": "1",
+        }]}
+        with self.assertRaisesRegex(UpstreamSchemaError, "high"):
+            normalize_krx_daily_payload(payload, observed_at=OBSERVED)
+
+    def test_krx_all_blank_holiday_payload_is_empty_but_mixed_payload_fails(self) -> None:
+        blank = {
+            "BAS_DD": "20260603",
+            "ISU_CD": "451060",
+            "ISU_NM": "1Q 200액티브",
+            "TDD_CLSPRC": "",
+            "TDD_OPNPRC": "",
+            "TDD_HGPRC": "",
+            "TDD_LWPRC": "",
+            "ACC_TRDVOL": "",
+            "NAV": "",
+            "INVSTASST_NETASST_TOTAMT": "",
+        }
+        snapshot = normalize_krx_daily_snapshot(
+            {"OutBlock_1": [blank]}, observed_at=OBSERVED, market="ETF",
+        )
+        self.assertEqual(snapshot.bars, ())
+        self.assertEqual(snapshot.names, {})
+        self.assertEqual(snapshot.etf_snapshots, ())
+
+        valid = {
+            "BAS_DD": "20260603",
+            "ISU_CD": "069500",
+            "ISU_NM": "KODEX 200",
+            "TDD_CLSPRC": "42,100",
+            "TDD_OPNPRC": "41,900",
+            "TDD_HGPRC": "42,200",
+            "TDD_LWPRC": "41,800",
+            "ACC_TRDVOL": "1,234",
+        }
+        with self.assertRaisesRegex(UpstreamSchemaError, "numeric"):
+            normalize_krx_daily_payload(
+                {"OutBlock_1": [blank, valid]}, observed_at=OBSERVED,
+            )
+
+    def test_etf_daily_snapshot_preserves_official_nav_and_net_assets(self) -> None:
+        payload = json.loads((FIXTURES / "krx_etf_daily_raw.json").read_text(encoding="utf-8"))
+        snapshot = normalize_krx_daily_snapshot(payload, observed_at=OBSERVED, market="ETF")
+        self.assertEqual(len(snapshot.etf_snapshots), 1)
+        metrics = snapshot.etf_snapshots[0]
+        self.assertEqual(metrics.nav_per_share, Decimal("42050.25"))
+        self.assertEqual(metrics.net_assets, Decimal("7800000000000"))
+        self.assertEqual(
+            metrics.premium_discount_pct,
+            (Decimal("42100") / Decimal("42050.25") - Decimal("1")) * Decimal("100"),
+        )
+        self.assertIsNone(metrics.tracking_error_pct)
+
+    def test_etf_name_classification_excludes_leverage_and_inverse(self) -> None:
+        self.assertEqual(classify_etf_asset_type("KODEX 200"), AssetType.ETF)
+        self.assertEqual(classify_etf_asset_type("KODEX 레버리지"), AssetType.LEVERAGED_ETF)
+        self.assertEqual(classify_etf_asset_type("KODEX 200선물인버스2X"), AssetType.INVERSE_ETF)
+
+    def test_krx_client_sends_auth_header_and_business_date(self) -> None:
+        calls = []
+        payload = json.loads((FIXTURES / "krx_daily_raw.json").read_text(encoding="utf-8"))
+
+        def fake_fetch(url, **kwargs):
+            calls.append((url, kwargs))
+            return JsonResponse(200, payload)
+
+        client = KrxClient("not-a-real-key", fetch_json=fake_fetch)
+        rows = client.daily("KOSPI", OBSERVED.date(), observed_at=OBSERVED)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(calls[0][1]["headers"], {"AUTH_KEY": "not-a-real-key"})
+        self.assertEqual(calls[0][1]["query"], {"basDd": "20260918"})
+
+    def test_krx_schema_change_fails_closed(self) -> None:
+        with self.assertRaises(UpstreamSchemaError):
+            normalize_krx_daily_payload({"changed": []}, observed_at=OBSERVED)
+
+    def test_krx_security_universe_distinguishes_common_preferred_and_spac(self) -> None:
+        payload = json.loads((FIXTURES / "krx_security_raw.json").read_text(encoding="utf-8"))
+        securities = normalize_krx_security_payload(payload, market="KOSPI")
+        self.assertEqual(
+            [item.asset_type for item in securities],
+            [AssetType.COMMON, AssetType.PREFERRED, AssetType.SPAC],
+        )
+        self.assertTrue(all(item.company_kind is CompanyKind.UNKNOWN for item in securities))
+        self.assertEqual(securities[0].listed_on, date(1975, 6, 11))
+
+    def test_krx_security_client_uses_official_basic_info_contract(self) -> None:
+        calls = []
+        payload = json.loads((FIXTURES / "krx_security_raw.json").read_text(encoding="utf-8"))
+
+        def fake_fetch(url, **kwargs):
+            calls.append((url, kwargs))
+            return JsonResponse(200, payload)
+
+        securities = KrxClient("not-a-real-key", fetch_json=fake_fetch).securities("KOSPI", OBSERVED.date())
+        self.assertEqual(len(securities), 3)
+        self.assertTrue(calls[0][0].endswith("/sto/stk_isu_base_info"))
+        self.assertEqual(calls[0][1]["query"], {"basDd": "20260918"})
+
+    def test_krx_accepts_alphanumeric_common_stock_and_etf_short_codes(self) -> None:
+        security_payload = {"OutBlock_1": [{
+            "ISU_SRT_CD": "0030R0",
+            "ISU_NM": "대신밸류리츠보통주",
+            "ISU_ABBRV": "대신밸류리츠",
+            "LIST_DD": "20260901",
+            "KIND_STKCERT_TP_NM": "보통주",
+        }]}
+        securities = normalize_krx_security_payload(security_payload, market="KOSPI")
+        self.assertEqual(securities[0].symbol, "0030R0")
+        self.assertEqual(securities[0].asset_type, AssetType.COMMON)
+
+        daily_payload = {"OutBlock_1": [{
+            "BAS_DD": "20260918",
+            "ISU_CD": "0094L0",
+            "ISU_NM": "테스트 ETF",
+            "TDD_CLSPRC": "10,100",
+            "TDD_OPNPRC": "10,000",
+            "TDD_HGPRC": "10,200",
+            "TDD_LWPRC": "9,900",
+            "ACC_TRDVOL": "123,456",
+            "NAV": "10,050",
+            "INVSTASST_NETASST_TOTAMT": "1000000000",
+        }]}
+        snapshot = normalize_krx_daily_snapshot(
+            daily_payload, observed_at=OBSERVED, market="ETF",
+        )
+        self.assertEqual(snapshot.bars[0].symbol, "0094L0")
+        self.assertEqual(snapshot.etf_snapshots[0].symbol, "0094L0")
+
+    def test_dart_normalization_and_error_codes(self) -> None:
+        payload = json.loads((FIXTURES / "dart_filings_raw.json").read_text(encoding="utf-8"))
+        filings = normalize_dart_filings(payload, observed_at=OBSERVED)
+        self.assertTrue(filings[0].official)
+        self.assertIn("20260918000001", filings[0].url)
+        self.assertEqual(normalize_dart_filings({"status": "013"}, observed_at=OBSERVED), [])
+        with self.assertRaises(AuthenticationError):
+            normalize_dart_filings({"status": "010"}, observed_at=OBSERVED)
+        with self.assertRaises(RateLimitError):
+            normalize_dart_filings({"status": "020"}, observed_at=OBSERVED)
+        page = normalize_dart_filing_page(payload, observed_at=OBSERVED)
+        self.assertEqual(page.total_page, 1)
+        self.assertEqual(page.receipt_dates["20260918000001"], filings[0].published_at)
+
+    def test_dart_financial_statement_extracts_operating_cash_flow_and_fcf(self) -> None:
+        payload = json.loads((FIXTURES / "dart_financial_raw.json").read_text(encoding="utf-8"))
+        snapshot = normalize_dart_financial_statement(
+            payload,
+            symbol="005930",
+            period_end=date(2025, 12, 31),
+            published_at=OBSERVED,
+            source_url="https://dart.fss.or.kr/example",
+        )
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.operating_income, Decimal("1000"))
+        self.assertEqual(snapshot.operating_cash_flow, Decimal("700"))
+        self.assertEqual(snapshot.free_cash_flow, Decimal("450"))
+        self.assertEqual(snapshot.annual_operating_income, Decimal("1000"))
+        self.assertEqual(snapshot.ttm_operating_income, Decimal("1000"))
+        self.assertEqual(snapshot.ttm_period_end, date(2025, 12, 31))
+        self.assertEqual(snapshot.receivable_turnover, (
+            Decimal("1000") / Decimal("90"),
+            Decimal("1200") / Decimal("110"),
+        ))
+        self.assertEqual(snapshot.inventory_turnover, (
+            Decimal("800") / Decimal("170"),
+            Decimal("900") / Decimal("190"),
+        ))
+
+    def test_dart_interim_operating_income_preserves_current_and_comparable_periods(self) -> None:
+        payload = json.loads((FIXTURES / "dart_financial_raw.json").read_text(encoding="utf-8"))
+        periods = normalize_dart_operating_income_periods(
+            payload,
+            source_url="https://dart.fss.or.kr/interim",
+        )
+        self.assertIsNotNone(periods)
+        assert periods is not None
+        self.assertEqual(periods.current_cumulative, Decimal("1000"))
+        self.assertEqual(periods.previous_cumulative, Decimal("800"))
+
+    def test_dart_financing_events_preserve_ratio_purpose_and_refixing(self) -> None:
+        rights = normalize_dart_financing_events({
+            "status": "000",
+            "list": [{
+                "rcept_no": "20250918000001",
+                "nstk_ostk_cnt": "100",
+                "nstk_estk_cnt": "0",
+                "bfic_tisstk_ostk": "1,000",
+                "bfic_tisstk_estk": "0",
+                "fdpp_op": "5000000000",
+            }],
+        }, symbol="005930", event_type="RIGHTS_ISSUE", observed_at=OBSERVED, receipt_dates={
+            "20250918000001": datetime(2025, 9, 18, 14, 59, 59, tzinfo=UTC),
+        })
+        self.assertEqual(rights[0].dilution_ratio_pct, Decimal("10.0"))
+        self.assertIn("운영자금", rights[0].purpose or "")
+        cb = normalize_dart_financing_events({
+            "status": "000",
+            "list": [{
+                "rcept_no": "20240918000002",
+                "cvisstk_tisstk_vs": "12.5%",
+                "act_mktprcfl_cvprc_lwtrsprc": "8000",
+            }],
+        }, symbol="005930", event_type="CB", observed_at=OBSERVED, receipt_dates={
+            "20240918000002": datetime(2024, 9, 18, 14, 59, 59, tzinfo=UTC),
+        })
+        self.assertEqual(cb[0].dilution_ratio_pct, Decimal("12.5"))
+        self.assertTrue(cb[0].refixing)
+        with self.assertRaisesRegex(UpstreamSchemaError, "receipt date is unavailable"):
+            normalize_dart_financing_events({
+                "status": "000", "list": [{"rcept_no": "20240918000002"}],
+            }, symbol="005930", event_type="CB", observed_at=OBSERVED, receipt_dates={})
+
+    def test_dart_financing_client_uses_official_event_endpoint(self) -> None:
+        calls = []
+
+        def fake_fetch(url, **kwargs):
+            calls.append((url, kwargs))
+            return JsonResponse(200, {"status": "013"})
+
+        events = DartClient("not-a-real-key", fetch_json=fake_fetch).financing_events(
+            corp_code="00126380",
+            symbol="005930",
+            event_type="BW",
+            begin_date="20210918",
+            end_date="20260917",
+            observed_at=OBSERVED,
+            receipt_dates={},
+        )
+        self.assertEqual(events, [])
+        self.assertTrue(calls[0][0].endswith("/bdwtIsDecsn.json"))
+        self.assertEqual(calls[0][1]["query"]["bgn_de"], "20210918")
+
+    def test_dart_financial_client_sends_required_point_in_time_query(self) -> None:
+        calls = []
+        payload = json.loads((FIXTURES / "dart_financial_raw.json").read_text(encoding="utf-8"))
+
+        def fake_fetch(url, **kwargs):
+            calls.append((url, kwargs))
+            return JsonResponse(200, payload)
+
+        snapshot = DartClient("not-a-real-key", fetch_json=fake_fetch).financial_statement(
+            corp_code="00126380",
+            symbol="005930",
+            business_year=2025,
+            report_code="11011",
+            financial_statement_division="CFS",
+            period_end=date(2025, 12, 31),
+            published_at=OBSERVED,
+        )
+        self.assertIsNotNone(snapshot)
+        self.assertTrue(calls[0][0].endswith("/fnlttSinglAcntAll.json"))
+        self.assertEqual(calls[0][1]["query"]["fs_div"], "CFS")
+        self.assertEqual(calls[0][1]["query"]["reprt_code"], "11011")
+
+    def test_dart_interim_client_requests_comparable_cumulative_periods(self) -> None:
+        calls = []
+        payload = json.loads((FIXTURES / "dart_financial_raw.json").read_text(encoding="utf-8"))
+
+        def fake_fetch(url, **kwargs):
+            calls.append((url, kwargs))
+            return JsonResponse(200, payload)
+
+        periods = DartClient("not-a-real-key", fetch_json=fake_fetch).operating_income_periods(
+            corp_code="00126380",
+            business_year=2026,
+            report_code="11012",
+            financial_statement_division="CFS",
+        )
+        self.assertIsNotNone(periods)
+        self.assertEqual(calls[0][1]["query"]["bsns_year"], "2026")
+        self.assertEqual(calls[0][1]["query"]["reprt_code"], "11012")
+
+    def test_dart_corp_code_archive_and_company_kind_are_normalized(self) -> None:
+        xml = (
+            "<result><list><corp_code>00126380</corp_code><corp_name>삼성전자</corp_name>"
+            "<stock_code>005930</stock_code><modify_date>20260918</modify_date></list>"
+            "<list><corp_code>12345678</corp_code><corp_name>영문혼합코드</corp_name>"
+            "<stock_code>0068Y0</stock_code><modify_date>20260918</modify_date></list>"
+            "<list><corp_code>87654321</corp_code><corp_name>비상장사</corp_name>"
+            "<stock_code></stock_code><modify_date>20260918</modify_date></list></result>"
+        ).encode("utf-8")
+        buffer = BytesIO()
+        with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("CORPCODE.xml", xml)
+        self.assertEqual(normalize_dart_corp_codes(buffer.getvalue()), {
+            "005930": "00126380",
+            "0068Y0": "12345678",
+        })
+        self.assertEqual(
+            normalize_dart_company_kind({"status": "000", "induty_code": "64992", "acc_mt": "12"}),
+            CompanyKind.FINANCIAL,
+        )
+        self.assertEqual(
+            normalize_dart_company_kind({"status": "000", "induty_code": "26110"}),
+            CompanyKind.GENERAL,
+        )
+        profile = normalize_dart_company_profile({"status": "000", "induty_code": "26110", "acc_mt": "03"})
+        self.assertEqual(profile.fiscal_month, 3)
+
+    def test_dart_numeric_stock_code_with_wrong_length_still_fails_closed(self) -> None:
+        xml = (
+            "<result><list><corp_code>00126380</corp_code><corp_name>잘못된 코드</corp_name>"
+            "<stock_code>05930</stock_code><modify_date>20260918</modify_date></list></result>"
+        ).encode("utf-8")
+        buffer = BytesIO()
+        with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("CORPCODE.xml", xml)
+        with self.assertRaisesRegex(UpstreamSchemaError, "six-character"):
+            normalize_dart_corp_codes(buffer.getvalue())
+
+    def test_dart_client_keeps_binary_and_json_credentials_inside_provider_boundary(self) -> None:
+        xml = (
+            "<result><list><corp_code>00126380</corp_code><stock_code>005930</stock_code>"
+            "<modify_date>20260918</modify_date></list></result>"
+        ).encode("utf-8")
+        buffer = BytesIO()
+        with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+            archive.writestr("CORPCODE.xml", xml)
+        calls = []
+
+        def fake_bytes(url, **kwargs):
+            calls.append(("bytes", url, kwargs))
+            return BinaryResponse(200, buffer.getvalue())
+
+        def fake_json(url, **kwargs):
+            calls.append(("json", url, kwargs))
+            return JsonResponse(200, {"status": "000", "induty_code": "26110"})
+
+        client = DartClient("not-a-real-key", fetch_json=fake_json, fetch_bytes=fake_bytes)
+        self.assertEqual(client.corp_codes()["005930"], "00126380")
+        self.assertEqual(client.company_kind("00126380"), CompanyKind.GENERAL)
+        self.assertEqual(calls[0][2]["query"], {"crtfc_key": "not-a-real-key"})
+        self.assertEqual(calls[1][2]["query"]["corp_code"], "00126380")
+
+    def test_news_is_cleaned_and_deduplicated_by_canonical_url_and_title(self) -> None:
+        items = [
+            {
+                "title": "<b>계약 체결</b>",
+                "originallink": "https://news.example/item?utm_source=x&id=1",
+                "published_at": "2026-09-18T01:00:00+00:00",
+            },
+            {
+                "title": "계약 체결",
+                "originallink": "https://news.example/item?id=1&utm_medium=y",
+                "published_at": "2026-09-18T01:00:00+00:00",
+            },
+        ]
+        results = normalize_news_items(items, observed_at=OBSERVED)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].title, "계약 체결")
+        self.assertEqual(results[0].url, "https://news.example/item?id=1")
+
+    def test_news_requires_timezone_aware_publication(self) -> None:
+        with self.assertRaisesRegex(ValueError, "timezone-aware"):
+            normalize_news_items([
+                {"title": "title", "url": "https://example.test", "published_at": "2026-09-18T01:00:00"}
+            ], observed_at=OBSERVED)
+
+
+if __name__ == "__main__":
+    unittest.main()

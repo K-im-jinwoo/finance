@@ -1,0 +1,197 @@
+[
+  {
+    "experiment_id": "E-f9af59e7b259728c83d421ac",
+    "mode": "SYNTHETIC",
+    "cost_bps": "10",
+    "cost_role": "SENSITIVITY_ASSUMPTION",
+    "metrics": {
+      "completed_round_trips": 1,
+      "win_rate": "0",
+      "open_positions": 5,
+      "pending_trades": 0,
+      "total_cost": "6770",
+      "realized_pnl": "-82404",
+      "max_drawdown": "-0.0678623554728530907860624491",
+      "cash_ratio": "0.01803266942985043278210336323",
+      "holding_periods_closed": [
+        {
+          "symbol": "900001",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "exit_at": "2026-04-15T09:00:00+09:00",
+          "calendar_days": 2
+        }
+      ],
+      "holding_periods_open": [
+        {
+          "symbol": "900002",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900003",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900004",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900005",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900001",
+          "entry_at": "2026-04-16T09:00:00+09:00",
+          "calendar_days": 0
+        }
+      ],
+      "valuation_missing_count": 0,
+      "benchmark": null,
+      "benchmark_status": "NOT_SELECTED",
+      "mdd_basis": "verified mark observations only; no intraday MDD claim"
+    },
+    "latest_equity": {
+      "at": "2026-04-16T20:02:00+09:00",
+      "cash": "183730",
+      "missing_symbols": [],
+      "stale_symbols": [],
+      "unchecked_symbols": [],
+      "total_assets": "10188730",
+      "return": "0.018873",
+      "unrealized_pnl": "271134"
+    }
+  },
+  {
+    "experiment_id": "E-6de26b577930419691b94c27",
+    "mode": "SYNTHETIC",
+    "cost_bps": "30",
+    "cost_role": "USER_BASELINE",
+    "metrics": {
+      "completed_round_trips": 1,
+      "win_rate": "0",
+      "open_positions": 5,
+      "pending_trades": 0,
+      "total_cost": "20303",
+      "realized_pnl": "-86210",
+      "max_drawdown": "-0.0679272587659389097674968067",
+      "cash_ratio": "0.01672665403922892107150357875",
+      "holding_periods_closed": [
+        {
+          "symbol": "900001",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "exit_at": "2026-04-15T09:00:00+09:00",
+          "calendar_days": 2
+        }
+      ],
+      "holding_periods_open": [
+        {
+          "symbol": "900002",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900003",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900004",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900005",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900001",
+          "entry_at": "2026-04-16T09:00:00+09:00",
+          "calendar_days": 0
+        }
+      ],
+      "valuation_missing_count": 0,
+      "benchmark": null,
+      "benchmark_status": "NOT_SELECTED",
+      "mdd_basis": "verified mark observations only; no intraday MDD claim"
+    },
+    "latest_equity": {
+      "at": "2026-04-16T20:02:00+09:00",
+      "cash": "170197",
+      "missing_symbols": [],
+      "stale_symbols": [],
+      "unchecked_symbols": [],
+      "total_assets": "10175197",
+      "return": "0.0175197",
+      "unrealized_pnl": "261407"
+    }
+  },
+  {
+    "experiment_id": "E-44474327bcef72498657ddb9",
+    "mode": "SYNTHETIC",
+    "cost_bps": "60",
+    "cost_role": "SENSITIVITY_ASSUMPTION",
+    "metrics": {
+      "completed_round_trips": 1,
+      "win_rate": "0",
+      "open_positions": 5,
+      "pending_trades": 0,
+      "total_cost": "40609",
+      "realized_pnl": "-91920",
+      "max_drawdown": "-0.0680248971123431175810346587",
+      "cash_ratio": "0.01476047354914986285918775494",
+      "holding_periods_closed": [
+        {
+          "symbol": "900001",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "exit_at": "2026-04-15T09:00:00+09:00",
+          "calendar_days": 2
+        }
+      ],
+      "holding_periods_open": [
+        {
+          "symbol": "900002",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900003",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900004",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900005",
+          "entry_at": "2026-04-13T09:00:00+09:00",
+          "calendar_days": 3
+        },
+        {
+          "symbol": "900001",
+          "entry_at": "2026-04-16T09:00:00+09:00",
+          "calendar_days": 0
+        }
+      ],
+      "valuation_missing_count": 0,
+      "benchmark": null,
+      "benchmark_status": "NOT_SELECTED",
+      "mdd_basis": "verified mark observations only; no intraday MDD claim"
+    },
+    "latest_equity": {
+      "at": "2026-04-16T20:02:00+09:00",
+      "cash": "149891",
+      "missing_symbols": [],
+      "stale_symbols": [],
+      "unchecked_symbols": [],
+      "total_assets": "10154891",
+      "return": "0.0154891",
+      "unrealized_pnl": "246811"
+    }
+  }
+]

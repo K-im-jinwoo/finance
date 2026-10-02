@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hermes 추천 · 모의계좌</title><link rel="stylesheet" href="/style.css"><script defer src="/live.js"></script></head>
+<body><main>
+<nav class="view-nav"><span>Hermes 추천 모의계좌</span><a href="/">계산 검증 실험 →</a></nav>
+<header><div><p class="eyebrow">HERMES / PAPER ACCOUNT</p><h1>에이전트의 추천을, 계좌의 결과로.</h1><p>Hermes 투자총괄 최종 추천 · 1순위 자동 모의 편입</p></div><span class="badge">PAPER ONLY</span></header>
+<aside class="notice"><strong id="connection">Hermes 연결 확인 중</strong><span id="feed-note">보고서와 시세의 출처·확보 시각을 확인합니다.</span></aside>
+<p id="live-error" role="alert"></p>
+<section id="live-metrics" class="metrics" aria-label="Hermes 모의계좌 요약"></section>
+<section class="panel"><div class="section-head"><div><p class="eyebrow">TOP RECOMMENDATION</p><h2>이번 1순위 추천</h2></div><div class="actions"><button id="live-pause" disabled>일시중지</button><button id="live-resume" disabled>재개</button></div></div><div id="top-pick"><p class="empty">실제 Hermes 최종보고서 확인 중</p></div><p id="account-status" class="meta"></p></section>
+<section class="panel"><p class="eyebrow">POSITION RETURNS</p><h2>종목별 현재 손익과 수익률</h2><p class="meta">수익률 = (현재 평가금액 ÷ 매수금액과 매수비용 − 1). 매도비용은 실제 가상 매도 시 반영합니다. 체결 전에는 수익률을 계산하지 않습니다.</p><div id="live-positions" class="table-wrap"></div><div id="live-pending"></div></section>
+<section class="panel"><p class="eyebrow">CIO FINAL REPORT</p><div class="section-head"><h2>Hermes 추천 보고서</h2><label>보고서 <select id="live-report-select" aria-label="Hermes 보고서 선택"></select></label></div><div id="report-lineage"></div><div id="candidate-cards" class="candidate-grid"></div><details open><summary>Hermes 최종판정 원문 전체</summary><div id="report-original" class="report-original"></div></details></section>
+<section class="panel"><p class="eyebrow">FILLS & EVIDENCE</p><h2>가상 체결과 점검</h2><div id="live-trades" class="table-wrap"></div><div id="live-checks"></div></section>
+<details class="panel"><summary>계좌 규칙 · 연결 범위 · 미결정 구현안</summary><pre id="live-settings"></pre></details>
+<footer>실주문 없음 · Hermes 원문과 기존 계산 결과 보존 · 운영 DB 변경·Telegram 발송 없음</footer>
+</main></body></html>

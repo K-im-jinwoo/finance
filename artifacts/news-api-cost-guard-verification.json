@@ -1,0 +1,53 @@
+{
+  "checked_at": "2026-10-02T05:11:53.903691+00:00",
+  "status": "NEWS_API_COST_GUARD_OPERATIONAL",
+  "scope": "NAVER_API_HUB_NEWS",
+  "release": "/srv/stock-assistant/releases/20261002-news-discovery-v4-cost-guard",
+  "image": "sha256:9ad781f7f8a7406f70fd5e8a1d5fe1eabe52085fb486bdfc2c51d53781906a88",
+  "provider_daily_limit": 20,
+  "provider_monthly_limit": 500,
+  "program_daily_limit": 20,
+  "program_monthly_limit": 500,
+  "collection_cooldown_seconds": 3600,
+  "calls_per_default_batch": 5,
+  "usage": {
+    "day": "2026-10-02",
+    "month": "2026-10",
+    "reserved_daily_calls": 7,
+    "reserved_monthly_calls": 7,
+    "last_reserved_at": "2026-10-02T05:09:27.759847+00:00",
+    "halted_month": ""
+  },
+  "counter_survives_container_replacement": true,
+  "missing_ledger_blocks_requests": true,
+  "failure_reservations_retained": true,
+  "free_policy_checked_before_batch": true,
+  "free_policy_unknown_or_changed_blocks": true,
+  "free_policy_live_check_passed": true,
+  "retry_enabled": false,
+  "runtime_checks": {
+    "runtime_default_guard_active": true,
+    "limit_blocks_before_upstream": true,
+    "upstream_attempts": 0
+  },
+  "verification_news_api_calls": 0,
+  "telegram_messages_sent_this_change": 0,
+  "orders_enabled": false,
+  "health": "ok",
+  "container_health": "healthy",
+  "restart_count": 0,
+  "existing_saved_report_retrievable": true,
+  "registration_entrypoint": "/srv/stock-assistant/current/deploy/register_oracle_news_auth.py",
+  "shared_auth_preserved": true,
+  "backup_container": "stock-assistant-stock-assistant-1-before-news-20261002T050927",
+  "source_python_tests": 181,
+  "linux_python_tests": 176,
+  "auth_guard_linux_tests": 10,
+  "local_finance_tests": 89,
+  "private_values_returned": false,
+  "limitations": [
+    "Official public documentation is the pricing signal; billing-policy publication lag cannot be guaranteed.",
+    "Counters cover this installation. Provider console limits also apply to other users of this app key.",
+    "Charges for existing other APIs, cloud resources, or language models are outside this news guard."
+  ]
+}

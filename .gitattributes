@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+
+# These reference snapshots must preserve the original SHA-256 on checkout.
+vendor/stock-assistant/** -text
+docs/reference/** -text

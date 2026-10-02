@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>모의계좌 · 리서치 검증</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head>
+<body><main>
+<nav class="view-nav"><a href="/hermes">Hermes 추천 모의계좌 →</a><span>계산 검증 실험</span></nav>
+<header><div><p class="eyebrow">RESEARCH / PAPER ACCOUNT</p><h1>추천의 근거를, 계좌의 결과까지.</h1><p>주식 리서치 · 자동 모의계좌 검증</p></div><span class="badge">LOCAL VALIDATION</span></header>
+<aside class="notice"><strong>합성 데이터 계산 검증 화면</strong><span>실제 3년 성과는 데이터 확보 후 검증합니다. 공시 자동 무효화 미적용 · 왕복 비용은 실험 가정입니다.</span></aside>
+<details class="panel"><summary>실제 데이터 확보 · 계산 검산 현황</summary><div id="data-status"><p class="empty">자료 확인 중</p></div></details>
+<section class="toolbar"><label>실험 <select id="experiments" aria-label="실험 선택"></select></label><div class="actions"><label>왕복 비용 <select id="cost" aria-label="새 실험 비용"><option value="30">30bps · 기본 가정</option><option value="10">10bps · 민감도 가정</option><option value="60">60bps · 민감도 가정</option></select></label><button id="create">별도 검증 실험 생성</button></div></section>
+<p id="error" role="alert"></p><p id="status" class="meta"></p>
+<section id="metrics" class="metrics" aria-label="계좌 요약"></section>
+<section class="panel"><div class="section-head"><div><p class="eyebrow">ACCOUNT HISTORY</p><h2>자산 추이</h2></div><div class="actions"><button id="start" disabled>실험 시작</button><button id="pause" disabled>일시중지</button><button id="resume" disabled>재개</button></div></div><div id="chart"></div><p id="basis" class="meta"></p></section>
+<section class="split"><div class="panel"><p class="eyebrow">CHANGES</p><h2>기준일의 변화</h2><div id="changes"></div></div><div class="panel"><p class="eyebrow">EVIDENCE</p><h2>선택한 상세 근거</h2><div id="detail"><p class="empty">이벤트·거래·보고서를 선택하세요.</p></div></div></section>
+<section class="panel"><p class="eyebrow">PAPER POSITIONS</p><h2>보유와 무효화 점검</h2><div id="positions" class="table-wrap"></div></section>
+<section class="panel"><p class="eyebrow">FILLS & CASH</p><h2>가상 체결 원장</h2><div id="trades" class="table-wrap"></div></section>
+<section class="panel"><p class="eyebrow">ORIGINAL REPORTS</p><h2>원본 판정과 추천 이력</h2><div id="reports"></div></section>
+<section class="panel"><p class="eyebrow">NOTIFICATION DRAFTS</p><h2>Telegram 상세 연결 초안</h2><p class="meta">실제 발송 없음 · 공개 주소와 외부 로그인은 미설정입니다. 아래 링크는 정확한 과거 실험·거래·보고서의 로컬 상세를 엽니다.</p><div id="drafts"></div></section>
+<details class="panel"><summary>데이터 범위 · 설정 · 미결정 구현안</summary><pre id="settings"></pre></details>
+<footer>실주문 연결 없음 · 실제 보유 원장과 분리 · 기존 결과는 새 실험으로 보존</footer>
+</main></body></html>
+

@@ -1,0 +1,46 @@
+{
+  "checked_at_kst": "2026-10-02T14:37:52.329154+09:00",
+  "mode": "OBSERVED_PUBLIC_FINANCIAL_CALCULATION_VALIDATION",
+  "symbol": "240810",
+  "dataset_id": "3e7e4e8743a625eadc0e6e3c1c652a05f627eb2a4cd90122e8285918827371ae",
+  "input_sha256": "fde9be6b1a7cd880803cf156e1b731fbf50fd6b72ccbf526ee4d5141dfc7159c",
+  "observed_at": "2026-09-30T03:48:35.593451+00:00",
+  "division": "CFS",
+  "currency": "KRW",
+  "periods": {
+    "annual": "2025-12-31",
+    "current_cumulative": "2026-06-30",
+    "previous_cumulative": "2025-06-30"
+  },
+  "values": {
+    "annual_operating_income": "73814129967",
+    "current_cumulative_income": "29117870941",
+    "previous_cumulative_income": "29070204793",
+    "ttm_operating_income": "73861796115",
+    "annual_operating_cash_flow": "156607028356"
+  },
+  "checks": {
+    "original_annual_income_equal": true,
+    "original_annual_ocf_equal": true,
+    "original_interim_cumulative_equal": true,
+    "previous_comparative_equal_separate_prior_year_report": true,
+    "original_ttm_formula_equal": true,
+    "stored_annual_income_equal": true,
+    "stored_ttm_income_equal": true,
+    "stored_operating_income_equal": true,
+    "stored_annual_ocf_equal": true,
+    "stored_periods_equal": true,
+    "stored_receipt_links_equal": true
+  },
+  "all_equal": true,
+  "receipts": [
+    "20260316001453",
+    "20260814001845",
+    "20250814002766"
+  ],
+  "original_ocf_basis": "annual; not changed to interim or TTM OCF",
+  "production_db_changed": false,
+  "historical_point_in_time_certified": false,
+  "automatic_invalidation_certified": false,
+  "limitation": "current observation only; exact publication time, revisions and full historical coverage are not certified"
+}

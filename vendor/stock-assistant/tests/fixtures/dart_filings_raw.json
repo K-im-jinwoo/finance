@@ -1,0 +1,22 @@
+{
+  "status": "000",
+  "message": "정상",
+  "page_no": 1,
+  "page_count": 100,
+  "total_count": 1,
+  "total_page": 1,
+  "list": [
+    {
+      "corp_cls": "Y",
+      "corp_name": "예시회사",
+      "corp_code": "00123456",
+      "stock_code": "005930",
+      "report_nm": "단일판매ㆍ공급계약체결",
+      "rcept_no": "20260918000001",
+      "flr_nm": "예시회사",
+      "rcept_dt": "20260918",
+      "rm": "유"
+    }
+  ]
+}
+

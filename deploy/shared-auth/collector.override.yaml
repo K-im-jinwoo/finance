@@ -1,0 +1,8 @@
+# Staged only. Use together with the existing compose file/env on coordinated rollout.
+services:
+  stock-assistant:
+    environment:
+      STOCK_TOSS_AUTH_CACHE_DIR: /run/stock-shared-auth
+    volumes:
+      - /srv/stock-dashboard/shared-auth-code:/opt/stock-shared-auth:ro
+      - /srv/stock-dashboard/shared-auth-cache:/run/stock-shared-auth:rw

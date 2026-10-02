@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "purpose": "OBSERVED_PUBLIC_FINANCIAL_CALCULATION_VALIDATION",
+  "retrieved_at": "2026-09-30T03:48:35.593451+00:00",
+  "symbol": "240810",
+  "source_database_changed": false,
+  "historical_point_in_time_certified": false,
+  "statements": [
+    {
+      "business_year": 2025,
+      "report_code": "11011",
+      "division": "CFS",
+      "period_end": "2025-12-31",
+      "status": "000",
+      "public_rows": [
+        {
+          "rcept_no": "20260316001453",
+          "bsns_year": "2025",
+          "reprt_code": "11011",
+          "fs_div": null,
+          "sj_div": "CIS",
+          "account_id": "dart_OperatingIncomeLoss",
+          "account_nm": "영업순손익",
+          "thstrm_nm": "제 10 기",
+          "thstrm_amount": "73814129967",
+          "thstrm_add_amount": "",
+          "frmtrm_nm": "제 9 기",
+          "frmtrm_amount": "10641636214",
+          "frmtrm_add_amount": null,
+          "currency": "KRW"
+        },
+        {
+          "rcept_no": "20260316001453",
+          "bsns_year": "2025",
+          "reprt_code": "11011",
+          "fs_div": null,
+          "sj_div": "CF",
+          "account_id": "ifrs-full_CashFlowsFromUsedInOperatingActivities",
+          "account_nm": "영업활동현금흐름",
+          "thstrm_nm": "제 10 기",
+          "thstrm_amount": "156607028356",
+          "thstrm_add_amount": null,
+          "frmtrm_nm": "제 9 기",
+          "frmtrm_amount": "78280504451",
+          "frmtrm_add_amount": null,
+          "currency": "KRW"
+        }
+      ],
+      "source_response_sha256": "f9f5c6fe193ab5cd1b77e24d425193b900caf7eed85335c551e4e763df066736"
+    },
+    {
+      "business_year": 2026,
+      "report_code": "11012",
+      "division": "CFS",
+      "period_end": "2026-06-30",
+      "status": "000",
+      "public_rows": [
+        {
+          "rcept_no": "20260814001845",
+          "bsns_year": "2026",
+          "reprt_code": "11012",
+          "fs_div": null,
+          "sj_div": "CIS",
+          "account_id": "dart_OperatingIncomeLoss",
+          "account_nm": "영업순손익",
+          "thstrm_nm": "제 11 기 반기",
+          "thstrm_amount": "18383417386",
+          "thstrm_add_amount": "29117870941",
+          "frmtrm_nm": null,
+          "frmtrm_amount": null,
+          "frmtrm_add_amount": "29070204793",
+          "currency": "KRW"
+        },
+        {
+          "rcept_no": "20260814001845",
+          "bsns_year": "2026",
+          "reprt_code": "11012",
+          "fs_div": null,
+          "sj_div": "CF",
+          "account_id": "ifrs-full_CashFlowsFromUsedInOperatingActivities",
+          "account_nm": "영업활동현금흐름",
+          "thstrm_nm": "제 11 기 반기",
+          "thstrm_amount": "49194134963",
+          "thstrm_add_amount": null,
+          "frmtrm_nm": null,
+          "frmtrm_amount": null,
+          "frmtrm_add_amount": null,
+          "currency": "KRW"
+        }
+      ],
+      "source_response_sha256": "64c38b5587ef8ee63006ea85495ca2adaae4df902f5190fef2ce84af5a0df43c"
+    },
+    {
+      "business_year": 2025,
+      "report_code": "11012",
+      "division": "CFS",
+      "period_end": "2025-06-30",
+      "status": "000",
+      "public_rows": [
+        {
+          "rcept_no": "20250814002766",
+          "bsns_year": "2025",
+          "reprt_code": "11012",
+          "fs_div": null,
+          "sj_div": "CIS",
+          "account_id": "dart_OperatingIncomeLoss",
+          "account_nm": "영업순손익",
+          "thstrm_nm": "제 10 기 반기",
+          "thstrm_amount": "36451478993",
+          "thstrm_add_amount": "29070204793",
+          "frmtrm_nm": null,
+          "frmtrm_amount": null,
+          "frmtrm_add_amount": "-29804063409",
+          "currency": "KRW"
+        },
+        {
+          "rcept_no": "20250814002766",
+          "bsns_year": "2025",
+          "reprt_code": "11012",
+          "fs_div": null,
+          "sj_div": "CF",
+          "account_id": "ifrs-full_CashFlowsFromUsedInOperatingActivities",
+          "account_nm": "영업활동현금흐름",
+          "thstrm_nm": "제 10 기 반기",
+          "thstrm_amount": "145918469010",
+          "thstrm_add_amount": null,
+          "frmtrm_nm": null,
+          "frmtrm_amount": null,
+          "frmtrm_add_amount": null,
+          "currency": "KRW"
+        }
+      ],
+      "source_response_sha256": "6da6d39bf238d2abe6333a1ab55986d91acaba9e26b71b74e847d43cd899887c"
+    }
+  ],
+  "stored_snapshot": {
+    "symbol": "240810",
+    "period_end": "2025-12-31",
+    "published_at": "2026-08-14T14:59:59.999999+00:00",
+    "operating_income": "73861796115",
+    "operating_cash_flow": "156607028356",
+    "annual_operating_income": "73814129967",
+    "ttm_operating_income": "73861796115",
+    "ttm_period_end": "2026-06-30",
+    "source_url": "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260316001453",
+    "ttm_source_url": "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260814001845"
+  },
+  "dataset_id": "3e7e4e8743a625eadc0e6e3c1c652a05f627eb2a4cd90122e8285918827371ae"
+}

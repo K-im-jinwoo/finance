@@ -32,7 +32,7 @@ def independent_features(bars):
         'atr14': atr,
     }
 
-def calculate():
+def calculate(*, save=True):
     snapshot=json.loads((ROOT/'datasets/observed-public-prices.json').read_text(encoding='utf-8-sig'))
     sample=json.loads((ROOT/'datasets/observed-provider-sample.json').read_text(encoding='utf-8-sig'))
     as_of=datetime.fromisoformat(snapshot['retrieved_at'])
@@ -70,7 +70,8 @@ def calculate():
     result={'checked_at_kst':datetime.now(timezone(timedelta(hours=9))).isoformat(),'mode':'OBSERVED_PUBLIC_PRICE_CALCULATION_VALIDATION','as_of':as_of.isoformat(),'input_sha256':hashlib.sha256((ROOT/'datasets/observed-public-prices.json').read_bytes()).hexdigest(),
             'observation_times_preserved':True,'support_is_three_years':False,'source_db_changed':False,
             'calculation_dates_total':sum(row['calculation_dates_checked'] for row in results),'historical_decisions_certified':False,'results':results}
-    (ROOT/'artifacts/observed-price-calculation.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    if save:
+        (ROOT/'artifacts/observed-price-calculation.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     return result
 
 if __name__=='__main__':

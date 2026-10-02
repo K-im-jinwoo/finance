@@ -71,7 +71,7 @@ def make():
     mark("2026-04-16T20:02:00+09:00", 87000)
     add("END", "2026-04-16T20:03:00+09:00")
     return {"schema_version": 1, "mode": "SYNTHETIC", "securities": {s: {"name":f"검증종목 {s[-1]}","kind":"GENERAL"} for s in SYMBOLS},
-            "lineage": {"selection": "vendored screen_security + select_top_candidates; no ranking changes", "source_head": "f3af37a66765e5fb0e500baf4e845c25210a67c9", "snapshot_manifest": "artifacts/source-audit.json", "synthetic_warmup_bars": histories},
+            "lineage": {"selection": "finance engine screen_security + select_top_candidates; no ranking changes", "source_head": "e3be6821d2c60e1a8a6b1a98d3a430dc247ed3f6", "snapshot_manifest": "docs/stock-engine-import.json", "synthetic_warmup_bars": histories},
             "limitations": ["All prices/statements/signals/calendar are synthetic", "No three-year market coverage", "No benchmark or corporate actions"], "events": events}
 
 if __name__ == "__main__":

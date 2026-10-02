@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
-sys.path[:0]=[str(ROOT/'vendor/stock-assistant/src')]
+sys.path[:0]=[str(ROOT/'engine/src')]
 from stock_assistant.validation import assert_point_in_time, parse_krx_ohlcv_rows
 
 class ObservedSampleTests(unittest.TestCase):

@@ -1,0 +1,69 @@
+{
+  "checked_at_kst": "2026-10-02T15:44:45.605153+09:00",
+  "verified_code_commit": "4c56178b317a02d1cd83dfa896e46bffc519945c",
+  "fresh_checkout": true,
+  "verification_command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify.ps1 -Python <Python 3.12 executable>",
+  "dashboard": {
+    "tests_run": 89,
+    "passed": 87,
+    "skipped_linux_only": 2,
+    "failures": 0,
+    "errors": 0
+  },
+  "stock_engine_python": {
+    "tests_run": 181,
+    "passed": 181,
+    "failures": 0,
+    "errors": 0
+  },
+  "stock_engine_node": {
+    "tests_run": 27,
+    "passed": 27
+  },
+  "powershell_auth_input": {
+    "passed": 4,
+    "real_credentials": false,
+    "ssh_or_provider_calls": false
+  },
+  "javascript_syntax": {
+    "app_js": true,
+    "live_js": true
+  },
+  "workflow_audit_passed": true,
+  "docker_compose_config_passed": true,
+  "docker_image_build_tested": false,
+  "canonical_vs_snapshot": {
+    "equal": true,
+    "synthetic_events": 29,
+    "price_calculation_dates": 125,
+    "financial_checks": 11,
+    "comparison_sha256": "9398c9e6f98960605712d885331a74362d1be7e61226fc7bf60f026e6869a54e"
+  },
+  "wheel": {
+    "name": "stock_research_dashboard-0.1.0-py3-none-any.whl",
+    "sha256": "cba4945983ffa6ce962338eb2856fec9438b304855727b560097b69acaf3e975",
+    "python_modules": 43,
+    "both_packages_and_news_modules_imported": true,
+    "network_or_dependency_install": false
+  },
+  "preservation": {
+    "original_working_files": 135,
+    "original_head_branch_index_refs_status_and_files_unchanged": true,
+    "vendor_and_reference_documents_unchanged": true,
+    "original_datasets_and_evidence_unchanged": true,
+    "original_engine_tree_equal": true,
+    "source_history_commits_preserved": 33
+  },
+  "external_side_effects": {
+    "production_deployment": false,
+    "credentials_registered": false,
+    "production_database_changed": false,
+    "telegram_messages_sent": false,
+    "real_orders": false
+  },
+  "limitations": [
+    "Linux permission tests skipped on Windows",
+    "Docker image not built",
+    "Production rollout and live market behavior not tested"
+  ]
+}

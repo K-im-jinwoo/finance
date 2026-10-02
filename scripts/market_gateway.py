@@ -61,9 +61,18 @@ class Handler(BaseHTTPRequestHandler):
                            'service':'ISOLATED_PUBLIC_DATA','orders_enabled':False,'production_db_changed':False,
                            'last_success_at':self.server.last_success,'last_error':self.server.last_error,
                            'upstream_http_status':self.server.last_error_status})
+    def reject_post(self,status,payload):
+        # Drain only a bounded rejected body before closing so Windows delivers
+        # the HTTP error instead of resetting the connection. Never parse it.
+        try:
+            length=int(self.headers.get('Content-Length','0'))
+            if 0<=length<=8192:self.rfile.read(length)
+        except (ValueError,OSError):
+            pass
+        return self.response(status,payload)
     def do_POST(self):
-        if not self.allowed():return self.response(403,{'error':'LOCAL_HOST_READER_REQUIRED'})
-        if self.path!='/public-market':return self.response(404,{'error':'NOT_FOUND'})
+        if not self.allowed():return self.reject_post(403,{'error':'LOCAL_HOST_READER_REQUIRED'})
+        if self.path!='/public-market':return self.reject_post(404,{'error':'NOT_FOUND'})
         try:
             length=int(self.headers.get('Content-Length','0'))
             if not 0<length<=2048:raise ValueError('body')

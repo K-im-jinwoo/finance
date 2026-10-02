@@ -1,8 +1,8 @@
 # Git 관리 범위
 
-2026-10-02 KST 기준으로 이 저장소는 대시보드 코드, 공개·합성 검증 데이터, 인증 등록 스크립트와 비밀값을 제외한 검증 자료를 관리합니다. `.runtime`, `.work`, 인증 파일, DB, 로그, 운영 재고 조사와 화면 캡처는 로컬에 보존하고 Git에서 제외합니다. README의 운영 조사·화면 자료 링크 중 일부는 로컬에서만 사용할 수 있습니다.
+2026-10-02 KST 기준으로 이 저장소는 대시보드·주식 엔진·주식 Hermes 코드, 공개·합성 검증 데이터, 인증 등록 스크립트와 비밀값을 제외한 검증 자료를 관리합니다. `.runtime`, `.work`, 인증 파일, DB, 로그, 운영 재고 조사와 화면 캡처는 로컬에 보존하고 Git에서 제외합니다. README의 운영 조사·화면 자료 링크 중 일부는 로컬에서만 사용할 수 있습니다.
 
-`vendor/stock-assistant` 63개 파일과 `docs/reference`는 앞서 고정한 원문입니다. `.gitattributes`로 체크아웃 시 줄바꿈 변환을 차단하므로 원문 해시를 유지합니다. 현재 뉴스 기능의 소스는 이 스냅샷과 별도로 원본 `wiki/.work/stock-investment-assistant` 저장소에서 관리합니다.
+`vendor/stock-assistant` 63개 파일과 `docs/reference`는 앞서 고정한 원문입니다. `.gitattributes`로 체크아웃 시 줄바꿈 변환을 차단하므로 원문 해시를 유지합니다. 최신 엔진과 뉴스 기능은 통합한 `engine/`에서 관리합니다. 원본 `wiki/.work/stock-investment-assistant` worktree는 기존 작업과 이전 근거로 보존합니다.
 
 첫 기준 커밋은 기존 파일 말미의 빈 줄과 원문 CRLF를 보존합니다. 초기 가져오기 검사에서는 `git -c core.whitespace=-blank-at-eof,cr-at-eol diff --cached --check`를 사용하고, 이후 변경은 일반 `git diff --check`로 확인합니다.
 
@@ -18,7 +18,7 @@
 
 변경 후 아래 검증 명령을 실행하고 변경 파일을 명시해서 커밋합니다. 작업 브랜치를 `git push -u origin codex/<작업명>`으로 올리고, 변경과 검증 결과를 검토한 뒤 `main`에 반영합니다. GitHub 반영 완료는 로컬 커밋만으로 판단하지 않고 실제 원격 브랜치의 커밋 SHA와 로컬 SHA가 같은지 확인합니다. 강제 push와 사용자 작업의 reset/clean은 기본 절차에 포함하지 않습니다.
 
-현재 GitHub 연결은 finance 대시보드의 기존 관리 범위를 대상으로 합니다. 최신 뉴스 기능과 운영 엔진의 독립 Git 이력은 앞서 설명한 원본 저장소에 남아 있습니다. `vendor/stock-assistant`는 검증용 고정 스냅샷이며 최신 엔진 작업 브랜치와 동일한 소스가 아닙니다.
+finance는 대시보드와 `engine/`의 주식 엔진·주식 Hermes 프로필·배포 코드까지 관리합니다. 원본 뉴스 브랜치의 33개 커밋을 squash 없이 가져왔으며, 초기 통합은 merge commit으로 반영합니다. 가져온 원본 커밋 ID와 통합·검증 절차는 [주식 엔진 통합](stock-engine-integration.md)에 기록합니다. `vendor/stock-assistant`는 검증용 고정 스냅샷으로 보존합니다.
 
 인증 키, 토큰, 환경 파일, DB와 운영 로그는 계속 Git에서 제외합니다. 공개 push 전에 비밀값을 점검하고, 실제 비밀값이 커밋되면 파일 삭제만으로 해결하지 않고 키 폐기·재발급과 이력 정리를 별도로 처리합니다.
 

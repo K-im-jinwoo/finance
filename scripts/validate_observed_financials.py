@@ -29,7 +29,7 @@ def cumulative(row, previous=False):
     raise ValueError('cumulative amount unavailable')
 
 
-def calculate():
+def calculate(*, save=True):
     path = ROOT/'datasets/observed-public-financial-sample.json'
     data = json.loads(path.read_text(encoding='utf-8-sig'))
     if data.get('error_type'):
@@ -86,7 +86,8 @@ def calculate():
         'production_db_changed':False,'historical_point_in_time_certified':False,'automatic_invalidation_certified':False,
         'limitation':'current observation only; exact publication time, revisions and full historical coverage are not certified',
     }
-    (ROOT/'artifacts/observed-financial-calculation.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    if save:
+        (ROOT/'artifacts/observed-financial-calculation.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     if not result['all_equal']:
         raise AssertionError('public financial comparison failed; inspect saved checks')
     return result

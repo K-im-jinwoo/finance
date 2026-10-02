@@ -8,3 +8,9 @@
 # These reference snapshots must preserve the original SHA-256 on checkout.
 vendor/stock-assistant/** -text
 docs/reference/** -text
+
+# Keep imported CRLF and final blank lines without rewriting source history.
+engine/** whitespace=cr-at-eol,-blank-at-eof
+
+# Preserve the mixed original endings in this imported engine test.
+engine/tests/test_toss_market_data.py -text whitespace=cr-at-eol

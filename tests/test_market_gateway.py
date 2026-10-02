@@ -10,7 +10,7 @@ from urllib.error import HTTPError
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-sys.path.insert(0,str(ROOT/'vendor/stock-assistant/src'))
+sys.path.insert(0,str(ROOT/'engine/src'))
 import market_gateway as gateway
 import register_oracle_market_auth as registration
 from stock_assistant.providers.http import AuthenticationError
@@ -84,7 +84,9 @@ class PublicGatewayTests(unittest.TestCase):
                             {'operation':'public_market','mode':'STORE','symbols':['240810']},
                             {'operation':'public_market','symbols':['240810'],'account':'PRIVATE'}]:
                 with self.subTest(payload=payload):self.assertEqual(self.request(payload=payload)[0],400)
-            self.assertEqual(self.request(path='/orders')[0],404)
+            for payload in ({}, {'ignored':'x'*64}, {'ignored':'x'*4096}):
+                with self.subTest(rejected_path_body=len(json.dumps(payload))):
+                    self.assertEqual(self.request(path='/orders',payload=payload)[0],404)
             direct.assert_not_called()
 
     def test_symbols_are_bounded_and_ambiguous_symbols_are_rejected(self):
@@ -98,8 +100,10 @@ class PublicGatewayTests(unittest.TestCase):
     def test_browser_origin_and_public_host_are_rejected(self):
         self.credentials()
         with patch.object(gateway.market,'direct') as direct:
-            self.assertEqual(self.request(headers={'Origin':'http://127.0.0.1:8765'})[0],403)
-            self.assertEqual(self.request(headers={'Host':'external.example:9130'})[0],403)
+            for payload in ({}, {'ignored':'x'*64}, {'ignored':'x'*4096}):
+                with self.subTest(rejected_origin_body=len(json.dumps(payload))):
+                    self.assertEqual(self.request(headers={'Origin':'http://127.0.0.1:8765'},payload=payload)[0],403)
+                    self.assertEqual(self.request(headers={'Host':'external.example:9130'},payload=payload)[0],403)
             direct.assert_not_called()
 
     def test_upstream_errors_are_sanitized_and_network_error_keeps_token(self):

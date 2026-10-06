@@ -5,10 +5,12 @@ import unittest
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from stock_assistant.ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
 from stock_assistant.models import AssetType, CompanyKind, EtfSnapshot, Evidence, FinancialSnapshot, FinancingEvent, Market, OHLCV, Security
 from stock_assistant.providers.dart import DartCompanyProfile, DartFilingPage, DartOperatingIncomePeriods
+from stock_assistant.providers.http import RateLimitError
 from stock_assistant.providers.krx import KrxDailySnapshot
 from stock_assistant.repository import StockRepository
 
@@ -285,6 +287,213 @@ class IngestionTests(unittest.TestCase):
                 "005930", as_of=observed_at,
                 since=datetime(2016, 1, 1, tzinfo=UTC),
             )[0].confirmed)
+
+
+class DartDisclosurePaginationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.observed_at = datetime(2026, 10, 6, tzinfo=UTC)
+        self.client = FakeDartClient()
+        self.client.filing_page = Mock()
+
+    def collect(self, start_date: date, end_date: date, *, sleeper=None):
+        enricher = DartDisclosureEnricher(
+            None, self.client, request_interval_seconds=0.2 if sleeper else 0,
+            sleeper=sleeper or Mock(),
+        )
+        return enricher._receipt_dates(
+            corp_code="00126380", start_date=start_date, end_date=end_date,
+            observed_at=self.observed_at,
+        )
+
+    def filing(self, day: date, index: int = 1) -> Evidence:
+        receipt = f"{day:%Y%m%d}{index:06d}"
+        return Evidence(
+            "DART", "삼성전자 - 단일판매ㆍ공급계약체결",
+            f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt}",
+            datetime(day.year, day.month, day.day, 14, 59, 59, tzinfo=UTC),
+            self.observed_at, True,
+        )
+
+    def test_large_history_splits_without_gaps_and_paginates_each_half(self) -> None:
+        def fetch(**query):
+            begin = query["begin_date"]
+            end = query["end_date"]
+            page_no = query["page_no"]
+            if (begin, end) == ("20260901", "20260904"):
+                return DartFilingPage((), {}, page_no, 51)
+            day = datetime.strptime(begin if page_no == 1 else end, "%Y%m%d").date()
+            filing = self.filing(day)
+            receipt = filing.url.rsplit("=", 1)[-1]
+            return DartFilingPage((filing,), {receipt: filing.published_at}, page_no, 2)
+
+        self.client.filing_page.side_effect = fetch
+        sleeper = Mock()
+        receipts, filings = self.collect(date(2026, 9, 1), date(2026, 9, 4), sleeper=sleeper)
+        self.assertEqual(len(receipts), 4)
+        self.assertEqual(len(filings), 4)
+        calls = [call.kwargs for call in self.client.filing_page.call_args_list]
+        self.assertEqual([(q["begin_date"], q["end_date"], q["page_no"]) for q in calls], [
+            ("20260901", "20260904", 1),
+            ("20260901", "20260902", 1), ("20260901", "20260902", 2),
+            ("20260903", "20260904", 1), ("20260903", "20260904", 2),
+        ])
+        self.assertTrue(all(q["page_count"] == 100 and q["corp_code"] == "00126380"
+                            and q["observed_at"] == self.observed_at for q in calls))
+        self.assertEqual(sleeper.call_count, 5)
+        sleeper.assert_called_with(0.2)
+
+    def test_dense_history_splits_again_until_each_window_fits(self) -> None:
+        def fetch(**query):
+            begin = datetime.strptime(query["begin_date"], "%Y%m%d").date()
+            end = datetime.strptime(query["end_date"], "%Y%m%d").date()
+            if (end - begin).days > 1:
+                return DartFilingPage((), {}, query["page_no"], 51)
+            return DartFilingPage((), {}, 0, 0)
+
+        self.client.filing_page.side_effect = fetch
+        self.assertEqual(self.collect(date(2026, 9, 1), date(2026, 9, 8)), ({}, []))
+        self.assertEqual(self.client.filing_page.call_count, 7)
+        calls = [call.kwargs for call in self.client.filing_page.call_args_list]
+        leaves = [(q["begin_date"], q["end_date"]) for q in calls
+                  if int(q["end_date"]) - int(q["begin_date"]) == 1]
+        self.assertEqual(leaves, [("20260901", "20260902"), ("20260903", "20260904"),
+                                 ("20260905", "20260906"), ("20260907", "20260908")])
+
+    def test_exactly_50_pages_keeps_original_range_and_collects_last_page(self) -> None:
+        def fetch(**query):
+            filing = self.filing(date(2026, 9, 1), query["page_no"])
+            receipt = filing.url.rsplit("=", 1)[-1]
+            return DartFilingPage((filing,), {receipt: filing.published_at}, query["page_no"], 50)
+
+        self.client.filing_page.side_effect = fetch
+        receipts, filings = self.collect(date(2026, 9, 1), date(2026, 9, 4))
+        self.assertEqual(len(receipts), 50)
+        self.assertEqual(len(filings), 50)
+        self.assertIn("20260901000050", receipts)
+        self.assertEqual(self.client.filing_page.call_count, 50)
+        self.assertTrue(all(call.kwargs["begin_date"] == "20260901"
+                            and call.kwargs["end_date"] == "20260904"
+                            for call in self.client.filing_page.call_args_list))
+
+    def test_empty_history_finishes_after_one_request(self) -> None:
+        self.client.filing_page.return_value = DartFilingPage((), {}, 0, 0)
+        self.assertEqual(self.collect(date(2026, 9, 1), date(2026, 9, 4)), ({}, []))
+        self.client.filing_page.assert_called_once()
+
+    def test_single_day_overflow_fails_closed_with_context(self) -> None:
+        self.client.filing_page.return_value = DartFilingPage((), {}, 1, 51)
+        with self.assertRaisesRegex(ValueError, "single day.*00126380.*2026-09-01.*51"):
+            self.collect(date(2026, 9, 1), date(2026, 9, 1))
+        self.client.filing_page.assert_called_once()
+
+    def test_bad_page_number_and_changing_page_count_fail_closed(self) -> None:
+        for pages, message in (
+            ([DartFilingPage((), {}, 2, 2)], "page number"),
+            ([DartFilingPage((), {}, 1, 2), DartFilingPage((), {}, 2, 3)], "page count changed"),
+            ([DartFilingPage((), {}, 1, 2), DartFilingPage((), {}, 0, 0)], "page count changed"),
+        ):
+            with self.subTest(message=message, pages=pages):
+                self.client.filing_page.side_effect = pages
+                with self.assertRaisesRegex(ValueError, message):
+                    self.collect(date(2026, 9, 1), date(2026, 9, 4))
+
+    def test_conflicting_receipt_dates_across_pages_still_fail_closed(self) -> None:
+        receipt = "20260901000001"
+        self.client.filing_page.side_effect = [
+            DartFilingPage((), {receipt: self.observed_at}, 1, 2),
+            DartFilingPage((), {receipt: self.observed_at - timedelta(days=1)}, 2, 2),
+        ]
+        with self.assertRaisesRegex(ValueError, "receipt date changed"):
+            self.collect(date(2026, 9, 1), date(2026, 9, 4))
+
+    def test_invalid_date_range_is_rejected_before_request(self) -> None:
+        with self.assertRaisesRegex(ValueError, "start_date"):
+            self.collect(date(2026, 9, 4), date(2026, 9, 1))
+        self.client.filing_page.assert_not_called()
+
+    def test_successful_split_persists_full_history_and_original_coverage(self) -> None:
+        end_date = date(2026, 10, 5)
+        management_start = end_date - timedelta(days=365 * 10 + 3)
+        financing_start = end_date - timedelta(days=365 * 5 + 2)
+        old_risk = self.filing(management_start)
+        old_risk = Evidence(
+            old_risk.source_type, "삼성전자 - 횡령ㆍ배임혐의발생", old_risk.url,
+            old_risk.published_at, old_risk.observed_at, old_risk.official,
+        )
+
+        def fetch(**query):
+            begin = datetime.strptime(query["begin_date"], "%Y%m%d").date()
+            end = datetime.strptime(query["end_date"], "%Y%m%d").date()
+            if begin == management_start and end == end_date:
+                return DartFilingPage((), {}, 1, 51)
+            recent = FakeDartClient().filing_page(**query).filings
+            filings = tuple(filing for filing in (old_risk, *recent)
+                            if begin <= filing.published_at.date() <= end)
+            receipts = {filing.url.rsplit("=", 1)[-1]: filing.published_at for filing in filings}
+            return DartFilingPage(filings, receipts, 1, 1)
+
+        self.client.filing_page.side_effect = fetch
+        self.client.financing_events = Mock(wraps=self.client.financing_events)
+        with tempfile.TemporaryDirectory() as directory:
+            repository = StockRepository(Path(directory) / "stock.sqlite3")
+            repository.save_securities([Security(
+                "005930", "삼성전자", Market.KOSPI,
+                AssetType.COMMON, CompanyKind.GENERAL, date(1975, 6, 11),
+            )])
+            summary = DartDisclosureEnricher(
+                repository, self.client, request_interval_seconds=0,
+            ).enrich(symbols=["005930"], as_of=self.observed_at)
+            self.assertEqual(summary.covered, 1)
+            self.assertEqual(summary.events_saved, 1)
+            self.assertEqual(summary.catalysts_saved, 1)
+            self.assertEqual(summary.management_risks_saved, 2)
+            self.assertEqual(self.client.filing_page.call_count, 3)
+            for call in self.client.financing_events.call_args_list:
+                self.assertEqual(call.kwargs["begin_date"], financing_start.strftime("%Y%m%d"))
+                self.assertEqual(call.kwargs["end_date"], "20261005")
+                self.assertEqual(len(call.kwargs["receipt_dates"]), 3)
+            for dataset, start in (("DART_FINANCING", financing_start),
+                                   ("DART_CATALYST", management_start),
+                                   ("DART_MANAGEMENT_RISK", management_start)):
+                self.assertTrue(repository.has_coverage(
+                    symbol="005930", dataset=dataset,
+                    required_start_date=start.isoformat(), required_end_date=end_date.isoformat(),
+                    as_of=self.observed_at,
+                ))
+            risks = repository.management_risks_for(
+                "005930", as_of=self.observed_at, since=datetime(2015, 1, 1, tzinfo=UTC),
+            )
+            self.assertIn(old_risk.url, [evidence.url for risk in risks for evidence in risk.evidence])
+
+    def test_partial_split_failure_does_not_record_coverage_or_events(self) -> None:
+        for failure in (RateLimitError("DART request limit exceeded"), "request_budget"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                repository = StockRepository(Path(directory) / "stock.sqlite3")
+                repository.save_securities([Security(
+                    "005930", "삼성전자", Market.KOSPI,
+                    AssetType.COMMON, CompanyKind.GENERAL, date(1975, 6, 11),
+                )])
+                self.client.filing_page.reset_mock()
+                self.client.filing_page.side_effect = [
+                    DartFilingPage((), {}, 1, 51), DartFilingPage((), {}, 0, 0),
+                    failure if isinstance(failure, Exception) else DartFilingPage((), {}, 0, 0),
+                ]
+                enricher = DartDisclosureEnricher(repository, self.client, request_interval_seconds=0)
+                limit = 2 if failure == "request_budget" else 500
+                error_type = ValueError if failure == "request_budget" else RateLimitError
+                with patch.object(DartDisclosureEnricher, "_MAX_FILING_REQUESTS", limit):
+                    with self.assertRaises(error_type):
+                        enricher.enrich(symbols=["005930"], as_of=self.observed_at)
+                self.assertEqual(self.client.filing_page.call_count, limit if limit == 2 else 3)
+                for dataset in ("DART_FINANCING", "DART_CATALYST", "DART_MANAGEMENT_RISK"):
+                    self.assertFalse(repository.has_coverage(
+                        symbol="005930", dataset=dataset,
+                        required_start_date="2026-10-01", required_end_date="2026-10-05",
+                        as_of=self.observed_at,
+                    ))
+                self.assertEqual(repository.financing_events_for(
+                    "005930", as_of=self.observed_at, since=datetime(2015, 1, 1, tzinfo=UTC),
+                ), [])
 
 
 if __name__ == "__main__":

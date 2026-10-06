@@ -31,6 +31,45 @@ NOW = datetime(2026, 9, 22, 6, 30, tzinfo=UTC)
 
 
 class TossMarketDataTests(unittest.TestCase):
+    def test_calendar_validates_requested_and_previous_business_dates(self) -> None:
+        day = date(2026, 10, 6)
+        valid = {'result': {'today': {'date': '2026-10-06', 'integrated': {'regularMarket': {}}},
+                            'previousBusinessDay': {'date': '2026-10-02', 'integrated': {'regularMarket': {'startTime': '2026-10-02T09:00:00+09:00'}}}}}
+        import copy
+        from unittest.mock import Mock
+        fetch = Mock(return_value=JsonResponse(200, valid))
+        client = TossMarketDataClient('id', 'secret', fetch_json=fetch,
+                                     post_form=lambda *a, **kw: JsonResponse(200, {'access_token': 'synthetic'}))
+        self.assertEqual(client.calendar(day)['previousBusinessDay']['date'], '2026-10-02')
+        self.assertEqual(fetch.call_args.kwargs['query'], {'date': '2026-10-06'})
+        for key, bad_date in (('today', '2026-10-05'), ('previousBusinessDay', '2026-10-06')):
+            bad = copy.deepcopy(valid)
+            bad['result'][key]['date'] = bad_date
+            fetch.return_value = JsonResponse(200, bad)
+            with self.assertRaises(UpstreamSchemaError):
+                client.calendar(day)
+        fetch.return_value = JsonResponse(200, {'result': {}})
+        with self.assertRaises(UpstreamSchemaError):
+            client.calendar(day)
+
+    def test_calendar_accepts_explicit_holiday_null_but_rejects_missing_sessions(self) -> None:
+        from unittest.mock import Mock
+        holiday = {'date': '2026-09-24', 'integrated': None}
+        previous = {'date': '2026-09-23', 'integrated': {'regularMarket': {'startTime': '2026-09-23T09:00:00+09:00'}}}
+        fetch = Mock(return_value=JsonResponse(200, {'result': {'today': holiday, 'previousBusinessDay': previous}}))
+        client = TossMarketDataClient('id', 'secret', fetch_json=fetch,
+                                     post_form=lambda *a, **kw: JsonResponse(200, {'access_token': 'synthetic'}))
+        self.assertEqual(client.calendar(date(2026, 9, 24))['today']['integrated'], {})
+        self.assertIsNone(holiday['integrated'])
+        for today in ({'date': '2026-09-24'}, {'date': '2026-09-24', 'integrated': 'unknown'}):
+            fetch.return_value = JsonResponse(200, {'result': {'today': today, 'previousBusinessDay': previous}})
+            with self.assertRaises(UpstreamSchemaError):
+                client.calendar(date(2026, 9, 24))
+        fetch.return_value = JsonResponse(200, {'result': {'today': holiday,
+                                               'previousBusinessDay': {'date': '2026-09-23', 'integrated': None}}})
+        with self.assertRaises(UpstreamSchemaError):
+            client.calendar(date(2026, 9, 24))
+
     def test_prices_use_oauth_token_and_exact_requested_symbols(self) -> None:
         calls = []
 

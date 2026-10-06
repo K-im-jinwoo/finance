@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Callable
 
@@ -189,6 +189,35 @@ class TossMarketDataClient:
         if {item.symbol for item in quotes} != set(normalized):
             raise UpstreamSchemaError("Toss prices response does not match requested symbols")
         return quotes
+
+    def calendar(self, business_date: date) -> dict:
+        response = self._fetch_json(
+            f"{self._base_url}/api/v1/market-calendar/KR",
+            query={"date": business_date.isoformat()},
+            headers={"Authorization": f"Bearer {self._token()}"},
+        ).payload
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise UpstreamSchemaError("Toss calendar result must be an object")
+        result = dict(result)
+        for key in ("today", "previousBusinessDay"):
+            item = result.get(key)
+            # The provider explicitly returns null sessions for a market holiday.
+            if key == 'today' and isinstance(item, dict) and 'integrated' in item and item['integrated'] is None:
+                item = {**item, 'integrated': {}}
+                result[key] = item
+            if not isinstance(item, dict) or not isinstance(item.get("integrated"), dict):
+                raise UpstreamSchemaError(f"Toss calendar {key} is incomplete")
+            try:
+                day = date.fromisoformat(item["date"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise UpstreamSchemaError(f"Toss calendar {key} date is invalid") from exc
+            if key == "today" and day != business_date:
+                raise UpstreamSchemaError("Toss calendar date does not match request")
+            if key == "previousBusinessDay":
+                if day >= business_date or not item["integrated"].get("regularMarket"):
+                    raise UpstreamSchemaError("Toss calendar previous business day is invalid")
+        return result
 
     def candles(
         self,

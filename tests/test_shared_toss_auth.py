@@ -115,3 +115,19 @@ class SharedAuthTests(unittest.TestCase):
         second.prices(['240810'],observed_at=observed)
         self.assertEqual(issue.call_count,2)
         self.assertTrue(all(call.args[0].endswith('/api/v1/prices') for call in fetch.call_args_list))
+
+    def test_calendar_uses_shared_token_and_rejection_invalidates_only_that_token(self):
+        from datetime import date
+        payload={'result':{'today':{'date':'2026-10-06','integrated':{}},
+                           'previousBusinessDay':{'date':'2026-10-02','integrated':{'regularMarket':{'startTime':'2026-10-02T09:00:00+09:00'}}}}}
+        fetch=Mock(return_value=Mock(payload=payload))
+        issue=Mock(return_value=Mock(payload=self.issue()))
+        first=SharedTossMarketDataClient('SYNTHETIC-CLIENT','SYNTHETIC-SECRET',cache_dir=self.directory,fetch_json=fetch,post_form=issue)
+        second=SharedTossMarketDataClient('SYNTHETIC-CLIENT','SYNTHETIC-SECRET',cache_dir=self.directory,fetch_json=fetch,post_form=issue)
+        first.calendar(date(2026,10,6));second.calendar(date(2026,10,6))
+        issue.assert_called_once()
+        fetch.side_effect=AuthenticationError('synthetic rejection')
+        with self.assertRaises(AuthenticationError):first.calendar(date(2026,10,6))
+        fetch.side_effect=None
+        second.calendar(date(2026,10,6))
+        self.assertEqual(issue.call_count,2)

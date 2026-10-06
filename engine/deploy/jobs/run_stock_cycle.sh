@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+stage=SETUP
+trap 'code=$?; if [ "$code" -ne 0 ]; then printf "STOCK_CYCLE status=FAILED stage=%s exit=%s\n" "$stage" "$code" >&2; fi' 0
+
 mode="${1:-}"
 case "$mode" in
   morning|evening|weekly) ;;
@@ -38,14 +41,15 @@ case "${STOCK_NEWS_ENABLED:-false}" in
   *) echo "STOCK_NEWS_ENABLED must be true or false" >&2; exit 2 ;;
 esac
 
-if [ "$mode" = evening ]; then
-  compose exec -T stock-assistant python -m stock_assistant ingest-krx \
-    --database "$database" --key-file /run/secrets/krx-auth-key --mode daily >/dev/null
-fi
+stage=DAILY_REFRESH
+compose exec -T stock-assistant python -m stock_assistant refresh-daily \
+  --database "$database" --key-file /run/secrets/krx-auth-key \
+  --client-id-file /run/secrets/toss-client-id --client-secret-file /run/secrets/toss-client-secret >&2
 
 news_report_args=""
 news_enrichment_args=""
 if [ "${STOCK_NEWS_ENABLED:-false}" = true ]; then
+  stage=NEWS_COLLECTION
   if compose exec -T stock-assistant python -m stock_assistant discover-news \
     --database "$database" --client-id-file /run/secrets/naver-news-client-id \
     --client-secret-file /run/secrets/naver-news-client-secret >/dev/null; then
@@ -58,6 +62,7 @@ if [ "${STOCK_NEWS_ENABLED:-false}" = true ]; then
 fi
 
 if [ "$mode" = evening ] || [ "$mode" = weekly ] || [ -n "$news_enrichment_args" ]; then
+  stage=DART_FINANCIALS
   : "${STOCK_DART_BUSINESS_YEAR:?set the approved DART business year}"
   compose exec -T stock-assistant python -m stock_assistant enrich-dart \
     --database "$database" --key-file /run/secrets/dart-api-key \
@@ -65,12 +70,16 @@ if [ "$mode" = evening ] || [ "$mode" = weekly ] || [ -n "$news_enrichment_args"
 fi
 
 if [ "$mode" = weekly ]; then
+  stage=PERFORMANCE
   compose exec -T stock-assistant python -m stock_assistant evaluate-all-performance \
     --database "$database" --as-of "$(date --iso-8601=seconds)" >/dev/null
 fi
 
+stage=DART_DISCLOSURES
 compose exec -T stock-assistant python -m stock_assistant enrich-dart-disclosures \
   --database "$database" --key-file /run/secrets/dart-api-key $news_enrichment_args >/dev/null
 
+stage=REPORT_GENERATION
 compose exec -T stock-assistant python -m stock_assistant generate-candidates \
   --database "$database" --limit 5 --format text $news_report_args
+printf 'STOCK_CYCLE status=READY mode=%s stage=REPORT_GENERATION\n' "$mode" >&2

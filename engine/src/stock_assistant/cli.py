@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .client import StockClient, StockClientError
 from .alerts import AlertStore
+from .daily_refresh import DailyRefresh
 from .http_api import serve
 from .ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
 from .intraday import build_intraday_signal
@@ -79,6 +80,12 @@ def main(argv: list[str] | None = None) -> int:
     ingest_parser.add_argument("--end-date", type=date.fromisoformat, default=date.today())
     ingest_parser.add_argument("--calendar-days", type=int, default=120)
     ingest_parser.add_argument("--mode", choices=("daily", "backfill"), default="daily")
+    daily_parser = subparsers.add_parser("refresh-daily")
+    daily_parser.add_argument("--database", type=Path, required=True)
+    daily_parser.add_argument("--key-file", type=Path, required=True)
+    daily_parser.add_argument("--client-id-file", type=Path, required=True)
+    daily_parser.add_argument("--client-secret-file", type=Path, required=True)
+    daily_parser.add_argument("--max-calendar-days", type=int, default=31)
     candidates_parser = subparsers.add_parser("generate-candidates")
     candidates_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
     candidates_parser.add_argument("--as-of", type=datetime.fromisoformat)
@@ -128,6 +135,32 @@ def main(argv: list[str] | None = None) -> int:
     intraday_parser.add_argument("--symbols", help="comma-separated explicit symbols for a bounded smoke or on-demand query")
     intraday_parser.add_argument("--alerts-only", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.command == "refresh-daily":
+        try:
+            repository = StockRepository(args.database)
+            repository.save_daily_check({'status': 'FAILED', 'checked_at': datetime.now(timezone.utc).isoformat(),
+                                         'target_date': None, 'error_class': 'CLIENT_SETUP_IN_PROGRESS'})
+            calendar_client = TossMarketDataClient
+            if os.getenv('STOCK_TOSS_AUTH_CACHE_DIR'):
+                # The installed shared-auth adapter owns locking and token renewal.
+                sys.path.insert(0, '/opt/stock-shared-auth')
+                from shared_toss_auth import SharedTossMarketDataClient
+                calendar_client = SharedTossMarketDataClient
+            client = calendar_client(
+                args.client_id_file.read_text(encoding="utf-8").strip(),
+                args.client_secret_file.read_text(encoding="utf-8").strip(),
+            )
+            ingestor = KrxHistoryIngestor(repository, KrxClient(args.key_file.read_text(encoding="utf-8").strip()))
+            result = DailyRefresh(repository, ingestor, client.calendar).run(
+                max_calendar_days=args.max_calendar_days,
+            )
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        except (OSError, ValueError, KeyError, TypeError, ImportError, ProviderError, sqlite3.Error) as exc:
+            print(json.dumps({'stage': 'DAILY_REFRESH', 'status': 'FAILED',
+                              'error_class': type(exc).__name__, 'error': str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 1
 
     if args.command == "discover-news":
         observed_at = datetime.now(timezone.utc)

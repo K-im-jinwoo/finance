@@ -71,7 +71,8 @@ class KrxHistoryIngestor:
         if self.request_interval_seconds:
             self.sleeper(self.request_interval_seconds)
 
-    def ingest_day(self, *, business_date: date, observed_at: datetime) -> KrxIngestionSummary:
+    def ingest_day(self, *, business_date: date, observed_at: datetime,
+                   require_complete: bool = False) -> KrxIngestionSummary:
         if observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
         if business_date.weekday() >= 5:
@@ -80,9 +81,17 @@ class KrxHistoryIngestor:
         day_has_equity = False
         day_has_data = False
         etfs: list[Security] = []
+        snapshots = {}
         for market in ("KOSPI", "KOSDAQ", "ETF"):
             snapshot = self.client.daily_snapshot(market, business_date, observed_at=observed_at)
             self._pace()
+            if any(bar.trade_date != business_date for bar in snapshot.bars):
+                raise ValueError(f"KRX returned a different trade date for {market}")
+            if require_complete and not snapshot.bars:
+                raise ValueError(f"KRX daily data unavailable: {market} {business_date}")
+            snapshots[market] = snapshot
+        # Validate every market before saving any part of the day.
+        for market, snapshot in snapshots.items():
             bars = list(snapshot.bars)
             self.repository.save_bars(bars)
             bars_saved += len(bars)

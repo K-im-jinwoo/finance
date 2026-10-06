@@ -32,7 +32,7 @@ from .models import (
 )
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 _REPORT_ID = re.compile(r"^R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8}$")
 _DATASET = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
@@ -173,6 +173,11 @@ class StockRepository:
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY (symbol, timestamp, observed_at)
                 );
+                CREATE TABLE IF NOT EXISTS daily_data_checks (
+                    checked_at TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
                 """
             )
             connection.execute(
@@ -180,6 +185,44 @@ class StockRepository:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (str(SCHEMA_VERSION),),
             )
+
+    def daily_market_dates(self, *, as_of: datetime) -> dict[str, str]:
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        with self._connect() as connection:
+            dates = {}
+            for market in ('KOSPI', 'KOSDAQ', 'ETF'):
+                row = connection.execute(
+                    "SELECT MAX(o.trade_date) AS latest_date FROM ohlcv o "
+                    "JOIN securities s ON s.symbol=o.symbol WHERE o.observed_at<=? AND o.trade_date<=? "
+                    "AND CASE WHEN json_extract(s.payload_json,'$.company_kind')='FUND' "
+                    "THEN 'ETF' ELSE json_extract(s.payload_json,'$.market') END=?",
+                    (as_of.astimezone(timezone.utc).isoformat(), as_of.date().isoformat(), market),
+                ).fetchone()
+                if row['latest_date'] is not None:
+                    dates[market] = str(row['latest_date'])
+        return dates
+
+    def save_daily_check(self, payload: dict) -> None:
+        checked = datetime.fromisoformat(payload['checked_at'])
+        if checked.tzinfo is None or payload.get('status') not in {'READY', 'FAILED'}:
+            raise ValueError("invalid daily data check")
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO daily_data_checks(checked_at,status,payload_json) VALUES(?,?,?)",
+                (checked.astimezone(timezone.utc).isoformat(), payload['status'],
+                 json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+            )
+
+    def latest_daily_check(self, *, as_of: datetime) -> dict | None:
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM daily_data_checks WHERE checked_at<=? "
+                "ORDER BY checked_at DESC LIMIT 1", (as_of.astimezone(timezone.utc).isoformat(),),
+            ).fetchone()
+        return json.loads(row['payload_json']) if row else None
 
     def save_screening_results(self, report_id: str, results: list[ScreeningResult]) -> None:
         if not report_id.strip():

@@ -130,3 +130,7 @@ class SharedTossMarketDataClient(TossMarketDataClient):
         from stock_assistant.providers.http import AuthenticationError
         try:return super().candles(*args,**kwargs)
         except AuthenticationError:self.mark_rejected();raise
+    def calendar(self,*args,**kwargs):
+        from stock_assistant.providers.http import AuthenticationError
+        try:return super().calendar(*args,**kwargs)
+        except AuthenticationError:self.mark_rejected();raise

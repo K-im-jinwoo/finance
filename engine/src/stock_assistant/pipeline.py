@@ -198,6 +198,12 @@ class CandidatePipeline:
 
     def run(self, *, as_of: datetime, limit: int = 5, include_news: bool = False,
             news_fetch_failed: bool = False) -> PipelineSummary:
+        daily_check = self.repository.latest_daily_check(as_of=as_of)
+        if daily_check is not None:
+            checked = datetime.fromisoformat(daily_check['checked_at'])
+            if (daily_check.get('status') != 'READY'
+                    or checked.astimezone(KST).date() != as_of.astimezone(KST).date()):
+                raise ValueError("DAILY_DATA_NOT_READY: refresh daily data before generating candidates")
         (
             securities, results, insufficient_history, missing_financials,
             missing_profit_periods,
@@ -207,6 +213,11 @@ class CandidatePipeline:
             missing_catalyst_histories,
         ) = self._screen_results(as_of=as_of)
         selected = select_top_candidates(results, limit=limit)
+        if daily_check is not None:
+            for candidate in selected:
+                bars = self.repository.bars_for(candidate.symbol, as_of=as_of, limit=1)
+                if not bars or bars[-1].trade_date.isoformat() != daily_check['target_date']:
+                    raise ValueError(f"DAILY_DATA_NOT_READY: candidate {candidate.symbol} lacks the verified daily date")
         discovery = None
         if include_news:
             discovery = latest_news_discovery(self.repository.database_path, as_of=as_of, limit=5)
@@ -260,10 +271,17 @@ class CandidatePipeline:
                 unavailable.append(f"뉴스 수집 확인 불가: {discovery['reason']}")
             else:
                 unavailable.append("뉴스 검색은 제한된 검색어의 표본이며 시장 전체 기사와 모든 테마를 포괄하지 않음")
+        facts = [f"정규화 저장소의 종목 {len(securities)}개를 동일 기준시각으로 검사"]
+        if daily_check is not None:
+            facts.append(f"일봉 기준일: {daily_check['target_date']} / KRX 수집·거래일 달력 검증 완료")
+        else:
+            dates = self.repository.daily_market_dates(as_of=as_of)
+            facts.append("저장 일봉 최신일: " + ", ".join(f"{market} {day}" for market, day in sorted(dates.items())))
+            unavailable.append("일봉 수집 신선도 미검증: 보고서 기준시각과 일봉 기준일은 다를 수 있음")
         report = build_candidate_report(
             as_of,
             selected,
-            facts=(f"정규화 저장소의 종목 {len(securities)}개를 동일 기준시각으로 검사",),
+            facts=tuple(facts),
             inferences=(),
             assumptions=("입력 데이터의 공급자 관측시각과 공시시각이 정확하다는 전제",),
             unavailable=tuple(unavailable),

@@ -71,7 +71,8 @@ class KrxHistoryIngestor:
         if self.request_interval_seconds:
             self.sleeper(self.request_interval_seconds)
 
-    def ingest_day(self, *, business_date: date, observed_at: datetime) -> KrxIngestionSummary:
+    def ingest_day(self, *, business_date: date, observed_at: datetime,
+                   require_complete: bool = False) -> KrxIngestionSummary:
         if observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
         if business_date.weekday() >= 5:
@@ -80,9 +81,17 @@ class KrxHistoryIngestor:
         day_has_equity = False
         day_has_data = False
         etfs: list[Security] = []
+        snapshots = {}
         for market in ("KOSPI", "KOSDAQ", "ETF"):
             snapshot = self.client.daily_snapshot(market, business_date, observed_at=observed_at)
             self._pace()
+            if any(bar.trade_date != business_date for bar in snapshot.bars):
+                raise ValueError(f"KRX returned a different trade date for {market}")
+            if require_complete and not snapshot.bars:
+                raise ValueError(f"KRX daily data unavailable: {market} {business_date}")
+            snapshots[market] = snapshot
+        # Validate every market before saving any part of the day.
+        for market, snapshot in snapshots.items():
             bars = list(snapshot.bars)
             self.repository.save_bars(bars)
             bars_saved += len(bars)
@@ -399,6 +408,9 @@ class DartDisclosureSummary:
 class DartDisclosureEnricher:
     """Persist official five-year dilution history without treating missing data as no events."""
 
+    _MAX_FILING_PAGES = 50
+    _MAX_FILING_REQUESTS = 500
+
     def __init__(
         self,
         repository: StockRepository,
@@ -426,34 +438,59 @@ class DartDisclosureEnricher:
         end_date: date,
         observed_at: datetime,
     ) -> tuple[dict[str, datetime], list[Evidence]]:
+        if start_date > end_date:
+            raise ValueError("start_date must not be after end_date")
         receipt_dates: dict[str, datetime] = {}
         filings: list[Evidence] = []
-        page_no = 1
-        total_page = 1
-        while page_no <= total_page:
-            page = self.client.filing_page(
-                observed_at=observed_at,
-                corp_code=corp_code,
-                begin_date=start_date.strftime("%Y%m%d"),
-                end_date=end_date.strftime("%Y%m%d"),
-                page_no=page_no,
-                page_count=100,
-            )
-            self._pace()
-            if page.total_page and page.page_no != page_no:
-                raise ValueError("DART filing response page number does not match the request")
-            if page.total_page > 50:
-                raise ValueError("DART filing history exceeds the 50-page safety limit")
-            total_page = page.total_page
-            for receipt, published_at in page.receipt_dates.items():
-                existing = receipt_dates.get(receipt)
-                if existing is not None and existing != published_at:
-                    raise ValueError(f"DART filing receipt date changed across pages: {receipt}")
-                receipt_dates[receipt] = published_at
-            filings.extend(page.filings)
-            if total_page == 0:
-                break
-            page_no += 1
+        requests = 0
+
+        def collect_window(begin: date, end: date) -> None:
+            nonlocal requests
+            page_no = 1
+            total_page = 1
+            while page_no <= total_page:
+                # Bound the whole company's scan, including oversized-window probes.
+                if requests >= self._MAX_FILING_REQUESTS:
+                    raise ValueError(
+                        f"DART filing history exceeds the {self._MAX_FILING_REQUESTS}-request "
+                        f"safety limit (corp_code={corp_code}, {start_date}..{end_date})"
+                    )
+                requests += 1
+                page = self.client.filing_page(
+                    observed_at=observed_at,
+                    corp_code=corp_code,
+                    begin_date=begin.strftime("%Y%m%d"),
+                    end_date=end.strftime("%Y%m%d"),
+                    page_no=page_no,
+                    page_count=100,
+                )
+                self._pace()
+                if page.total_page and page.page_no != page_no:
+                    raise ValueError("DART filing response page number does not match the request")
+                if page_no > 1 and page.total_page != total_page:
+                    raise ValueError("DART filing response page count changed across pages")
+                if page.total_page > self._MAX_FILING_PAGES:
+                    if begin == end:
+                        raise ValueError(
+                            f"DART filing history exceeds the {self._MAX_FILING_PAGES}-page "
+                            f"safety limit for a single day (corp_code={corp_code}, "
+                            f"date={begin}, total_pages={page.total_page})"
+                        )
+                    # DART includes both endpoints; adjacent halves keep every date once.
+                    midpoint = begin + (end - begin) // 2
+                    collect_window(begin, midpoint)
+                    collect_window(midpoint + timedelta(days=1), end)
+                    return
+                total_page = page.total_page
+                for receipt, published_at in page.receipt_dates.items():
+                    existing = receipt_dates.get(receipt)
+                    if existing is not None and existing != published_at:
+                        raise ValueError(f"DART filing receipt date changed across pages: {receipt}")
+                    receipt_dates[receipt] = published_at
+                filings.extend(page.filings)
+                page_no += 1
+
+        collect_window(start_date, end_date)
         return receipt_dates, filings
 
     def enrich(

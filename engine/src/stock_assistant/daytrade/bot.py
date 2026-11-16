@@ -1,0 +1,289 @@
+"""Offline synthetic session orchestration over the unchanged audited ledger."""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import timedelta
+from decimal import Decimal, ROUND_DOWN
+import json
+from pathlib import Path
+
+from . import POLICY_VERSION
+from .contracts import KST, canonical, digest, identifier, instant, number
+from .ledger import DaytradeLedger, FixtureCosts
+from .market import QualityPolicy, normalize
+from .report import build_trading_report, trading_inventory
+from .risk import RiskState, Phase
+from .scanner import ScannerConfig, orderbook_metrics, scan_rankings
+from .strategy import StrategyConfig, StrategyEngine
+
+
+@dataclass(frozen=True)
+class BotConfig:
+    initial_capital: str
+    policy_version: str
+    seed: int
+    quality: QualityPolicy
+    fixture_costs: FixtureCosts
+    scanner_config: ScannerConfig
+    strategy_config: StrategyConfig
+
+    def __post_init__(self):
+        number(self.initial_capital, positive=True)
+        if self.policy_version != POLICY_VERSION or type(self.seed) is not int or self.seed < 0:
+            raise ValueError("current policy version and explicit non-negative seed required")
+        for value, expected in ((self.quality, QualityPolicy), (self.fixture_costs, FixtureCosts),
+                                (self.scanner_config, ScannerConfig), (self.strategy_config, StrategyConfig)):
+            if not isinstance(value, expected):
+                raise ValueError("explicit typed bot configuration required")
+
+    @classmethod
+    def from_dataset(cls, dataset):
+        if not isinstance(dataset, dict) or dataset.get("dataset_kind") != "SYNTHETIC":
+            raise ValueError("bot execution requires an explicit SYNTHETIC dataset")
+        return cls(dataset["initial_capital"], dataset["policy_version"], dataset["seed"],
+            QualityPolicy(**dataset["quality"]), FixtureCosts(**dataset["fixture_costs"]),
+            ScannerConfig(**dataset["scanner_config"]), StrategyConfig(**dataset["strategy_config"]))
+
+
+def _events(dataset):
+    events = dataset.get("events")
+    if events is None and "rankings" in dataset:
+        at = dataset["at"]
+        events = [{"id": "scan-session", "sequence": 0, "at": at, "kind": "SESSION",
+                   "data": {"normal_session_verified": False}},
+                  {"id": "scan-rankings", "sequence": 1, "at": at, "kind": "RANKINGS",
+                   "data": {"turnover": dataset["rankings"], "volume": dataset.get("volume_rankings")}}]
+    if not isinstance(events, list) or not events:
+        raise ValueError("nonempty chronological event list required")
+    ordered, seen, previous, sequences = [], {}, None, set()
+    for event in events:
+        identifier(event["id"])
+        fingerprint = digest(event)
+        if event["id"] in seen:
+            if seen[event["id"]] != fingerprint:
+                raise ValueError("conflicting bot input identity")
+            continue
+        seq = event["sequence"]
+        if type(seq) is not int or seq < 0 or seq in sequences:
+            raise ValueError("unique non-negative input sequence required")
+        at = instant(event["at"])
+        if previous is not None and (at < previous[0] or seq <= previous[1]):
+            raise ValueError("bot input order must advance time and sequence")
+        if event.get("policy_version", POLICY_VERSION) != POLICY_VERSION:
+            raise ValueError("input policy version mismatch")
+        if event["kind"] not in {"SESSION", "RANKINGS", "MARKET", "END_SESSION", "CLOCK", "LOCK", "RECOVER"}:
+            raise ValueError("external intents/fills are not bot inputs")
+        if not isinstance(event.get("data"), dict):
+            raise ValueError("event object data required")
+        seen[event["id"]], previous = fingerprint, (at, seq)
+        sequences.add(seq)
+        ordered.append(event)
+    return ordered
+
+
+def _observation(event, quality, *, event_id=None):
+    data = event["data"]
+    return normalize(data["feed"], data["payload"], event_id=event_id or event["id"],
+        received_at=event["at"], received_monotonic=data["received_monotonic"],
+        session_id=instant(event["at"]).astimezone(KST).date().isoformat(),
+        issuer=data.get("symbol", "ALL"), source=data.get("source"), quality=quality)
+
+
+def scan_dataset(dataset, *, quotes=None):
+    """CLI discovery with no ledger or writes; pre-scan books remain point-in-time."""
+    config = ScannerConfig(**dataset["scanner_config"])
+    quality = QualityPolicy(**dataset["quality"])
+    books = {}
+    for event in _events(dataset):
+        if event["kind"] == "MARKET" and event["data"]["feed"] == "orderbook":
+            observation = _observation(event, quality)
+            books[observation.symbol] = observation
+        if event["kind"] != "RANKINGS":
+            continue
+        if quotes is not None:
+            books = {code: normalize("orderbook", payload, event_id="scan-quote-" + code,
+                received_at=event["at"], received_monotonic=0,
+                session_id=instant(event["at"]).astimezone(KST).date().isoformat(), issuer=code, quality=quality)
+                for code, payload in quotes.items()}
+        data = event["data"]
+        return scan_rankings(data["turnover"], data.get("volume"), config=config, now=event["at"],
+                             quotes=books, risk_meta=data.get("risk_meta", dataset.get("risk_meta")))
+    raise ValueError("rankings event required for scan")
+
+
+class _PaperSession:
+    def __init__(self, ledger, config, dataset_hash):
+        self.ledger, self.config = ledger, config
+        self.strategy = StrategyEngine(config.strategy_config)
+        self.sequence = 0
+        self.watches, self.books = {}, {}
+        self.inactive = set()
+        self.meta = {"profile": config.strategy_config.profile, "dataset_hash": dataset_hash,
+                     "scan_history": [], "signals": [], "decisions": [], "equity_curve": []}
+
+    def emit(self, kind, data, at):
+        self.sequence += 1
+        event_id = f"bot-{self.sequence:08d}"
+        result = self.ledger.apply({"id": event_id, "sequence": self.sequence, "at": at,
+            "kind": kind, "policy_version": self.config.policy_version, "data": data})
+        state = self.ledger.state()
+        equity = self.ledger.valuation(at)["equity"]
+        self.meta["equity_curve"].append({"at": instant(at).isoformat(), "equity": equity,
+            "phase": state["risk"]["phase"], "locks": sorted(state["risk"]["reasons"])})
+        return event_id, result
+
+    def decision(self, at, code, status, reason, **details):
+        self.meta["decisions"].append({"at": instant(at).isoformat(), "symbol": code,
+                                       "status": status, "reason": reason, **details})
+
+    def pending(self, *, code=None, side=None):
+        return {key: intent for key, intent in self.ledger.state()["intents"].items()
+                if key not in self.inactive and intent["filled"] < intent["quantity"]
+                and (code is None or intent["symbol"] == code) and (side is None or intent["side"] == side)}
+
+    def fill_pending(self, book, at):
+        for key, intent in self.pending(code=book.symbol).items():
+            risk = RiskState.restore(self.ledger.state()["risk"])
+            if intent["side"] == "BUY" and not risk.candidate_entry_allowed:
+                self.inactive.add(key)
+                self.decision(at, book.symbol, "SKIPPED", "BUY_REMAINDER_ENTRY_BLOCKED", intent_id=key)
+                continue
+            if intent["side"] == "BUY":
+                candidate = self.watches.get(book.symbol)
+                if (candidate is None or candidate["entry_blocked"] or candidate["valid_until"] is None
+                        or instant(at) > instant(candidate["valid_until"])):
+                    self.inactive.add(key)
+                    self.decision(at, book.symbol, "SKIPPED", "BUY_REMAINDER_CANDIDATE_UNAVAILABLE", intent_id=key)
+                    continue
+                metrics = orderbook_metrics(book, now=at,
+                    max_age_seconds=self.config.strategy_config.quote_max_age_seconds, issuer=book.symbol)
+                if metrics["issues"] or metrics["spread_bps"] > self.config.strategy_config.max_spread_bps:
+                    self.decision(at, book.symbol, "SKIPPED", "BUY_FILL_QUOTE_QUALITY", intent_id=key)
+                    continue
+            earliest = instant(intent["at"]) + timedelta(milliseconds=self.config.fixture_costs.latency_ms)
+            if (book.issues or book.source_timestamp is None or instant(book.source_timestamp) < earliest
+                    or instant(book.received_at_utc) < earliest):
+                self.decision(at, book.symbol, "SKIPPED", "POST_LATENCY_VALID_BOOK_REQUIRED", intent_id=key)
+                continue
+            # Exactly one attempt per new book. Ledger validates latest quote,
+            # depth, participation, cash and exposure atomically.
+            try:
+                _, result = self.emit("FILL", {"intent_id": key, "quote_event_id": book.event_id}, at)
+            except ValueError as exc:
+                self.decision(at, book.symbol, "REJECTED", "LEDGER_FILL_CONSTRAINT", intent_id=key,
+                              constraint=str(exc))
+                continue
+            self.decision(at, book.symbol, result["status"], "OBSERVED_POST_LATENCY_BOOK", intent_id=key)
+
+    def buy_quantity(self, code, at):
+        state = self.ledger.state()
+        valuation = self.ledger.valuation(at)
+        if valuation["equity"] is None or code not in self.books:
+            return 0
+        costs = self.config.fixture_costs
+        pending = self.pending(side="BUY")
+        names = set(state["positions"]) | {i["symbol"] for i in pending.values()}
+        if code not in names and len(names) >= 3:
+            return 0
+        reserve = Decimal(0)
+        for intent in pending.values():
+            book = self.books.get(intent["symbol"])
+            if book is None or not book.data["asks"]:
+                return 0
+            unit = Decimal(book.data["asks"][0]["price"]) * (1 + Decimal(costs.extra_slippage_bps) / 10000)
+            gross = unit * (intent["quantity"] - intent["filled"])
+            reserve += gross + costs.charge(gross, costs.buy_fee_bps)
+        equity = valuation["equity"]
+        exposure = valuation["position_values"]
+        budget = min(equity * Decimal("0.20") - exposure.get(code, Decimal(0)),
+                     equity * Decimal("0.60") - sum(exposure.values(), Decimal(0)) - reserve,
+                     Decimal(state["cash"]) - reserve)
+        if budget <= 0:
+            return 0
+        unit = Decimal(self.books[code].data["asks"][0]["price"]) * (1 + Decimal(costs.extra_slippage_bps) / 10000)
+        quantity = int((budget / (unit * (1 + Decimal(costs.buy_fee_bps) / 10000))).to_integral_value(rounding=ROUND_DOWN))
+        while quantity > 0 and unit * quantity + costs.charge(unit * quantity, costs.buy_fee_bps) > budget:
+            quantity -= 1
+        return quantity
+
+    def evaluate(self, at):
+        inventory, _, _ = trading_inventory(self.ledger.snapshot()["fills"])
+        positions = {code: {"quantity": item["quantity"], "average_price": item["cost"] / item["quantity"]}
+                     for code, item in inventory.items() if item["quantity"]}
+        for code in [*sorted(positions), *sorted(set(self.watches) - set(positions))]:
+            # Risk can change after each generated intent/fill; never cache it.
+            risk = RiskState.restore(self.ledger.state()["risk"])
+            signal = self.strategy.evaluate(code, at, risk, positions, self.watches.get(code))
+            record = {"at": instant(at).isoformat(), "symbol": code, **asdict(signal)}
+            self.meta["signals"].append(record)
+            if signal.action == "HOLD":
+                continue
+            if risk.phase == Phase.CLOSED:
+                self.decision(at, code, "SKIPPED", "SESSION_CLOSED")
+                continue
+            if signal.action == "SELL":
+                for key in self.pending(code=code, side="BUY"):
+                    self.inactive.add(key)
+                    self.decision(at, code, "SKIPPED", "BUY_REMAINDER_CANCELLED_FOR_EXIT", intent_id=key)
+                if self.pending(code=code, side="SELL"):
+                    continue
+                quantity = positions[code]["quantity"]
+            else:
+                if self.pending(code=code, side="BUY") or self.pending(code=code, side="SELL"):
+                    continue
+                quantity = self.buy_quantity(code, at) if risk.candidate_entry_allowed else 0
+                if quantity < 1:
+                    self.decision(at, code, "SKIPPED", "CAPITAL_OR_POSITION_LIMIT")
+                    continue
+            _, result = self.emit("INTENT", {"symbol": code, "side": signal.action,
+                "quantity": quantity, "strategy_signal": asdict(signal)}, at)
+            self.decision(at, code, "INTENT", signal.exit_reason or "VWAP_BREAKOUT", quantity=quantity)
+
+    def run(self, events, risk_meta):
+        last_at = None
+        for event in events:
+            at, data, kind = event["at"], event["data"], event["kind"]
+            last_at = at
+            if kind == "RANKINGS":
+                self.emit("CLOCK", {"input_id": event["id"]}, at)
+                scan = scan_rankings(data["turnover"], data.get("volume"),
+                    config=self.config.scanner_config, now=at, quotes=self.books,
+                    risk_meta=data.get("risk_meta", risk_meta))
+                self.watches = {r["symbol"]: r for r in scan.selected}
+                for key, intent in self.pending(side="BUY").items():
+                    if intent["symbol"] not in self.watches:
+                        self.inactive.add(key)
+                        self.decision(at, intent["symbol"], "SKIPPED", "CANDIDATE_REMOVED", intent_id=key)
+                self.meta["scan_history"].append({"at": instant(at).isoformat(), **asdict(scan)})
+            else:
+                normalized = _observation(event, self.config.quality) if kind == "MARKET" else None
+                event_id, _ = self.emit(kind, data, at)
+                if normalized is not None and normalized.kind in {"candles", "trade", "orderbook"}:
+                    normalized = _observation(event, self.config.quality, event_id=event_id)
+                    self.strategy.on_event(normalized)
+                    if normalized.kind == "orderbook":
+                        self.books[normalized.symbol] = normalized
+                        self.fill_pending(normalized, at)
+            self.evaluate(at)
+        # Persist structured diagnostics inside the existing generic CLOCK
+        # envelope. Reopened reports need no sidecar or ledger schema changes.
+        saved = json.loads(canonical({**self.meta, "inactive_intents": sorted(self.inactive)}))
+        self.emit("CLOCK", {"_bot_summary": saved}, last_at)
+        return build_trading_report(self.ledger)
+
+
+def run_paper_session(dataset, root):
+    config = BotConfig.from_dataset(dataset)
+    events = _events(dataset)
+    Path(root).mkdir(parents=True, exist_ok=True)
+    ledger = DaytradeLedger.create(root, initial_capital=config.initial_capital,
+        quality=config.quality, policy_version=config.policy_version, synthetic=True,
+        costs=config.fixture_costs, replay_seed=config.seed)
+    try:
+        session = _PaperSession(ledger, config, digest(dataset))
+        for key in ("cost_policy_status", "stream_provenance"):
+            if key in dataset:
+                session.meta[key] = dataset[key]
+        return session.run(events, dataset.get("risk_meta"))
+    finally:
+        ledger.close()

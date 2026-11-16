@@ -1,0 +1,535 @@
+{
+  "stream_format": "TOSS_PUBLIC_STREAM_V1",
+  "stream_kind": "SYNTHETIC",
+  "description": "Offline fabricated prices with the field structure observed in Phase 3-B; not recorded trades.",
+  "initial_capital": "10000000",
+  "seed": 42,
+  "events": [
+    {
+      "id": "session",
+      "sequence": 0,
+      "at": "2026-11-13T09:00:00+09:00",
+      "kind": "session",
+      "data": {
+        "normal_session_verified": true
+      },
+      "received_monotonic": 0
+    },
+    {
+      "id": "initial-book-005930",
+      "sequence": 1,
+      "at": "2026-11-13T10:04:01+09:00",
+      "received_monotonic": 1,
+      "kind": "ws_frame",
+      "frame": {
+        "type": "message",
+        "topic": "orderbook:kr:005930",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T10:04:01+09:00",
+          "bids": [
+            {
+              "price": "10990",
+              "volume": "1000"
+            }
+          ],
+          "asks": [
+            {
+              "price": "11000",
+              "volume": "1000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "candles-005930",
+      "sequence": 2,
+      "at": "2026-11-13T10:04:01+09:00",
+      "received_monotonic": 2,
+      "kind": "candles",
+      "symbol": "005930",
+      "payload": {
+        "result": {
+          "candles": [
+            {
+              "currency": "KRW",
+              "timestamp": "2026-11-13T10:01:00+09:00",
+              "openPrice": "10000",
+              "highPrice": "10000",
+              "lowPrice": "10000",
+              "closePrice": "10000",
+              "volume": "1000"
+            },
+            {
+              "currency": "KRW",
+              "timestamp": "2026-11-13T10:02:00+09:00",
+              "openPrice": "10000",
+              "highPrice": "10000",
+              "lowPrice": "10000",
+              "closePrice": "10000",
+              "volume": "1000"
+            },
+            {
+              "currency": "KRW",
+              "timestamp": "2026-11-13T10:03:00+09:00",
+              "openPrice": "10000",
+              "highPrice": "10000",
+              "lowPrice": "10000",
+              "closePrice": "10000",
+              "volume": "1000"
+            },
+            {
+              "currency": "KRW",
+              "timestamp": "2026-11-13T10:04:00+09:00",
+              "openPrice": "11000",
+              "highPrice": "11000",
+              "lowPrice": "11000",
+              "closePrice": "11000",
+              "volume": "4000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "trade-005930",
+      "kind": "ws_frame",
+      "at": "2026-11-13T10:04:01+09:00",
+      "frame": {
+        "type": "message",
+        "topic": "trade:kr:005930",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T10:04:01+09:00",
+          "price": "11000",
+          "volume": "50"
+        }
+      },
+      "sequence": 3,
+      "received_monotonic": 3
+    },
+    {
+      "id": "initial-book-000660",
+      "sequence": 4,
+      "at": "2026-11-13T10:04:01+09:00",
+      "received_monotonic": 4,
+      "kind": "ws_frame",
+      "frame": {
+        "type": "message",
+        "topic": "orderbook:kr:000660",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T10:04:01+09:00",
+          "bids": [
+            {
+              "price": "10990",
+              "volume": "1000"
+            }
+          ],
+          "asks": [
+            {
+              "price": "11000",
+              "volume": "1000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "candles-000660",
+      "sequence": 5,
+      "at": "2026-11-13T10:04:01+09:00",
+      "received_monotonic": 5,
+      "kind": "candles",
+      "symbol": "000660",
+      "payload": {
+        "result": {
+          "candles": [
+            {
+              "currency": "KRW",
+              "timestamp": "2026-11-13T10:01:00+09:00",
+              "openPrice": "10000",
+              "highPrice": "10000",
+              "lowPrice": "10000",
+              "closePrice": "10000",
+              "volume": "1000"
+            },
+            {
+              "currency": "KRW",
+              "timestamp": "2026-11-13T10:02:00+09:00",
+              "openPrice": "10000",
+              "highPrice": "10000",
+              "lowPrice": "10000",
+              "closePrice": "10000",
+              "volume": "1000"
+            },
+            {
+              "currency": "KRW",
+              "timestamp": "2026-11-13T10:03:00+09:00",
+              "openPrice": "10000",
+              "highPrice": "10000",
+              "lowPrice": "10000",
+              "closePrice": "10000",
+              "volume": "1000"
+            },
+            {
+              "currency": "KRW",
+              "timestamp": "2026-11-13T10:04:00+09:00",
+              "openPrice": "11000",
+              "highPrice": "11000",
+              "lowPrice": "11000",
+              "closePrice": "11000",
+              "volume": "4000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "trade-000660",
+      "kind": "ws_frame",
+      "at": "2026-11-13T10:04:01+09:00",
+      "frame": {
+        "type": "message",
+        "topic": "trade:kr:000660",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T10:04:01+09:00",
+          "price": "11000",
+          "volume": "50"
+        }
+      },
+      "sequence": 6,
+      "received_monotonic": 6
+    },
+    {
+      "id": "volume-rankings",
+      "sequence": 7,
+      "at": "2026-11-13T10:04:01+09:00",
+      "kind": "rankings",
+      "ranking_type": "MARKET_TRADING_VOLUME",
+      "payload": {
+        "result": {
+          "rankedAt": "2026-11-13T10:03:47.200+09:00",
+          "rankings": [
+            {
+              "rank": 1,
+              "symbol": "035720",
+              "name": "저유동 가정 샘플",
+              "currency": "KRW",
+              "price": {
+                "lastPrice": "11000"
+              },
+              "tradingAmount": "100000",
+              "tradingVolume": "100000"
+            },
+            {
+              "rank": 2,
+              "symbol": "035420",
+              "name": "거래정지 가정 샘플",
+              "currency": "KRW",
+              "price": {
+                "lastPrice": "11000"
+              },
+              "tradingAmount": "3000000000",
+              "tradingVolume": "100000"
+            },
+            {
+              "rank": 3,
+              "symbol": "000660",
+              "name": "SK하이닉스 (합성 샘플)",
+              "currency": "KRW",
+              "price": {
+                "lastPrice": "11000"
+              },
+              "tradingAmount": "4000000000",
+              "tradingVolume": "100000"
+            },
+            {
+              "rank": 4,
+              "symbol": "005930",
+              "name": "삼성전자 (합성 샘플)",
+              "currency": "KRW",
+              "price": {
+                "lastPrice": "11000"
+              },
+              "tradingAmount": "5000000000",
+              "tradingVolume": "100000"
+            }
+          ]
+        }
+      },
+      "received_monotonic": 7
+    },
+    {
+      "id": "rankings",
+      "sequence": 8,
+      "at": "2026-11-13T10:04:01+09:00",
+      "kind": "rankings",
+      "ranking_type": "MARKET_TRADING_AMOUNT",
+      "payload": {
+        "result": {
+          "rankedAt": "2026-11-13T10:03:47.200+09:00",
+          "rankings": [
+            {
+              "rank": 1,
+              "symbol": "005930",
+              "name": "삼성전자 (합성 샘플)",
+              "currency": "KRW",
+              "price": {
+                "lastPrice": "11000"
+              },
+              "tradingAmount": "5000000000",
+              "tradingVolume": "100000"
+            },
+            {
+              "rank": 2,
+              "symbol": "000660",
+              "name": "SK하이닉스 (합성 샘플)",
+              "currency": "KRW",
+              "price": {
+                "lastPrice": "11000"
+              },
+              "tradingAmount": "4000000000",
+              "tradingVolume": "100000"
+            },
+            {
+              "rank": 3,
+              "symbol": "035420",
+              "name": "거래정지 가정 샘플",
+              "currency": "KRW",
+              "price": {
+                "lastPrice": "11000"
+              },
+              "tradingAmount": "3000000000",
+              "tradingVolume": "100000"
+            },
+            {
+              "rank": 4,
+              "symbol": "035720",
+              "name": "저유동 가정 샘플",
+              "currency": "KRW",
+              "price": {
+                "lastPrice": "11000"
+              },
+              "tradingAmount": "100000",
+              "tradingVolume": "100000"
+            }
+          ]
+        }
+      },
+      "risk_meta": {
+        "035420": {
+          "halted": true
+        }
+      },
+      "received_monotonic": 8
+    },
+    {
+      "id": "buy-profit",
+      "sequence": 9,
+      "at": "2026-11-13T10:04:02+09:00",
+      "received_monotonic": 9,
+      "kind": "ws_frame",
+      "frame": {
+        "type": "message",
+        "topic": "orderbook:kr:005930",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T10:04:02+09:00",
+          "bids": [
+            {
+              "price": "10990",
+              "volume": "1000"
+            }
+          ],
+          "asks": [
+            {
+              "price": "11000",
+              "volume": "1000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "buy-time",
+      "sequence": 10,
+      "at": "2026-11-13T10:04:02+09:00",
+      "received_monotonic": 10,
+      "kind": "ws_frame",
+      "frame": {
+        "type": "message",
+        "topic": "orderbook:kr:000660",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T10:04:02+09:00",
+          "bids": [
+            {
+              "price": "10990",
+              "volume": "1000"
+            }
+          ],
+          "asks": [
+            {
+              "price": "11000",
+              "volume": "1000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "take-profit-signal",
+      "sequence": 11,
+      "at": "2026-11-13T10:04:03+09:00",
+      "received_monotonic": 11,
+      "kind": "ws_frame",
+      "frame": {
+        "type": "message",
+        "topic": "orderbook:kr:005930",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T10:04:03+09:00",
+          "bids": [
+            {
+              "price": "11600",
+              "volume": "1000"
+            }
+          ],
+          "asks": [
+            {
+              "price": "11610",
+              "volume": "1000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "take-profit-fill",
+      "sequence": 12,
+      "at": "2026-11-13T10:04:04+09:00",
+      "received_monotonic": 12,
+      "kind": "ws_frame",
+      "frame": {
+        "type": "message",
+        "topic": "orderbook:kr:005930",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T10:04:04+09:00",
+          "bids": [
+            {
+              "price": "11600",
+              "volume": "1000"
+            }
+          ],
+          "asks": [
+            {
+              "price": "11610",
+              "volume": "1000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "pre-cutoff-book",
+      "sequence": 13,
+      "at": "2026-11-13T14:49:59+09:00",
+      "received_monotonic": 13,
+      "kind": "ws_frame",
+      "frame": {
+        "type": "message",
+        "topic": "orderbook:kr:000660",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T14:49:59+09:00",
+          "bids": [
+            {
+              "price": "10990",
+              "volume": "1000"
+            }
+          ],
+          "asks": [
+            {
+              "price": "11000",
+              "volume": "1000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "entry-cutoff",
+      "sequence": 14,
+      "at": "2026-11-13T14:50:00+09:00",
+      "kind": "clock",
+      "data": {},
+      "received_monotonic": 14
+    },
+    {
+      "id": "time-exit-signal",
+      "sequence": 15,
+      "at": "2026-11-13T15:15:00+09:00",
+      "received_monotonic": 15,
+      "kind": "ws_frame",
+      "frame": {
+        "type": "message",
+        "topic": "orderbook:kr:000660",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T15:15:00+09:00",
+          "bids": [
+            {
+              "price": "10980",
+              "volume": "1000"
+            }
+          ],
+          "asks": [
+            {
+              "price": "10990",
+              "volume": "1000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "time-exit-fill",
+      "sequence": 16,
+      "at": "2026-11-13T15:15:01+09:00",
+      "received_monotonic": 16,
+      "kind": "ws_frame",
+      "frame": {
+        "type": "message",
+        "topic": "orderbook:kr:000660",
+        "data": {
+          "currency": "KRW",
+          "timestamp": "2026-11-13T15:15:01+09:00",
+          "bids": [
+            {
+              "price": "10980",
+              "volume": "1000"
+            }
+          ],
+          "asks": [
+            {
+              "price": "10990",
+              "volume": "1000"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "end-session",
+      "sequence": 17,
+      "at": "2026-11-13T15:30:00+09:00",
+      "kind": "end_session",
+      "data": {},
+      "received_monotonic": 17
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "dataset_kind": "SYNTHETIC",
+  "description": "Arithmetic stress fixture only; fee rates are not real account terms or approved policy.",
+  "seed": 7,
+  "policy_version": "daytrade-stage1-offline-2026-11-13.1",
+  "initial_capital": "10000000",
+  "quality": {"quote_max_age_seconds": 10, "ranking_max_age_seconds": 30, "candle_max_age_seconds": 120},
+  "fixture_costs": {"version": "SYNTHETIC-ARITHMETIC", "buy_fee_bps": "100", "sell_fee_bps": "200", "sell_tax_bps": "300", "extra_slippage_bps": "0", "participation": "1", "latency_ms": 0},
+  "events": [
+    {"id": "session", "sequence": 0, "at": "2026-11-13T10:00:00+09:00", "policy_version": "daytrade-stage1-offline-2026-11-13.1", "kind": "SESSION", "data": {"normal_session_verified": true}},
+    {"id": "buy", "sequence": 1, "at": "2026-11-13T10:00:01+09:00", "policy_version": "daytrade-stage1-offline-2026-11-13.1", "kind": "INTENT", "data": {"symbol": "005930", "side": "BUY", "quantity": 10}},
+    {"id": "ask", "sequence": 2, "at": "2026-11-13T10:00:02+09:00", "policy_version": "daytrade-stage1-offline-2026-11-13.1", "kind": "MARKET", "data": {"symbol": "005930", "feed": "orderbook", "received_monotonic": 2, "payload": {"currency": "KRW", "timestamp": "2026-11-13T10:00:02+09:00", "asks": [{"price": "101", "volume": "100"}], "bids": [{"price": "100", "volume": "100"}]}}},
+    {"id": "buy-fill", "sequence": 3, "at": "2026-11-13T10:00:03+09:00", "policy_version": "daytrade-stage1-offline-2026-11-13.1", "kind": "FILL", "data": {"intent_id": "buy", "quote_event_id": "ask"}},
+    {"id": "sell", "sequence": 4, "at": "2026-11-13T10:00:04+09:00", "policy_version": "daytrade-stage1-offline-2026-11-13.1", "kind": "INTENT", "data": {"symbol": "005930", "side": "SELL", "quantity": 10}},
+    {"id": "bid", "sequence": 5, "at": "2026-11-13T10:00:05+09:00", "policy_version": "daytrade-stage1-offline-2026-11-13.1", "kind": "MARKET", "data": {"symbol": "005930", "feed": "orderbook", "received_monotonic": 5, "payload": {"currency": "KRW", "timestamp": "2026-11-13T10:00:05+09:00", "asks": [{"price": "111", "volume": "100"}], "bids": [{"price": "110", "volume": "100"}]}}},
+    {"id": "sell-fill", "sequence": 6, "at": "2026-11-13T10:00:06+09:00", "policy_version": "daytrade-stage1-offline-2026-11-13.1", "kind": "FILL", "data": {"intent_id": "sell", "quote_event_id": "bid"}},
+    {"id": "close", "sequence": 7, "at": "2026-11-13T15:30:00+09:00", "policy_version": "daytrade-stage1-offline-2026-11-13.1", "kind": "END_SESSION", "data": {}}
+  ]
+}

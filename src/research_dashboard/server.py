@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import sqlite3
 import threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +14,7 @@ from .rules import Policy
 from .store import Store
 from .live_accounts import LiveAccounts
 from .oracle_bridge import HermesLiveWorker
+from .daytrade_bridge import read_daytrade_report, simulate_sample_daytrade
 
 class DashboardServer(ThreadingHTTPServer):
     def __init__(self, root: Path, port=8765, hermes_live=False, direct_market=False, allow_open_fills=False):
@@ -21,6 +23,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.sessions = set()
         self.stopping = threading.Event()
         self.runner_errors = {}
+        self.daytrade_lock = threading.Lock()
         self.accounts = LiveAccounts(root / ".runtime/hermes-paper.sqlite3")
         self.live_worker = HermesLiveWorker(root,self.accounts,self.stopping,direct_market,allow_open_fills) if hermes_live else None
         super().__init__(("127.0.0.1", port), Handler)
@@ -82,11 +85,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed_host() or self.headers.get("Sec-Fetch-Site") == "cross-site":
             return self.response(403, {"error":"LOCAL_ORIGIN_REQUIRED"})
         path = urlsplit(self.path).path
-        if path in {"/", "/hermes", "/app.js", "/live.js", "/style.css"}:
-            files = {"/":("index.html","text/html; charset=utf-8"),"/hermes":("hermes.html","text/html; charset=utf-8"),"/app.js":("app.js","text/javascript; charset=utf-8"),"/live.js":("live.js","text/javascript; charset=utf-8"),"/style.css":("style.css","text/css; charset=utf-8")}
+        if path in {"/", "/hermes", "/daytrade", "/app.js", "/live.js", "/daytrade.js", "/style.css"}:
+            files = {"/":("index.html","text/html; charset=utf-8"),"/hermes":("hermes.html","text/html; charset=utf-8"),"/daytrade":("daytrade.html","text/html; charset=utf-8"),"/app.js":("app.js","text/javascript; charset=utf-8"),"/live.js":("live.js","text/javascript; charset=utf-8"),"/daytrade.js":("daytrade.js","text/javascript; charset=utf-8"),"/style.css":("style.css","text/css; charset=utf-8")}
             name, kind = files[path]
             session = None
-            if path in {"/","/hermes"} and not self.authorized():
+            if path in {"/","/hermes","/daytrade","/daytrade.js"} and not self.authorized():
                 session = secrets.token_urlsafe(32)
                 self.server.sessions.add(session)
             return self.response(200, (self.server.root / "web" / name).read_bytes(), kind, session)
@@ -95,6 +98,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized():
             return self.response(401,{"error":"LOCAL_SESSION_REQUIRED"})
         try:
+            if path == "/api/daytrade/report":
+                try:
+                    with self.server.daytrade_lock:
+                        result = read_daytrade_report(self.server.root)
+                    return self.response(200, result)
+                except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                    return self.response(503, {"error":"DAYTRADE_REPORT_UNAVAILABLE"})
             if path == "/api/paper-accounts":
                 return self.response(200,{"accounts":self.server.accounts.account_ids(),"source":self.server.live_worker.status if self.server.live_worker else {"state":"DISCONNECTED","mode":"NOT_STARTED"}})
             if path == "/api/hermes/reports":
@@ -142,6 +152,19 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body,dict):
                 raise ValueError("object required")
             path = urlsplit(self.path).path
+            if path == "/api/daytrade/simulate-sample":
+                if body or length == 0:
+                    raise ValueError("sample action requires an explicit empty object")
+                try:
+                    with self.server.daytrade_lock:
+                        result = simulate_sample_daytrade(self.server.root)
+                    return self.response(201, result)
+                except FileExistsError:
+                    return self.response(409, {"error":"DAYTRADE_LEDGER_EXISTS"})
+                except FileNotFoundError:
+                    return self.response(404, {"error":"DAYTRADE_SAMPLE_UNAVAILABLE"})
+                except (OSError, sqlite3.Error):
+                    return self.response(503, {"error":"DAYTRADE_SIMULATION_UNAVAILABLE"})
             account_match = re.fullmatch(r"/api/paper-accounts/(P-[a-f0-9]{24})/(pause|resume)",path)
             if account_match:
                 if body:

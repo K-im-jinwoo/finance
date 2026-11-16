@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>당일 단타 · 오프라인 모의계좌</title><link rel="stylesheet" href="/style.css"><script defer src="/daytrade.js"></script></head>
+<body><main id="daytrade-view">
+<nav class="view-nav" aria-label="화면 선택"><a href="/">계산 검증 실험</a><a href="/hermes">Hermes 추천 모의계좌</a><a href="/daytrade" aria-current="page">당일 단타 모의계좌</a></nav>
+<header><div><p class="eyebrow">DAYTRADE / OFFLINE PAPER ACCOUNT</p><h1>당일의 신호를, 비용 반영 손익까지.</h1><p>종목 탐색 · 매수·매도 신호 · 모의 체결 결과</p></div><span class="badge">SYNTHETIC PAPER</span></header>
+<aside class="notice"><strong id="daytrade-mode">SYNTHETIC_PAPER_V1 · 오프라인 단타 모의거래</strong><span>orders_enabled=false · PAPER_READY=false · KRX+NXT 통합 시세</span><span id="daytrade-cost-policy">적용 비용은 샘플 생성 후 표시합니다. 공식 요율 확정 전 개발·검증 가정입니다.</span><span>합성 샘플과 가정 비용으로 계산합니다. 실거래 성과가 아닙니다. 체결강도·틱 VWAP은 미제공이며, 분봉 VWAP은 근사치입니다.</span></aside>
+<section class="panel"><div class="section-head"><div><p class="eyebrow">LOCAL PAPER SESSION</p><h2>단타 모의계좌</h2><p id="daytrade-status" class="meta" role="status" aria-live="polite">로컬 결과를 확인하고 있습니다.</p></div><div class="actions"><button id="daytrade-refresh" type="button">새로고침</button><button id="daytrade-sample" type="button" disabled>오프라인 샘플 시뮬레이션 실행</button></div></div><p id="daytrade-error" role="alert"></p></section>
+<section id="daytrade-metrics" class="metrics daytrade-metrics" aria-label="단타 계좌 요약"></section>
+<section class="panel"><p class="eyebrow">SCANNER</p><h2>감시 종목 탐색</h2><div id="daytrade-scans"><p class="empty">원장이 생성되면 선정·제외 사유를 표시합니다.</p></div></section>
+<section class="panel"><p class="eyebrow">FILLS & COSTS</p><h2>비용 반영 모의 체결</h2><div id="daytrade-fills" class="table-wrap"><p class="empty">아직 모의 체결이 없습니다.</p></div></section>
+<section class="split"><div class="panel"><p class="eyebrow">STRATEGY SIGNALS</p><h2>매수·매도 신호</h2><p id="daytrade-signal-summary" class="meta"></p><div id="daytrade-signals" class="daytrade-event-list"><p class="empty">원장이 생성되면 신호를 표시합니다.</p></div></div><div class="panel"><p class="eyebrow">RISK & QUALITY</p><h2>위험 상태와 데이터 품질</h2><div id="daytrade-risk" class="daytrade-event-list"><p class="empty">원장이 생성되면 위험 상태를 표시합니다.</p></div></div></section>
+<details class="panel"><summary>한국어 거래 리포트 원문</summary><pre id="daytrade-markdown">아직 생성된 리포트가 없습니다.</pre></details>
+<footer>로컬 오프라인 모의거래 · 실주문·Telegram 발송 없음 · 기존 모의계좌와 분리</footer>
+</main></body></html>

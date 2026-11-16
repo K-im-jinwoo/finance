@@ -599,6 +599,13 @@ class LivePaperSession(LiveSessionBridge):
             return self._capture(clean)
         if self._session_ended:
             raise ValueError("paper trading day has ended")
+        # Before discovery, keep the supported replay/warm-up observations.
+        # Once a pool exists, in-flight frames from retired subscriptions must
+        # not create session-wide quality locks (held names still need exits).
+        if clean["kind"] in {"ws_frame", "candles"} and self._runner.meta["scan_history"]:
+            code = clean["frame"]["topic"].rsplit(":", 1)[1] if clean["kind"] == "ws_frame" else clean["symbol"]
+            if code not in self._runner.watches and code not in self.ledger.state()["positions"]:
+                return False
         if clean["kind"] in {"ws_frame", "candles"} and clean["received_monotonic"] < self.ledger.state()["last_monotonic"]:
             raise ValueError("observation monotonic time regressed")
         self._capture(clean)

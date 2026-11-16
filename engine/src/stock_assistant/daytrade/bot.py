@@ -256,21 +256,48 @@ class _PaperSession:
                 "quantity": quantity, "strategy_signal": asdict(signal)}, at)
             self.decision(at, code, "INTENT", signal.exit_reason or "VWAP_BREAKOUT", quantity=quantity)
 
+    def refresh_watch_quote(self, book, at):
+        candidate = self.watches.get(book.symbol)
+        if candidate is None:
+            return
+        metrics = orderbook_metrics(book, now=at,
+            max_age_seconds=self.config.scanner_config.quote_max_age_seconds, issuer=book.symbol)
+        eligible = not metrics["issues"] and metrics["spread_bps"] <= self.config.scanner_config.max_spread_bps
+        candidate.update(spread_bps=metrics["spread_bps"] if not metrics["issues"] else None,
+                         entry_blocked=not eligible)
+        reasons = [reason for reason in candidate["selection_reasons"]
+                   if reason not in {"QUOTE_UNAVAILABLE_WATCH_ONLY", "QUOTE_ELIGIBLE"}]
+        candidate["selection_reasons"] = reasons + ["QUOTE_ELIGIBLE" if eligible else "QUOTE_UNAVAILABLE_WATCH_ONLY"]
+        for row in self.meta["scan_history"][-1]["selected"]:
+            if row["symbol"] == book.symbol:
+                row.update(candidate)
+                break
+
+    def recover_retired_feeds(self, at):
+        # An empty pool is not evidence that every issuer is safe to forget.
+        if not self.watches:
+            return
+        state = self.ledger.state()
+        for reason in list(state["risk"]["reasons"].get("DATA_DEGRADED", [])):
+            feed, separator, code = reason.partition(":")
+            if (separator and feed in {"orderbook", "trade", "candles"}
+                    and code not in self.watches and code not in state["positions"]):
+                self.emit("RECOVER", {"lock":"DATA_DEGRADED", "reason":reason, "verified":True}, at)
+
     def step(self, event, risk_meta=None):
         """Advance one validated event using the same execution path as replay."""
         at, data, kind = event["at"], event["data"], event["kind"]
         if kind == "RANKINGS":
             self.emit("CLOCK", {"input_id": event["id"]}, at)
+            # Expired cached quotes must not prevent subscribing for a new one.
+            # Supplied fresh-but-invalid books still go through strict screening.
+            active_quotes = {code: book for code, book in self.books.items()
+                if "STALE_ORDERBOOK" not in orderbook_metrics(book, now=at,
+                    max_age_seconds=self.config.scanner_config.quote_max_age_seconds, issuer=code)["issues"]}
             scan = scan_rankings(data["turnover"], data.get("volume"),
-                config=self.config.scanner_config, now=at, quotes=self.books,
+                config=self.config.scanner_config, now=at, quotes=active_quotes,
                 risk_meta=data.get("risk_meta", risk_meta))
             self.watches = {r["symbol"]: r for r in scan.selected}
-            held = self.ledger.state()["positions"]
-            reasons = self.ledger.state()["risk"]["reasons"].get("DATA_DEGRADED", [])
-            for reason in list(reasons):
-                feed, separator, code = reason.partition(":")
-                if separator and feed in {"orderbook", "trade", "candles"} and code not in self.watches and code not in held:
-                    self.emit("RECOVER", {"lock":"DATA_DEGRADED", "reason":reason, "verified":True}, at)
             for key, intent in self.pending(side="BUY").items():
                 if intent["symbol"] not in self.watches:
                     self.inactive.add(key)
@@ -287,7 +314,10 @@ class _PaperSession:
                     self.emit("RECOVER", {"lock":"DATA_DEGRADED", "reason":reason, "verified":True}, at)
                 if normalized.kind == "orderbook":
                     self.books[normalized.symbol] = normalized
+                    self.refresh_watch_quote(normalized, at)
                     self.fill_pending(normalized, at)
+        if kind in {"RANKINGS", "MARKET"}:
+            self.recover_retired_feeds(at)
         if ("MARK_UNCERTAIN" in self.ledger.state()["risk"]["reasons"].get("DATA_DEGRADED", [])
                 and self.ledger.valuation(at)["status"] == "KNOWN"):
             self.emit("RECOVER", {"lock":"DATA_DEGRADED", "reason":"MARK_UNCERTAIN", "verified":True}, at)

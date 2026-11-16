@@ -4,10 +4,38 @@ from __future__ import annotations
 from decimal import Decimal
 import json
 
-from .contracts import KST, canonical, instant
+from .contracts import KST, canonical, instant, symbol
+from .risk import RiskState
 
 PROVISIONAL_COST_STATUS = "PROVISIONAL_DEV_UNAPPROVED"
 APPROVED_COST_STATUS = "APPROVED_CONSERVATIVE_V1"
+
+
+def _symbol_names(ledger):
+    row = ledger.connection.execute("SELECT value FROM meta WHERE key='symbol_names'").fetchone()
+    names = json.loads(row[0]) if row else {}
+    if not isinstance(names, dict):
+        return {}
+    valid = {}
+    for code, name in names.items():
+        try:
+            symbol(code)
+        except ValueError:
+            continue
+        if isinstance(name, str) and 0 < len(name.strip()) <= 200 and not any(c in name for c in "\r\n\0"):
+            valid[code] = name.strip()
+    return valid
+
+
+def _name_overlay(report, names):
+    def named(row):
+        code = row.get("symbol")
+        return {**row, "name":names[code]} if code in names else dict(row)
+    report["symbol_names"] = names
+    report["scan_history"] = [{**scan, "selected":[named(row) for row in scan["selected"]],
+        "rejected":[named(row) for row in scan["rejected"]]} for scan in report["scan_history"]]
+    for key in ("fills", "signals", "decisions", "quality_events"):
+        report[key] = [named(row) for row in report[key]]
 
 
 def _cost_policy(costs, meta):
@@ -114,7 +142,8 @@ def build_trading_report(ledger, *, scan_history=(), signals=(), simulation_meta
         if key != previous:
             risk_events.append({k: sample[k] for k in ("at", "phase", "locks")})
             previous = key
-    quality = [{"id": row[0], "at": row[3], "issues": json.loads(row[6])["quality_issues"]}
+    quality = [{"id": row[0], "at": row[3], "issues": json.loads(row[6])["quality_issues"],
+                "symbol":json.loads(row[5])["data"].get("symbol")}
                for row in snapshot["events"] if json.loads(row[6]).get("quality_issues")]
     report = {"mode": ledger.meta["mode"], "profile": meta.get("profile", "UNSPECIFIED"),
         "dataset_kind": "SYNTHETIC" if ledger.meta["synthetic"] else "OBSERVATION",
@@ -138,6 +167,10 @@ def build_trading_report(ledger, *, scan_history=(), signals=(), simulation_meta
         "risk_events": risk_events, "quality_events": quality, "equity_curve": curve,
         "audit": ledger.audit(), "ledger_hash": ledger.state_hash,
         "dataset_hash": meta.get("dataset_hash")}
+    risk = RiskState.restore(snapshot["state"]["risk"])
+    report["current_risk"] = {"phase":str(risk.phase), "locks":sorted(risk.locks),
+        "reasons":risk.reasons, "entry_allowed":bool(report["paper_ready"] and risk.candidate_entry_allowed)}
+    _name_overlay(report, _symbol_names(ledger))
     # JSON numbers never silently lose decimal precision in downstream consumers.
     return json.loads(canonical(report))
 

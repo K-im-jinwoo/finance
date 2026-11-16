@@ -12,7 +12,7 @@ const labels = {
   RISING_CLOSE: '완료 분봉 상승', VOLUME_SPIKE: '완료 분봉 거래량 급증', BID_DEPTH: '매수호가 잔량 충족',
   HALTED: '거래정지', DELISTING: '상장폐지 위험', WARNING_OR_CAUTION: '경고·주의',
   MAJOR_NEGATIVE_DISCLOSURE: '중대 악재 공시', LOW_TURNOVER: '거래대금 부족', LOW_PRICE: '최소 가격 미달',
-  WIDE_SPREAD: '호가 스프레드 초과', WATCH_LIMIT: '감시 종목 수 한도',
+  WIDE_SPREAD: '매수·매도 호가차 초과', WATCH_LIMIT: '순위 외 제외 (상위 감시 정원 초과)',
   TURNOVER_ELIGIBLE: '거래대금 조건 충족', TURNOVER_RANKED: '거래대금 순위 편입',
   VOLUME_RANKED: '거래량 순위 편입', QUOTE_ELIGIBLE: '호가 조건 충족',
   QUOTE_UNAVAILABLE_WATCH_ONLY: '호가 미확보 · 감시만 가능', RISK_METADATA_UNAVAILABLE: '위험 메타 미확보',
@@ -30,6 +30,50 @@ const numberFormat = new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 4});
 const dateFormat = new Intl.DateTimeFormat('ko-KR', {timeZone: 'Asia/Seoul', dateStyle: 'short', timeStyle: 'medium', hour12: false});
 let current = null;
 let busy = false;
+let symbolNames = {};
+const expanded = new Map();
+const integerFormat = new Intl.NumberFormat('ko-KR', {maximumFractionDigits: 0});
+
+function wonValue(value) {
+  if (value == null || value === '' || typeof value === 'boolean' || !Number.isFinite(Number(value))) return null;
+  const n = Number(value), rounded = Math.round(Math.abs(n));
+  return rounded === 0 ? 0 : n < 0 ? -rounded : rounded;
+}
+function signFor(value, signed) { return value < 0 ? '-' : signed && value > 0 ? '+' : ''; }
+function money(value, signed = false) {
+  const n = wonValue(value);
+  return n == null ? '확인 불가' : signFor(n, signed) + integerFormat.format(Math.abs(n)) + '원';
+}
+function koreanUnit(value, signed = false) {
+  const n = wonValue(value);
+  if (n == null) return '확인 불가';
+  let remaining = Math.abs(n);
+  if (remaining < 10000) return money(n, signed);
+  const parts = [];
+  for (const [size, suffix] of [[1e12, '조'], [1e8, '억'], [1e4, '만']]) {
+    const amount = Math.floor(remaining / size);
+    if (amount) parts.push(integerFormat.format(amount) + suffix);
+    remaining %= size;
+  }
+  if (remaining) parts.push(integerFormat.format(remaining));
+  return signFor(n, signed) + parts.join(' ') + (remaining ? '원' : ' 원');
+}
+function turnoverText(value) {
+  const n = wonValue(value);
+  if (n == null) return '확인 불가';
+  const abs = Math.abs(n), size = abs >= 1e8 ? 1e8 : abs >= 1e4 ? 1e4 : 1;
+  return signFor(n, false) + integerFormat.format(Math.floor(abs / size)) + (size === 1e8 ? '억 원' : size === 1e4 ? '만 원' : '원');
+}
+function spreadText(bps, entryBlocked) {
+  if (bps == null || bps === '') return '호가 수신 대기';
+  const n = Number(bps);
+  return Number.isFinite(n) && n >= 0 ? `${(n / 100).toFixed(2)}% (${n.toFixed(1)}bps)` : '확인 불가';
+}
+function symbolLabel(code, provided) {
+  if (!code || code === 'ALL') return '시장 전체';
+  const name = symbolNames[code] || (provided && provided !== code ? provided : null);
+  return name ? `${name} (${code})` : `종목명 확인 중 (${code})`;
+}
 
 function numeric(value, unit = '') {
   return value == null || !Number.isFinite(Number(value)) ? '확인 불가' : numberFormat.format(Number(value)) + unit;
@@ -77,6 +121,33 @@ function event(target, title, detail) {
   item.append(node('strong', title), node('p', detail, 'meta'));
   target.append(item);
 }
+function disclosure(id, title, build) {
+  const details = node('details', undefined, 'daytrade-details');
+  details.id = id;
+  details.append(node('summary', title));
+  details.open = expanded.get(id) === true;
+  let content = null;
+  function populate() {
+    if (content) return;
+    content = node('div', undefined, 'history-content');
+    build(content);
+    details.append(content);
+  }
+  details.addEventListener('toggle', () => {
+    expanded.set(id, details.open);
+    if (details.open) populate();
+  });
+  if (details.open) populate();
+  return details;
+}
+function newest(rows) { return [...rows].sort((a, b) => new Date(b.at) - new Date(a.at)); }
+function boundedEvents(target, rows, limit, id, title) {
+  const ordered = newest(rows);
+  for (const row of ordered.slice(0, limit)) event(target, row.title, row.detail);
+  if (ordered.length > limit) target.append(disclosure(id, `${title} (${ordered.length - limit}건)`, content => {
+    for (const row of ordered.slice(limit)) event(content, row.title, row.detail);
+  }));
+}
 function setBusy(value) {
   busy = value;
   byId('daytrade-view').setAttribute('aria-busy', String(value));
@@ -88,19 +159,31 @@ function renderScans(scans) {
   const target = byId('daytrade-scans');
   target.replaceChildren();
   if (!scans.length) return empty(target, '기록된 탐색 결과가 없습니다.');
-  for (const scan of scans) {
+  const scan = scans[scans.length - 1];
     const section = node('section', undefined, 'daytrade-scan');
-    section.append(node('h3', at(scan.at)));
+    section.append(node('h3', `최신 탐색 기준: ${at(scan.at)} · 총 ${scans.length}회 탐색 수행`));
     section.append(node('p', `선정 ${scan.selected.length}종목 · 제외 ${scan.rejected.length}종목`, 'meta'));
     const selected = node('div', undefined, 'table-wrap');
-    table(selected, ['선정 종목', '거래대금 / 거래량 순위', '거래대금', '스프레드', '선정 사유'],
-      scan.selected.map(row => [`${row.name} (${row.symbol})`, `${row.rank_turnover ?? '—'} / ${row.rank_volume ?? '—'}`,
-        numeric(row.turnover, '원'), numeric(row.spread_bps, 'bps'), reasonsFor(row.selection_reasons)]), '선정된 종목이 없습니다.');
-    const rejected = node('div', undefined, 'table-wrap');
-    table(rejected, ['제외 종목', '제외 사유'], scan.rejected.map(row => [row.symbol, reasonsFor(row.reasons || [row.reason])]), '제외된 종목이 없습니다.');
-    section.append(selected, node('h4', '제외 종목'), rejected);
+    table(selected, ['선정 종목', '거래대금 / 거래량 순위', '거래대금', '매수·매도 호가차', '선정 사유'],
+      scan.selected.map(row => [symbolLabel(row.symbol, row.name), `${row.rank_turnover ?? '—'} / ${row.rank_volume ?? '—'}`,
+        turnoverText(row.turnover), spreadText(row.spread_bps, row.entry_blocked), reasonsFor(row.selection_reasons)]), '선정된 종목이 없습니다.');
+    const reasons = new Map();
+    for (const row of scan.rejected) {
+      const reason = row.reason || row.reasons?.[0] || '확인 불가';
+      reasons.set(reason, (reasons.get(reason) || 0) + 1);
+    }
+    section.append(selected, node('p', '매도1호가와 매수1호가의 가격 차이 비율 · 낮을수록 거래 비용에 유리합니다.', 'meta'),
+      node('p', [...reasons].map(([reason, count]) => `${textFor(reason)} ${count}종목`).join(' · ') || '제외 종목 없음', 'meta'));
+    section.append(disclosure('daytrade-exclusions', `제외 종목 상세 보기 (${scan.rejected.length}종목)`, content => {
+      content.className += ' table-wrap';
+      table(content, ['제외 종목', '제외 사유'], scan.rejected.map(row => [symbolLabel(row.symbol, row.name), reasonsFor(row.reasons || [row.reason])]), '제외된 종목이 없습니다.');
+    }));
     target.append(section);
-  }
+  const previous = scans.slice(0, -1).slice(-10).reverse();
+  if (previous.length) target.append(disclosure('daytrade-prior-scans', `이전 탐색 이력 보기 (최근 ${previous.length}건 / 전체 ${scans.length}회)`, content => {
+    content.className += ' table-wrap';
+    table(content, ['탐색 시각', '선정 종목', '제외 수'], previous.map(item => [at(item.at), item.selected.map(row => symbolLabel(row.symbol, row.name)).join(' · '), `${item.rejected.length}종목`]), '이전 탐색 없음');
+  }));
 }
 
 function render(data) {
@@ -121,6 +204,7 @@ function render(data) {
     return;
   }
   const report = data.report;
+  symbolNames = report.symbol_names || {};
   byId('daytrade-flags').textContent = `orders_enabled=false · PAPER_READY=${report.paper_ready === true} · KRX+NXT 통합 시세`;
   const account = report.account;
   const sessions = Object.entries(report.sessions);
@@ -132,10 +216,10 @@ function render(data) {
     '미청산 보유 종목이 남아 있습니다. 실제로 관측된 체결만 반영하며 청산을 가정하지 않습니다.' :
     '저장된 로컬 결과를 표시합니다. 샘플 원장은 보존되며 다시 실행해 덮어쓸 수 없습니다.';
   byId('daytrade-metrics').replaceChildren(
-    metric('초기 자본', numeric(account.initial_capital, '원'), '단타 전용 모의 자본'),
-    metric('최종 현금', numeric(account.cash, '원'), '매수·매도 비용 반영'),
-    metric('최종 평가자산', numeric(account.final_equity, '원'), account.valuation_status === 'MARK_UNCERTAIN' ? 'MARK_UNCERTAIN · 평가 확인 불가' : '매수호가·예상 청산 비용 기준'),
-    metric('총 순손익', numeric(account.net_pnl, '원'), '비용 차감 실현 손익 ' + numeric(account.realized_pnl_net, '원')),
+    metric('초기 자본', koreanUnit(account.initial_capital), money(account.initial_capital) + ' · 단타 전용 모의 자본'),
+    metric('최종 현금', koreanUnit(account.cash), money(account.cash) + ' · 매수·매도 비용 반영'),
+    metric('최종 평가자산', koreanUnit(account.final_equity), money(account.final_equity) + ' · ' + (account.valuation_status === 'MARK_UNCERTAIN' ? 'MARK_UNCERTAIN · 평가 확인 불가' : '매수호가·예상 청산 비용 기준')),
+    metric('총 순손익', koreanUnit(account.net_pnl, true), money(account.net_pnl, true) + ' · 비용 차감 실현 손익 ' + money(account.realized_pnl_net, true)),
     metric('수익률', numeric(account.return_pct, '%'), '초기 자본 대비 순손익'),
     metric('완결 거래', numeric(account.completed_trades, '회'), '매수부터 전량 매도까지'),
     metric('승률', numeric(account.win_rate_pct, '%'), '완결 거래만 집계'),
@@ -144,21 +228,30 @@ function render(data) {
   );
   renderScans(report.scan_history || []);
   table(byId('daytrade-fills'), ['시각', '종목', '매매', '수량', '평균 체결가', '수수료 / 세금', '실현 순손익', '신호·청산 사유'],
-    report.fills.map(fill => [at(fill.at), fill.symbol, textFor(fill.side), numeric(fill.quantity, '주'), numeric(fill.price, '원'),
-      `${numeric(fill.fee)} / ${numeric(fill.tax)}원`, fill.side === 'BUY' ? '매도 후 계산' : numeric(fill.realized_pnl, '원'),
+    report.fills.map(fill => [at(fill.at), symbolLabel(fill.symbol, fill.name), textFor(fill.side), numeric(fill.quantity, '주'), money(fill.price),
+      `${money(fill.fee)} / ${money(fill.tax)}`, fill.side === 'BUY' ? '매도 후 계산' : money(fill.realized_pnl, true),
       fill.signal?.exit_reason ? textFor(fill.signal.exit_reason) : reasonsFor(fill.signal?.reasons)]), '아직 모의 체결이 없습니다.');
   const signals = report.signals || [];
   byId('daytrade-signal-summary').textContent = ['BUY', 'SELL', 'HOLD'].map(action => `${textFor(action)} ${signals.filter(s => s.action === action).length}건`).join(' · ') + ' · 조건 충족률은 수익 확률이 아닙니다.';
   const signalTarget = byId('daytrade-signals');
   signalTarget.replaceChildren();
-  for (const signal of signals) event(signalTarget, `${signal.symbol} · ${textFor(signal.action)} · 조건 충족률 ${signal.score}%`, `${at(signal.at)} · ${signal.exit_reason ? textFor(signal.exit_reason) : reasonsFor(signal.reasons)}`);
+  boundedEvents(signalTarget, signals.map(signal => ({at: signal.at,
+    title: `${symbolLabel(signal.symbol, signal.name)} · ${textFor(signal.action)} · 조건 충족률 ${signal.score}%`,
+    detail: `${at(signal.at)} · ${signal.exit_reason ? textFor(signal.exit_reason) : reasonsFor(signal.reasons)}`})), 30, 'daytrade-prior-signals', '이전 신호 더 보기');
   if (!signals.length) empty(signalTarget, '기록된 신호가 없습니다.');
   const riskTarget = byId('daytrade-risk');
   riskTarget.replaceChildren();
-  for (const item of report.risk_events || []) event(riskTarget, textFor(item.phase), `${at(item.at)} · ${item.locks.length ? reasonsFor(item.locks) : '위험 잠금 없음'}`);
-  for (const item of report.quality_events || []) event(riskTarget, '데이터 품질 확인', `${at(item.at)} · ${reasonsFor(item.issues)}`);
-  for (const item of report.decisions || []) if (['SKIPPED', 'REJECTED'].includes(item.status)) event(riskTarget, `${item.symbol || ''} · 실행 보류`, `${at(item.at)} · ${textFor(item.reason)}`);
-  if (!riskTarget.hasChildNodes()) empty(riskTarget, '기록된 위험·품질 이벤트가 없습니다.');
+  const risk = report.current_risk;
+  const riskText = !risk ? '현재 상태: 확인 중' : risk.locks.length ? `현재 활성 잠금: ${reasonsFor(risk.locks)}` :
+    risk.entry_allowed ? '현재 상태: 정상 (신규 진입 가능 · 종목별 조건 적용)' : `현재 상태: ${textFor(risk.phase)} · 신규 진입 조건 확인 중`;
+  riskTarget.append(node('p', riskText, risk?.locks.length ? 'current-risk is-blocked' : 'current-risk'));
+  const history = [
+    ...(report.risk_events || []).map(item => ({at:item.at, title:textFor(item.phase), detail:`${at(item.at)} · ${item.locks.length ? reasonsFor(item.locks) : '위험 잠금 없음'}`})),
+    ...(report.quality_events || []).map(item => ({at:item.at, title:`${symbolLabel(item.symbol, item.name)} · 데이터 품질 확인`, detail:`${at(item.at)} · ${reasonsFor(item.issues)}`})),
+    ...(report.decisions || []).filter(item => ['SKIPPED', 'REJECTED'].includes(item.status)).map(item => ({at:item.at, title:`${symbolLabel(item.symbol, item.name)} · 실행 보류`, detail:`${at(item.at)} · ${textFor(item.reason)}`}))
+  ];
+  boundedEvents(riskTarget, history, 15, 'daytrade-prior-risk', '과거 품질·보류 기록 더 보기');
+  if (!history.length) riskTarget.append(node('p', '기록된 위험·품질 이벤트가 없습니다.', 'empty'));
   byId('daytrade-markdown').textContent = data.markdown || '리포트 원문이 없습니다.';
 }
 

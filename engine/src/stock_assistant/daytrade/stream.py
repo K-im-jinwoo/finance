@@ -8,6 +8,8 @@ Receive timestamps are explicit; a live callback may use caller-injected clocks.
 from __future__ import annotations
 
 from dataclasses import asdict
+from collections import Counter
+from datetime import timedelta
 import json
 from pathlib import Path
 
@@ -124,7 +126,12 @@ def _clean_record(row, index, quality):
         public = {"candles":[_only(bar, ("currency", "timestamp", "openPrice", "highPrice",
                                          "lowPrice", "closePrice", "volume")) for bar in rows]}
         normalize("candles", public, issuer=row["symbol"], **kwargs)
+        source = row.get("source", "TOSS_REST_CANDLES")
+        if source not in {"TOSS_REST_CANDLES", "TOSS_WS_COMPLETED_1M"}:
+            raise ValueError("known candle source required")
         clean.update(symbol=row["symbol"], payload={"result":public})
+        if source != "TOSS_REST_CANDLES":
+            clean["source"] = source
     elif kind == "rankings":
         result = _result(row["payload"])
         rows = result.get("rankings")
@@ -202,7 +209,7 @@ def _to_bot_event(row, rankings, risk_metadata):
             "source":"TOSS_WEBSOCKET", "payload":frame["data"], "received_monotonic":row["received_monotonic"]})
     elif kind == "candles":
         event.update(kind="MARKET", data={"feed":"candles", "symbol":row["symbol"],
-            "source":"TOSS_REST_CANDLES", "payload":row["payload"]["result"], "received_monotonic":row["received_monotonic"]})
+            "source":row.get("source", "TOSS_REST_CANDLES"), "payload":row["payload"]["result"], "received_monotonic":row["received_monotonic"]})
     elif kind == "rankings":
         rankings[row["ranking_type"]] = {"scope":"INTEGRATED_KR", **row["payload"]["result"]}
         for code, update in row.get("risk_meta", {}).items():
@@ -337,6 +344,207 @@ class LiveSessionBridge:
 
     def run(self, root):
         return run_observed_stream(self.to_stream(), root)
+
+
+class LiveCandleBuilder:
+    """Completed observed-trade bars; never invent coverage while unsubscribed.
+
+    End instants are minute-aligned. A partial initial/re-entry minute is omitted.
+    Zero-observed-trade bars use the last observed close only while subscribed.
+    A grace watermark allows bounded late frames before an immutable bar seals.
+    No provider sequence exists, so this is not a certified complete tape.
+    """
+    def __init__(self, *, max_bars=20, grace_seconds=0):
+        if type(max_bars) is not int or not 1 <= max_bars <= 20:
+            raise ValueError("one to twenty completed bars required")
+        monotonic_value(grace_seconds)
+        if grace_seconds > 30:
+            raise ValueError("bounded completion grace required")
+        self.max_bars, self.grace = max_bars, timedelta(seconds=grace_seconds)
+        self.day, self.states, self.counts = None, {}, Counter()
+
+    def _day(self, at):
+        day = at.astimezone(KST).date()
+        if self.day is not None and day < self.day:
+            raise ValueError("candle receive day cannot regress")
+        if day != self.day:
+            self.day, self.states = day, {}
+
+    @staticmethod
+    def _end(at):
+        return at.replace(second=0, microsecond=0) + timedelta(minutes=1)
+
+    def set_active(self, symbols, *, at):
+        received = instant(at)
+        self._day(received)
+        active = {symbol(code) for code in symbols}
+        for code in active:
+            state = self.states.setdefault(code, {"active":False, "bars":[], "pending":{},
+                "last_close":None, "observed_trades":0, "completed":0, "flat_bars":0})
+            if not state["active"]:
+                state.update(active=True, since=received, next_end=self._end(received), pending={})
+        for code, state in self.states.items():
+            if code not in active:
+                state["active"] = False
+
+    def update(self, frame, *, at):
+        received = instant(at)
+        self._day(received)
+        parts = frame.get("topic", "").split(":")
+        if frame.get("type") != "message" or len(parts) != 3 or parts[:2] != ["trade", "kr"]:
+            raise ValueError("public KR trade message required")
+        code, data = symbol(parts[2]), frame["data"]
+        if data.get("currency") != "KRW":
+            raise ValueError("KRW trade required")
+        stamp, price, volume = instant(data["timestamp"]), number(data["price"], positive=True), number(data["volume"])
+        self.counts["trade_frames_seen"] += 1
+        if stamp > received or stamp.astimezone(KST).date() != self.day:
+            self.counts["future_or_other_day"] += 1
+            return False
+        if code not in self.states:
+            self.set_active({c for c,s in self.states.items() if s["active"]} | {code}, at=received)
+        state = self.states[code]
+        end = self._end(stamp)
+        if not state["active"] or end < state["next_end"]:
+            self.counts["late_or_inactive"] += 1
+            return False
+        bucket = state["pending"].setdefault(end, {"first":stamp, "last":stamp,
+            "open":price, "high":price, "low":price, "close":price, "volume":0})
+        if stamp < bucket["first"]:
+            bucket.update(first=stamp, open=price)
+        if stamp >= bucket["last"]:
+            bucket.update(last=stamp, close=price)
+        bucket.update(high=max(bucket["high"],price), low=min(bucket["low"],price), volume=bucket["volume"]+volume)
+        state["observed_trades"] += 1
+        return True
+
+    def advance(self, *, at):
+        received = instant(at)
+        self._day(received)
+        watermark, changed = received - self.grace, {}
+        for code, state in self.states.items():
+            if not state["active"]:
+                continue
+            emitted = False
+            while state["next_end"] <= watermark:
+                end = state["next_end"]
+                bucket = state["pending"].pop(end, None)
+                state["next_end"] += timedelta(minutes=1)
+                partial = end - timedelta(minutes=1) < state["since"]
+                if bucket is not None:
+                    state["last_close"] = bucket["close"]
+                elif state["last_close"] is not None:
+                    price = state["last_close"]
+                    bucket = {"open":price,"high":price,"low":price,"close":price,"volume":0}
+                    state["flat_bars"] += 1
+                if partial:
+                    self.counts["partial_minutes_omitted"] += 1
+                    continue
+                if bucket is None:
+                    continue
+                bar = {"timestamp":end.isoformat(), "currency":"KRW", "volume":format(number(bucket["volume"]), "f"),
+                    **{raw:bucket[key] for key,raw in (("open","openPrice"),("high","highPrice"),("low","lowPrice"),("close","closePrice"))}}
+                state["bars"].append(json.loads(canonical(bar)))
+                state["bars"] = state["bars"][-self.max_bars:]
+                state["completed"] += 1
+                emitted = True
+            if emitted:
+                changed[code] = self.history(code)
+        return changed
+
+    def history(self, code):
+        return json.loads(canonical(self.states.get(code, {}).get("bars", [])))
+
+    def snapshot(self):
+        return {"source":"TOSS_WS_COMPLETED_1M", "counts":dict(self.counts),
+            "no_trade_basis":"ZERO_OBSERVED_TRADES_WHILE_SUBSCRIBED", "complete_tape":False,
+            "per_symbol":{code:{"active":s["active"], "bar_count":len(s["bars"]),
+                "completed":s["completed"], "observed_trades":s["observed_trades"],
+                "flat_bars":s["flat_bars"], "bars":self.history(code)} for code,s in self.states.items()}}
+
+
+def _orderbook_problem(data):
+    try:
+        sides = {}
+        for side in ("bids", "asks"):
+            rows = data[side]
+            if not isinstance(rows, list) or len(rows) > 100:
+                return "INVALID_ORDERBOOK"
+            sides[side] = [number(r["price"], positive=True) for r in rows if number(r["volume"]) > 0]
+        if not sides["bids"] or not sides["asks"]:
+            return "EMPTY_ORDERBOOK"
+        if max(sides["bids"]) >= min(sides["asks"]):
+            return "CROSSED_ORDERBOOK"
+    except (KeyError, TypeError, ValueError):
+        return "INVALID_ORDERBOOK"
+    return None
+
+
+class LiveFrameBuffer:
+    """Every observed trade feeds bars; only fresh latest prices reach SQLite."""
+    def __init__(self, candle_builder, *, trade_interval=.75, book_interval=.4, max_age_seconds=3.5):
+        for value in (trade_interval, book_interval, max_age_seconds):
+            monotonic_value(value)
+            if not value:
+                raise ValueError("positive frame cadence required")
+        self.candles = candle_builder
+        self.intervals = {"trade":trade_interval,"orderbook":book_interval}
+        self.max_age = max_age_seconds
+        self.latest, self.last_emit, self.newest_stamp, self.counts = {}, {}, {}, Counter()
+
+    def push(self, frame, *, at):
+        received = instant(at)
+        parts = frame.get("topic", "").split(":")
+        if frame.get("type") != "message" or len(parts) != 3 or parts[0] not in self.intervals or parts[1] != "kr":
+            raise ValueError("public trade/orderbook message required")
+        kind, code, data = parts[0], symbol(parts[2]), frame["data"]
+        if data.get("currency") != "KRW":
+            raise ValueError("KRW frame required")
+        self.counts["raw_" + kind] += 1
+        if data.get("timestamp") is None:
+            self.counts["MISSING_TIMESTAMP"] += 1
+            return False
+        if kind == "trade":
+            self.candles.update(frame, at=received)
+        else:
+            problem = _orderbook_problem(data)
+            if problem:
+                self.counts[problem] += 1
+                return False
+        stamp = instant(data["timestamp"])
+        age = (received - stamp).total_seconds()
+        if age < 0 or age > self.max_age:
+            self.counts["STALE_OR_FUTURE_FRAME"] += 1
+            return False
+        key = (kind, code)
+        if key in self.newest_stamp and self.newest_stamp[key] > stamp:
+            self.counts["OUT_OF_ORDER_PRICE"] += 1
+            return False
+        if key in self.latest:
+            self.counts["COALESCED"] += 1
+        self.newest_stamp[key] = stamp
+        self.latest[key] = (frame, stamp)
+        return True
+
+    def drain(self, *, at, monotonic, pending_symbols=()):
+        received = instant(at)
+        monotonic_value(monotonic)
+        frames = []
+        for key, (frame, stamp) in list(self.latest.items()):
+            kind, code = key
+            age = (received - stamp).total_seconds()
+            if age < 0 or age > self.max_age:
+                del self.latest[key]
+                self.counts["STALE_OR_FUTURE_FRAME"] += 1
+                continue
+            immediate = kind == "orderbook" and code in pending_symbols
+            if not immediate and monotonic - self.last_emit.get(key, -1e20) < self.intervals[kind]:
+                continue
+            frames.append(frame)
+            self.last_emit[key] = monotonic
+            del self.latest[key]
+            self.counts["emitted_" + kind] += 1
+        return frames
 
 
 class LivePaperSession(LiveSessionBridge):

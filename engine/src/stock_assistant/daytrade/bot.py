@@ -112,12 +112,13 @@ def scan_dataset(dataset, *, quotes=None):
 
 
 class _PaperSession:
-    def __init__(self, ledger, config, dataset_hash):
+    def __init__(self, ledger, config, dataset_hash, *, compact_live=False):
         self.ledger, self.config = ledger, config
         self.strategy = StrategyEngine(config.strategy_config)
         self.sequence = 0
         self.watches, self.books = {}, {}
         self.inactive = set()
+        self.compact_live, self.last_signal = compact_live, {}
         self.meta = {"profile": config.strategy_config.profile, "dataset_hash": dataset_hash,
                      "scan_history": [], "signals": [], "decisions": [], "equity_curve": []}
 
@@ -128,8 +129,13 @@ class _PaperSession:
             "kind": kind, "policy_version": self.config.policy_version, "data": data})
         state = self.ledger.state()
         equity = self.ledger.valuation(at)["equity"]
-        self.meta["equity_curve"].append({"at": instant(at).isoformat(), "equity": equity,
-            "phase": state["risk"]["phase"], "locks": sorted(state["risk"]["reasons"])})
+        point = {"at": instant(at).isoformat(), "equity": equity,
+            "phase": state["risk"]["phase"], "locks": sorted(state["risk"]["reasons"])}
+        curve = self.meta["equity_curve"]
+        if self.compact_live and curve and all(curve[-1][key] == point[key] for key in ("equity", "phase", "locks")):
+            curve[-1] = point
+        else:
+            curve.append(point)
         return event_id, result
 
     def decision(self, at, code, status, reason, **details):
@@ -207,7 +213,10 @@ class _PaperSession:
         return quantity
 
     def evaluate(self, at):
-        inventory, _, _ = trading_inventory(self.ledger.snapshot()["fills"])
+        # Strategy positions require fills only; avoid copying the entire event
+        # history into memory on every tick in a long-running live session.
+        fills = [json.loads(row[0]) for row in self.ledger.connection.execute("SELECT payload FROM paper_fills ORDER BY event_id")]
+        inventory, _, _ = trading_inventory(fills)
         positions = {code: {"quantity": item["quantity"], "average_price": item["cost"] / item["quantity"]}
                      for code, item in inventory.items() if item["quantity"]}
         for code in [*sorted(positions), *sorted(set(self.watches) - set(positions))]:
@@ -215,7 +224,15 @@ class _PaperSession:
             risk = RiskState.restore(self.ledger.state()["risk"])
             signal = self.strategy.evaluate(code, at, risk, positions, self.watches.get(code))
             record = {"at": instant(at).isoformat(), "symbol": code, **asdict(signal)}
-            self.meta["signals"].append(record)
+            prior = self.last_signal.get(code)
+            history = self.meta["signals"]
+            same_hold = (self.compact_live and signal.action == "HOLD" and prior is not None
+                and all(history[prior].get(key) == record.get(key) for key in ("action", "exit_reason", "reasons")))
+            if same_hold:
+                history[prior] = record
+            else:
+                self.last_signal[code] = len(history)
+                history.append(record)
             if signal.action == "HOLD":
                 continue
             if risk.phase == Phase.CLOSED:
@@ -248,6 +265,12 @@ class _PaperSession:
                 config=self.config.scanner_config, now=at, quotes=self.books,
                 risk_meta=data.get("risk_meta", risk_meta))
             self.watches = {r["symbol"]: r for r in scan.selected}
+            held = self.ledger.state()["positions"]
+            reasons = self.ledger.state()["risk"]["reasons"].get("DATA_DEGRADED", [])
+            for reason in list(reasons):
+                feed, separator, code = reason.partition(":")
+                if separator and feed in {"orderbook", "trade", "candles"} and code not in self.watches and code not in held:
+                    self.emit("RECOVER", {"lock":"DATA_DEGRADED", "reason":reason, "verified":True}, at)
             for key, intent in self.pending(side="BUY").items():
                 if intent["symbol"] not in self.watches:
                     self.inactive.add(key)
@@ -259,15 +282,27 @@ class _PaperSession:
             if normalized is not None and normalized.kind in {"candles", "trade", "orderbook"}:
                 normalized = _observation(event, self.config.quality, event_id=event_id)
                 self.strategy.on_event(normalized)
+                reason = f"{normalized.kind}:{normalized.symbol}"
+                if not normalized.issues and reason in self.ledger.state()["risk"]["reasons"].get("DATA_DEGRADED", []):
+                    self.emit("RECOVER", {"lock":"DATA_DEGRADED", "reason":reason, "verified":True}, at)
                 if normalized.kind == "orderbook":
                     self.books[normalized.symbol] = normalized
                     self.fill_pending(normalized, at)
+        if ("MARK_UNCERTAIN" in self.ledger.state()["risk"]["reasons"].get("DATA_DEGRADED", [])
+                and self.ledger.valuation(at)["status"] == "KNOWN"):
+            self.emit("RECOVER", {"lock":"DATA_DEGRADED", "reason":"MARK_UNCERTAIN", "verified":True}, at)
         self.evaluate(at)
 
-    def checkpoint(self, at):
+    def checkpoint(self, at, *, latest_only=False):
         # Persist structured diagnostics inside the existing generic CLOCK
         # envelope. Reopened reports need no sidecar or ledger schema changes.
         saved = json.loads(canonical({**self.meta, "inactive_intents": sorted(self.inactive)}))
+        if latest_only:
+            saved["_checkpoint_sequence"] = self.sequence
+            with self.ledger.connection:
+                self.ledger.connection.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", ("_bot_summary", canonical(saved)))
+            self.ledger.meta["_bot_summary"] = saved
+            return
         self.emit("CLOCK", {"_bot_summary": saved}, at)
 
     def run(self, events, risk_meta):

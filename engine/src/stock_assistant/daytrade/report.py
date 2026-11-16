@@ -84,6 +84,13 @@ def build_trading_report(ledger, *, scan_history=(), signals=(), simulation_meta
     events = [json.loads(row[5]) for row in snapshot["events"]]
     persisted = next((e["data"]["_bot_summary"] for e in reversed(events)
                       if "_bot_summary" in e["data"]), {})
+    latest_row = ledger.connection.execute("SELECT value FROM meta WHERE key='_bot_summary'").fetchone()
+    if latest_row:
+        latest = json.loads(latest_row[0])
+        event_sequence = next((row[1] for row in reversed(snapshot["events"])
+            if "_bot_summary" in json.loads(row[5])["data"]), -1)
+        if latest.get("_checkpoint_sequence", -1) >= event_sequence:
+            persisted = latest
     meta = simulation_meta if simulation_meta is not None else persisted or ledger.meta
     costs = ledger.meta["fixture_costs"]
     cost_status, cost_notice = _cost_policy(costs, meta)

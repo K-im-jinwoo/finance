@@ -377,7 +377,7 @@ class LivePaperSession(LiveSessionBridge):
                 self.ledger.connection.executemany("INSERT INTO meta VALUES(?,?)",
                     [(key, canonical(value)) for key,value in capability.items()])
             self.ledger.meta.update(json.loads(canonical(capability)))
-            self._runner = _PaperSession(self.ledger, config, digest(self.settings))
+            self._runner = _PaperSession(self.ledger, config, digest(self.settings), compact_live=True)
             self._runner.meta.update(capability)
         except Exception:
             self.ledger.close()
@@ -399,10 +399,9 @@ class LivePaperSession(LiveSessionBridge):
         self._source_hash = digest({"previous":self._source_hash, "event":clean})
         self._runner.meta["stream_provenance"].update(source_hash=self._source_hash, hash_basis="ORDERED_EVENT_CHAIN")
         self._runner.meta["dataset_hash"] = self._source_hash
-        self._runner.checkpoint(clean["at"])
+        self._runner.checkpoint(clean["at"], latest_only=True)
         self._session_ended = clean["kind"] == "end_session"
-        if (clean["kind"] == "rankings" and clean["ranking_type"] == "MARKET_TRADING_AMOUNT"
-                and self.ws_adapter is not None):
+        if clean["kind"] == "rankings" and self.ws_adapter is not None:
             # Preserve held names even when a fresh scan removes them: exits
             # still need quotes. Selected-only names are not execution approval.
             names = set(self._runner.watches) | set(self.ledger.state()["positions"])

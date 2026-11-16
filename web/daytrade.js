@@ -201,3 +201,6 @@ byId('daytrade-sample').addEventListener('click', async () => {
   } finally { setBusy(false); }
 });
 refresh();
+setInterval(() => {
+  if (current?.report && Object.values(current.report.sessions || {}).includes('OBSERVING')) refresh();
+}, 5000);

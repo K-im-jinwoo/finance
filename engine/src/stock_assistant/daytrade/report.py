@@ -7,6 +7,26 @@ import json
 from .contracts import KST, canonical, instant
 
 PROVISIONAL_COST_STATUS = "PROVISIONAL_DEV_UNAPPROVED"
+APPROVED_COST_STATUS = "APPROVED_CONSERVATIVE_V1"
+
+
+def _cost_policy(costs, meta):
+    status = PROVISIONAL_COST_STATUS if meta.get("cost_policy_status") == PROVISIONAL_COST_STATUS else "FIXTURE_ASSUMPTION"
+    if meta.get("cost_policy_status") == APPROVED_COST_STATUS:
+        # Check the immutable cost vector too: metadata alone cannot promote a
+        # custom/provisional ledger. Lazy import avoids the stream/report cycle.
+        from dataclasses import asdict
+        from .stream import approved_costs
+        if costs == asdict(approved_costs()):
+            status = APPROVED_COST_STATUS
+    if costs is None:
+        return status, "비용 기준 미설정 · 공식 요율 확인 불가"
+    prefix = f"매수 {costs['buy_fee_bps']}bps · 매도 {costs['sell_fee_bps']}bps · 매도세 {costs['sell_tax_bps']}bps · "
+    if status == APPROVED_COST_STATUS:
+        return status, prefix + ("승인된 보수적 표준안(산정 가정: KRX 1.5bps + 유관기관 제비용 ~0.4bps 여유 반영 · "
+                                "2026 일반주식 거래세 20bps) · 실주문 없음 · 실제 계좌 청구율과 다를 수 있습니다.")
+    label = "개발용 잠정 보수안" if status == PROVISIONAL_COST_STATUS else "합성 모의거래 비용 가정"
+    return status, prefix + label + " · 공식 요율 확정 전이며 실제 적용 요율이 아닙니다."
 
 
 def trading_inventory(fills):
@@ -64,12 +84,9 @@ def build_trading_report(ledger, *, scan_history=(), signals=(), simulation_meta
     events = [json.loads(row[5]) for row in snapshot["events"]]
     persisted = next((e["data"]["_bot_summary"] for e in reversed(events)
                       if "_bot_summary" in e["data"]), {})
-    meta = simulation_meta if simulation_meta is not None else persisted
+    meta = simulation_meta if simulation_meta is not None else persisted or ledger.meta
     costs = ledger.meta["fixture_costs"]
-    cost_status = PROVISIONAL_COST_STATUS if meta.get("cost_policy_status") == PROVISIONAL_COST_STATUS else "FIXTURE_ASSUMPTION"
-    cost_notice = (f"매수 {costs['buy_fee_bps']}bps · 매도 {costs['sell_fee_bps']}bps · 매도세 {costs['sell_tax_bps']}bps · "
-                   + ("개발용 잠정 보수안" if cost_status == PROVISIONAL_COST_STATUS else "합성 모의거래 비용 가정")
-                   + " · 공식 요율 확정 전이며 실제 적용 요율이 아닙니다.") if costs else "비용 기준 미설정 · 공식 요율 확인 불가"
+    cost_status, cost_notice = _cost_policy(costs, meta)
     scans = list(scan_history) if scan_history else meta.get("scan_history", [])
     signals = list(signals) if signals else meta.get("signals", [])
     curve = meta.get("equity_curve", [])
@@ -94,7 +111,8 @@ def build_trading_report(ledger, *, scan_history=(), signals=(), simulation_meta
                for row in snapshot["events"] if json.loads(row[6]).get("quality_issues")]
     report = {"mode": ledger.meta["mode"], "profile": meta.get("profile", "UNSPECIFIED"),
         "dataset_kind": "SYNTHETIC" if ledger.meta["synthetic"] else "OBSERVATION",
-        "orders_enabled": False, "paper_ready": False, "scope": "INTEGRATED_KR",
+        "orders_enabled": False, "paper_ready": bool(meta.get("paper_ready", False)) and cost_status == APPROVED_COST_STATUS,
+        "scope": "INTEGRATED_KR",
         "policy_version": ledger.meta["policy_version"], "seed": ledger.meta["replay_seed"],
         "fixture_costs": ledger.meta["fixture_costs"], "order_strength": "UNAVAILABLE", "tick_vwap": "UNAVAILABLE",
         "cost_policy_status": cost_status, "cost_policy_notice": cost_notice,
@@ -129,7 +147,7 @@ def render_markdown_report(report):
     account = report["account"]
     lines = ["# 당일 단타 오프라인 모의거래 리포트", "",
         f"모드: {report['mode']} / {report['profile']} / {report['dataset_kind']}", "",
-        "orders_enabled=false · PAPER_READY=false · KRX+NXT 통합 시세(INTEGRATED_KR)", "",
+        f"orders_enabled=false · PAPER_READY={str(report['paper_ready']).lower()} · KRX+NXT 통합 시세(INTEGRATED_KR)", "",
         "합성 데이터와 명시한 가정 비용을 사용한 결과입니다. 실거래 성과가 아닙니다. "
         "체결강도·틱 VWAP은 미제공이며 분봉 VWAP은 근사치입니다.", "",
         f"가정 비용: `{canonical(report['fixture_costs'])}` (bps, participation 비율, latency_ms 밀리초)", "",

@@ -9,7 +9,7 @@ from .contracts import canonical
 from .ledger import DaytradeLedger
 from .report import build_trading_report, render_markdown_report
 from .replay import replay_dataset
-from .stream import run_observed_stream
+from .stream import run_observed_stream, run_paper_ready_stream
 
 
 def _read(path):
@@ -28,7 +28,8 @@ def main(argv=None):
     scan.add_argument("input", type=Path)
     scan.add_argument("--quotes", type=Path)
     for command, help_text in (("simulate", "synthetic fixtures only; creates an isolated ledger"),
-                               ("run-stream", "offline public Toss stream; provisional development costs")):
+                               ("run-stream", "offline public Toss stream; provisional development costs"),
+                               ("run-paper-ready", "offline paper session; fixed approved costs, no real orders")):
         simulate = sub.add_parser(command, help=help_text)
         simulate.add_argument("input", type=Path)
         simulate.add_argument("--root", required=True, type=Path)
@@ -63,7 +64,8 @@ def main(argv=None):
             if (len({p.resolve() for p in outputs}) != len(outputs)
                     or any(p.exists() or p.resolve() in reserved or not p.parent.is_dir() for p in outputs)):
                 raise ValueError("distinct new report files in existing directories required")
-            runner = run_observed_stream if args.command == "run-stream" else run_paper_session
+            runner = {"run-stream":run_observed_stream, "run-paper-ready":run_paper_ready_stream,
+                      "simulate":run_paper_session}[args.command]
             report = runner(dataset, args.root)
             for path, content in ((args.report_md, render_markdown_report(report)),
                                    (args.report_json, canonical(report) + "\n")):

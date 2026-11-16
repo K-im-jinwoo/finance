@@ -266,6 +266,23 @@ class DaytradeDashboardTests(unittest.TestCase):
         self.assertIn('공식',result['markdown'])
         self.assertEqual(self.request('GET','/api/daytrade/report',authorized=True)[2],result)
 
+    def test_api_reads_approved_session_progress_without_writing(self):
+        from stock_assistant.daytrade.stream import LivePaperSession
+        source=json.loads((ROOT/'engine/tests/fixtures/daytrade_observed_stream_sample.json').read_text(encoding='utf-8'))
+        with LivePaperSession(self.root,websocket_slot_available=True) as session:
+            session.add(source['events'][0])
+            path=self.root/'.runtime/intraday-paper.sqlite3'
+            before=path.read_bytes()
+            status,_,result=self.request('GET','/api/daytrade/report',authorized=True)
+            self.assertEqual(status,200)
+            report=result['report']
+            self.assertTrue(report['paper_ready'])
+            self.assertFalse(report['orders_enabled'])
+            self.assertEqual(report['cost_policy_status'],'APPROVED_CONSERVATIVE_V1')
+            self.assertEqual(report['sessions'],{'2026-11-13':'OBSERVING'})
+            self.assertIn('PAPER_READY=true',result['markdown'])
+            self.assertEqual(before,path.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

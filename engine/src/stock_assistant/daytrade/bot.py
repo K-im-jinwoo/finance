@@ -239,36 +239,41 @@ class _PaperSession:
                 "quantity": quantity, "strategy_signal": asdict(signal)}, at)
             self.decision(at, code, "INTENT", signal.exit_reason or "VWAP_BREAKOUT", quantity=quantity)
 
-    def run(self, events, risk_meta):
-        last_at = None
-        for event in events:
-            at, data, kind = event["at"], event["data"], event["kind"]
-            last_at = at
-            if kind == "RANKINGS":
-                self.emit("CLOCK", {"input_id": event["id"]}, at)
-                scan = scan_rankings(data["turnover"], data.get("volume"),
-                    config=self.config.scanner_config, now=at, quotes=self.books,
-                    risk_meta=data.get("risk_meta", risk_meta))
-                self.watches = {r["symbol"]: r for r in scan.selected}
-                for key, intent in self.pending(side="BUY").items():
-                    if intent["symbol"] not in self.watches:
-                        self.inactive.add(key)
-                        self.decision(at, intent["symbol"], "SKIPPED", "CANDIDATE_REMOVED", intent_id=key)
-                self.meta["scan_history"].append({"at": instant(at).isoformat(), **asdict(scan)})
-            else:
-                normalized = _observation(event, self.config.quality) if kind == "MARKET" else None
-                event_id, _ = self.emit(kind, data, at)
-                if normalized is not None and normalized.kind in {"candles", "trade", "orderbook"}:
-                    normalized = _observation(event, self.config.quality, event_id=event_id)
-                    self.strategy.on_event(normalized)
-                    if normalized.kind == "orderbook":
-                        self.books[normalized.symbol] = normalized
-                        self.fill_pending(normalized, at)
-            self.evaluate(at)
+    def step(self, event, risk_meta=None):
+        """Advance one validated event using the same execution path as replay."""
+        at, data, kind = event["at"], event["data"], event["kind"]
+        if kind == "RANKINGS":
+            self.emit("CLOCK", {"input_id": event["id"]}, at)
+            scan = scan_rankings(data["turnover"], data.get("volume"),
+                config=self.config.scanner_config, now=at, quotes=self.books,
+                risk_meta=data.get("risk_meta", risk_meta))
+            self.watches = {r["symbol"]: r for r in scan.selected}
+            for key, intent in self.pending(side="BUY").items():
+                if intent["symbol"] not in self.watches:
+                    self.inactive.add(key)
+                    self.decision(at, intent["symbol"], "SKIPPED", "CANDIDATE_REMOVED", intent_id=key)
+            self.meta["scan_history"].append({"at": instant(at).isoformat(), **asdict(scan)})
+        else:
+            normalized = _observation(event, self.config.quality) if kind == "MARKET" else None
+            event_id, _ = self.emit(kind, data, at)
+            if normalized is not None and normalized.kind in {"candles", "trade", "orderbook"}:
+                normalized = _observation(event, self.config.quality, event_id=event_id)
+                self.strategy.on_event(normalized)
+                if normalized.kind == "orderbook":
+                    self.books[normalized.symbol] = normalized
+                    self.fill_pending(normalized, at)
+        self.evaluate(at)
+
+    def checkpoint(self, at):
         # Persist structured diagnostics inside the existing generic CLOCK
         # envelope. Reopened reports need no sidecar or ledger schema changes.
         saved = json.loads(canonical({**self.meta, "inactive_intents": sorted(self.inactive)}))
-        self.emit("CLOCK", {"_bot_summary": saved}, last_at)
+        self.emit("CLOCK", {"_bot_summary": saved}, at)
+
+    def run(self, events, risk_meta):
+        for event in events:
+            self.step(event, risk_meta)
+        self.checkpoint(events[-1]["at"])
         return build_trading_report(self.ledger)
 
 
@@ -281,7 +286,7 @@ def run_paper_session(dataset, root):
         costs=config.fixture_costs, replay_seed=config.seed)
     try:
         session = _PaperSession(ledger, config, digest(dataset))
-        for key in ("cost_policy_status", "stream_provenance"):
+        for key in ("cost_policy_status", "stream_provenance", "paper_ready"):
             if key in dataset:
                 session.meta[key] = dataset[key]
         return session.run(events, dataset.get("risk_meta"))

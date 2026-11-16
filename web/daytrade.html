@@ -3,7 +3,7 @@
 <body><main id="daytrade-view">
 <nav class="view-nav" aria-label="화면 선택"><a href="/">계산 검증 실험</a><a href="/hermes">Hermes 추천 모의계좌</a><a href="/daytrade" aria-current="page">당일 단타 모의계좌</a></nav>
 <header><div><p class="eyebrow">DAYTRADE / OFFLINE PAPER ACCOUNT</p><h1>당일의 신호를, 비용 반영 손익까지.</h1><p>종목 탐색 · 매수·매도 신호 · 모의 체결 결과</p></div><span class="badge">SYNTHETIC PAPER</span></header>
-<aside class="notice"><strong id="daytrade-mode">SYNTHETIC_PAPER_V1 · 오프라인 단타 모의거래</strong><span>orders_enabled=false · PAPER_READY=false · KRX+NXT 통합 시세</span><span id="daytrade-cost-policy">적용 비용은 샘플 생성 후 표시합니다. 공식 요율 확정 전 개발·검증 가정입니다.</span><span>합성 샘플과 가정 비용으로 계산합니다. 실거래 성과가 아닙니다. 체결강도·틱 VWAP은 미제공이며, 분봉 VWAP은 근사치입니다.</span></aside>
+<aside class="notice"><strong id="daytrade-mode">SYNTHETIC_PAPER_V1 · 오프라인 단타 모의거래</strong><span id="daytrade-flags">orders_enabled=false · PAPER_READY=false · KRX+NXT 통합 시세</span><span id="daytrade-cost-policy">적용 비용은 샘플 생성 후 표시합니다. 공식 요율 확정 전 개발·검증 가정입니다.</span><span>합성 샘플과 가정 비용으로 계산합니다. 실거래 성과가 아닙니다. 체결강도·틱 VWAP은 미제공이며, 분봉 VWAP은 근사치입니다.</span></aside>
 <section class="panel"><div class="section-head"><div><p class="eyebrow">LOCAL PAPER SESSION</p><h2>단타 모의계좌</h2><p id="daytrade-status" class="meta" role="status" aria-live="polite">로컬 결과를 확인하고 있습니다.</p></div><div class="actions"><button id="daytrade-refresh" type="button">새로고침</button><button id="daytrade-sample" type="button" disabled>오프라인 샘플 시뮬레이션 실행</button></div></div><p id="daytrade-error" role="alert"></p></section>
 <section id="daytrade-metrics" class="metrics daytrade-metrics" aria-label="단타 계좌 요약"></section>
 <section class="panel"><p class="eyebrow">SCANNER</p><h2>감시 종목 탐색</h2><div id="daytrade-scans"><p class="empty">원장이 생성되면 선정·제외 사유를 표시합니다.</p></div></section>

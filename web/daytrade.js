@@ -108,6 +108,7 @@ function render(data) {
   const status = byId('daytrade-status');
   byId('daytrade-error').textContent = '';
   if (!data.present) {
+    byId('daytrade-flags').textContent = 'orders_enabled=false · PAPER_READY=false · KRX+NXT 통합 시세';
     byId('daytrade-cost-policy').textContent = '적용 비용은 샘플 생성 후 표시합니다. 공식 요율 확정 전 개발·검증 가정입니다.';
     status.textContent = data.sample_available ? '아직 단타 원장이 없습니다. 샘플을 한 번 실행하면 결과를 확인할 수 있습니다.' : '아직 단타 원장이 없습니다. 실행할 샘플 데이터 파일도 찾을 수 없습니다.';
     byId('daytrade-metrics').replaceChildren();
@@ -120,6 +121,7 @@ function render(data) {
     return;
   }
   const report = data.report;
+  byId('daytrade-flags').textContent = `orders_enabled=false · PAPER_READY=${report.paper_ready === true} · KRX+NXT 통합 시세`;
   const account = report.account;
   const sessions = Object.entries(report.sessions);
   const sessionText = sessions.map(([, value]) => textFor(value)).join(' · ') || '관측 중';

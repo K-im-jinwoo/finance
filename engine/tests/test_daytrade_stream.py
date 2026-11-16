@@ -149,4 +149,136 @@ class StreamTests(unittest.TestCase):
             self.assertEqual(repeated.returncode,1)
 
 
+class PaperReadyTests(unittest.TestCase):
+    def stream(self):
+        stream=importlib.import_module('stock_assistant.daytrade.stream')
+        self.assertTrue(hasattr(stream,'LivePaperSession'), 'incremental paper session missing')
+        return stream
+
+    def read_report(self, root):
+        sys.path.insert(0,str(ROOT/'src'))
+        from research_dashboard.daytrade_bridge import read_daytrade_report
+        return read_daytrade_report(root)['report']
+
+    def test_approved_batch_costs_persist_but_provisional_cannot_claim_ready(self):
+        from dataclasses import asdict
+        stream=self.stream()
+        with tempfile.TemporaryDirectory() as folder:
+            report=stream.run_paper_ready_stream(sample(),folder)
+            self.assertTrue(report['paper_ready'])
+            self.assertEqual(report['cost_policy_status'],'APPROVED_CONSERVATIVE_V1')
+            self.assertEqual(report['fixture_costs']['version'],'STAGE5-APPROVED-CONSERVATIVE-V1')
+            self.assertEqual([f['fee'] for f in report['fills']],['398','398','420','397'])
+            self.assertEqual(Decimal(report['account']['net_pnl']),Decimal('93581.2040'))
+            self.assertFalse(report['orders_enabled'])
+            self.assertEqual(self.read_report(folder),report)
+        from stock_assistant.daytrade.bot import run_paper_session
+        from stock_assistant.daytrade.report import render_markdown_report
+        forged=stream.stream_to_dataset(sample())
+        forged.update(cost_policy_status='APPROVED_CONSERVATIVE_V1',paper_ready=True)
+        with tempfile.TemporaryDirectory() as folder:
+            report=run_paper_session(forged,folder)
+            self.assertFalse(report['paper_ready'])
+            self.assertNotEqual(report['cost_policy_status'],'APPROVED_CONSERVATIVE_V1')
+            self.assertIn('PAPER_READY=false',render_markdown_report(report))
+
+    def test_unapproved_overrides_and_unconfirmed_slot_never_create_ledger(self):
+        stream=self.stream()
+        for costs in ({'buy_fee_bps':'3.0'},{'sell_tax_bps':'0'},{'latency_ms':0}):
+            with tempfile.TemporaryDirectory() as folder:
+                data=sample(); data['fixture_costs']=costs
+                with self.assertRaises(ValueError): stream.run_paper_ready_stream(data,folder)
+                self.assertFalse((Path(folder)/'.runtime/intraday-paper.sqlite3').exists())
+        for flag in (False,None,1):
+            with tempfile.TemporaryDirectory() as folder:
+                with self.assertRaises(ValueError): stream.LivePaperSession(folder,websocket_slot_available=flag)
+                self.assertFalse((Path(folder)/'.runtime/intraday-paper.sqlite3').exists())
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(ValueError): stream.LivePaperSession(folder,websocket_slot_available=True,fixture_costs={'buy_fee_bps':'3'})
+            self.assertFalse((Path(folder)/'.runtime/intraday-paper.sqlite3').exists())
+            data=sample();data['orders_enabled']=True
+            with self.assertRaises(ValueError): stream.run_paper_ready_stream(data,folder)
+            self.assertFalse((Path(folder)/'.runtime/intraday-paper.sqlite3').exists())
+
+    def test_incremental_callbacks_publish_progress_and_refresh_subscriptions(self):
+        stream=self.stream()
+        adapter=WebSocketAdapter(FakeServer().connect,rng=random.Random(1))
+        with tempfile.TemporaryDirectory() as folder:
+            session=stream.LivePaperSession(folder,websocket_slot_available=True,ws_adapter=adapter,stream_kind='SYNTHETIC')
+            try:
+                self.assertTrue(self.read_report(folder)['paper_ready'])
+                for row in sample()['events']:
+                    kind=row['kind'];stamp={'at':row['at'],'received_monotonic':row['received_monotonic']}
+                    if kind=='session': session.on_session(normal_session_verified=True,**stamp)
+                    elif kind=='ws_frame': session.on_frame(row['frame'],**stamp)
+                    elif kind in {'rankings','candles'}:
+                        path='/api/v1/rankings' if kind=='rankings' else '/api/v1/candles'
+                        session.on_rest(path,{'status':'OK','payload':row['payload']},symbol=row.get('symbol'),
+                            ranking_type=row.get('ranking_type'),risk_meta=row.get('risk_meta'),**stamp)
+                    elif kind=='clock': session.on_clock(**stamp)
+                    else: session.close_session(**stamp)
+                    progress=self.read_report(folder)
+                    self.assertTrue(progress['paper_ready']);self.assertFalse(progress['orders_enabled'])
+                    if kind=='rankings' and row['ranking_type']=='MARKET_TRADING_AMOUNT':
+                        self.assertEqual(adapter.desired,{'trade:kr:005930','orderbook:kr:005930','trade:kr:000660','orderbook:kr:000660'})
+                        self.assertEqual(len(progress['scan_history']),1)
+                    if row['id']=='buy-profit':
+                        self.assertEqual(len(progress['fills']),1)
+                        self.assertEqual(progress['positions']['005930']['quantity'],181)
+                        self.assertEqual(progress['sessions'],{'2026-11-13':'OBSERVING'})
+                        ranked=deepcopy(next(e for e in sample()['events'] if e['kind']=='rankings' and e['ranking_type']=='MARKET_TRADING_AMOUNT'))
+                        ranked['risk_meta']['005930']={'halted':True}
+                        session.on_rest('/api/v1/rankings',{'status':'OK','payload':ranked['payload']},
+                            ranking_type='MARKET_TRADING_AMOUNT',risk_meta=ranked['risk_meta'],**stamp)
+                        self.assertIn('orderbook:kr:005930',adapter.desired)
+                self.assertEqual(Decimal(progress['account']['net_pnl']),Decimal('93581.2040'))
+                self.assertEqual(progress['account']['completed_trades'],2)
+                self.assertTrue(progress['audit']['cash_identity'])
+                self.assertEqual(session.report(),progress)
+                self.assertEqual(progress['sessions'],{'2026-11-13':'CLOSED'})
+                path=Path(folder)/'.runtime/intraday-paper.sqlite3';before=path.read_bytes()
+                with self.assertRaises(FileExistsError):stream.LivePaperSession(folder,websocket_slot_available=True)
+                self.assertEqual(before,path.read_bytes())
+            finally: session.close()
+
+    def test_degraded_response_locks_now_and_duplicate_callback_changes_nothing(self):
+        stream=self.stream()
+        with tempfile.TemporaryDirectory() as folder:
+            with stream.LivePaperSession(folder,websocket_slot_available=True) as session:
+                first=sample()['events'][0]
+                session.add(first)
+                path=Path(folder)/'.runtime/intraday-paper.sqlite3';before=path.read_bytes()
+                self.assertFalse(session.add(first));self.assertEqual(path.read_bytes(),before)
+                session.on_rest('/api/v1/rankings',{'status':'RATE_LIMIT_DEGRADED','entry_blocked':True},at='2026-11-13T09:00:01+09:00')
+                report=self.read_report(folder)
+                self.assertIn('RATE_LIMIT_DEGRADED',report['risk_events'][-1]['locks'])
+                self.assertFalse(report['fills'])
+                self.assertTrue(report['paper_ready'])
+
+    def test_paper_ready_cli_and_markdown_reopening(self):
+        self.stream()
+        environment=os.environ|{'PYTHONPATH':str(ROOT/'engine/src'),'PYTHONDONTWRITEBYTECODE':'1'}
+        with tempfile.TemporaryDirectory() as folder:
+            md=Path(folder)/'report.md';root=Path(folder)/'session'
+            result=subprocess.run([sys.executable,'-m','stock_assistant.daytrade','run-paper-ready',str(FIXTURE),'--root',str(root),'--report-md',str(md)],capture_output=True,encoding='utf-8',env=environment,timeout=30)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            report=json.loads(result.stdout)
+            self.assertTrue(report['paper_ready']);self.assertFalse(report['orders_enabled'])
+            self.assertIn('PAPER_READY=true',md.read_text(encoding='utf-8'))
+            self.assertIn('승인된 보수적 표준안',md.read_text(encoding='utf-8'))
+            self.assertEqual(self.read_report(root),report)
+
+    def test_live_export_keeps_approval_without_second_execution(self):
+        stream=self.stream()
+        with tempfile.TemporaryDirectory() as folder:
+            with stream.LivePaperSession(folder,websocket_slot_available=True) as session:
+                session.add(sample()['events'][0])
+                exported=session.to_dataset()
+                self.assertEqual(exported['cost_policy_status'],'APPROVED_CONSERVATIVE_V1')
+                self.assertTrue(exported['paper_ready'])
+                other=Path(folder)/'second-ledger'
+                with self.assertRaises(ValueError):session.run(other)
+                self.assertFalse(other.exists())
+
+
 if __name__=='__main__': unittest.main()

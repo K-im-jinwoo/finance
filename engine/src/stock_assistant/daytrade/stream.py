@@ -1,21 +1,23 @@
 """Public Toss format -> existing offline paper bot. This module opens no sockets.
 
 SYNTHETIC means fabricated source observations. RECORDED means caller-supplied
-captures; execution remains synthetic in both cases and never becomes PAPER_READY.
+captures; execution remains synthetic in both cases. PAPER_READY additionally
+requires the explicitly approved cost profile; it never enables real orders.
 Receive timestamps are explicit; a live callback may use caller-injected clocks.
 """
 from __future__ import annotations
 
 from dataclasses import asdict
 import json
+from pathlib import Path
 
 from . import POLICY_VERSION
-from .bot import run_paper_session
+from .bot import BotConfig, _PaperSession, run_paper_session
 from .contracts import KST, canonical, digest, identifier, instant, monotonic_value, number, symbol
-from .ledger import FixtureCosts
+from .ledger import DaytradeLedger, FixtureCosts
 from .market import QualityPolicy, normalize
 from .observation import rankings_event, runtime_sample, websocket_event
-from .report import PROVISIONAL_COST_STATUS
+from .report import APPROVED_COST_STATUS, PROVISIONAL_COST_STATUS, build_trading_report
 from .scanner import ScannerConfig, risk_reasons
 from .strategy import StrategyConfig
 
@@ -25,6 +27,27 @@ STREAM_FORMAT = "TOSS_PUBLIC_STREAM_V1"
 
 def provisional_costs():
     return FixtureCosts("STAGE4-DEV-CONSERVATIVE-V1", "2.0", "2.0", "20", "2", "0.5", 200)
+
+
+def approved_costs():
+    return FixtureCosts("STAGE5-APPROVED-CONSERVATIVE-V1", "2.0", "2.0", "20", "2", "0.5", 200)
+
+
+def _approved_settings(payload):
+    if not isinstance(payload, dict) or payload.get("orders_enabled", False) is not False:
+        raise ValueError("real orders are forbidden")
+    supplied = payload.get("fixture_costs", {})
+    if isinstance(supplied, FixtureCosts):
+        supplied = asdict(supplied)
+    expected = asdict(approved_costs())
+    try:
+        candidate = FixtureCosts(**(expected | supplied))
+    except (ValueError, TypeError):
+        raise ValueError("approved costs required") from None
+    if asdict(candidate) != expected:
+        raise ValueError("approved cost policy cannot be overridden")
+    # The provisional converter keeps its existing paper_ready=False boundary.
+    return {**payload, "fixture_costs":expected, "paper_ready":False}
 
 
 def provisional_quality():
@@ -168,6 +191,40 @@ def _configuration(payload):
     return source_kind, quality, costs, scanner, strategy
 
 
+def _to_bot_event(row, rankings, risk_metadata):
+    """Stateful snapshot merge shared by batch conversion and live callbacks."""
+    event = {key:row[key] for key in ("id", "sequence", "at")}
+    kind = row["kind"]
+    if kind == "ws_frame":
+        frame = row["frame"]
+        channel, _, code = frame["topic"].split(":")
+        event.update(kind="MARKET", data={"feed":channel, "symbol":code,
+            "source":"TOSS_WEBSOCKET", "payload":frame["data"], "received_monotonic":row["received_monotonic"]})
+    elif kind == "candles":
+        event.update(kind="MARKET", data={"feed":"candles", "symbol":row["symbol"],
+            "source":"TOSS_REST_CANDLES", "payload":row["payload"]["result"], "received_monotonic":row["received_monotonic"]})
+    elif kind == "rankings":
+        rankings[row["ranking_type"]] = {"scope":"INTEGRATED_KR", **row["payload"]["result"]}
+        for code, update in row.get("risk_meta", {}).items():
+            risk_metadata[code] = risk_metadata.get(code, {}) | update
+        turnover = rankings.get("MARKET_TRADING_AMOUNT")
+        if turnover is None:
+            event.update(kind="CLOCK", data={})
+        else:
+            event.update(kind="RANKINGS", data={"turnover":turnover,
+                "volume":rankings.get("MARKET_TRADING_VOLUME"), "risk_meta":dict(risk_metadata)})
+    elif kind == "runtime_status":
+        data = row["data"]
+        if data["status"] == "OK" and not data["entry_blocked"]:
+            event.update(kind="CLOCK", data={})
+        else:
+            lock = "RATE_LIMIT_DEGRADED" if data["status"]=="RATE_LIMIT_DEGRADED" else "DATA_DEGRADED"
+            event.update(kind="LOCK", data={"lock":lock, "reason":"HTTP:"+data["group"]})
+    else:
+        event.update(kind=kind.upper(), data=row["data"])
+    return event
+
+
 def stream_to_dataset(stream_payload):
     source_kind, quality, costs, scanner, strategy = _configuration(stream_payload)
     rows = stream_payload.get("events")
@@ -187,36 +244,7 @@ def stream_to_dataset(stream_payload):
             raise ValueError("stream time and sequence must advance")
         previous, seen[row["id"]] = pair, fingerprint
         cleaned.append(row)
-        event = {key:row[key] for key in ("id", "sequence", "at")}
-        kind = row["kind"]
-        if kind == "ws_frame":
-            frame = row["frame"]
-            channel, _, code = frame["topic"].split(":")
-            event.update(kind="MARKET", data={"feed":channel, "symbol":code,
-                "source":"TOSS_WEBSOCKET", "payload":frame["data"], "received_monotonic":row["received_monotonic"]})
-        elif kind == "candles":
-            event.update(kind="MARKET", data={"feed":"candles", "symbol":row["symbol"],
-                "source":"TOSS_REST_CANDLES", "payload":row["payload"]["result"], "received_monotonic":row["received_monotonic"]})
-        elif kind == "rankings":
-            rankings[row["ranking_type"]] = {"scope":"INTEGRATED_KR", **row["payload"]["result"]}
-            for code, update in row.get("risk_meta", {}).items():
-                risk_metadata[code] = risk_metadata.get(code, {}) | update
-            turnover = rankings.get("MARKET_TRADING_AMOUNT")
-            if turnover is None:
-                event.update(kind="CLOCK", data={})
-            else:
-                event.update(kind="RANKINGS", data={"turnover":turnover,
-                    "volume":rankings.get("MARKET_TRADING_VOLUME"), "risk_meta":dict(risk_metadata)})
-        elif kind == "runtime_status":
-            data = row["data"]
-            if data["status"] == "OK" and not data["entry_blocked"]:
-                event.update(kind="CLOCK", data={})
-            else:
-                lock = "RATE_LIMIT_DEGRADED" if data["status"]=="RATE_LIMIT_DEGRADED" else "DATA_DEGRADED"
-                event.update(kind="LOCK", data={"lock":lock, "reason":"HTTP:"+data["group"]})
-        else:
-            event.update(kind=kind.upper(), data=row["data"])
-        events.append(event)
+        events.append(_to_bot_event(row, rankings, risk_metadata))
     return {"dataset_kind":"SYNTHETIC", "initial_capital":stream_payload.get("initial_capital", "10000000"),
         "seed":stream_payload.get("seed", 42), "policy_version":stream_payload.get("policy_version", POLICY_VERSION),
         "quality":asdict(quality), "fixture_costs":asdict(costs), "scanner_config":asdict(scanner),
@@ -226,6 +254,12 @@ def stream_to_dataset(stream_payload):
 
 def run_observed_stream(stream_payload, root):
     return run_paper_session(stream_to_dataset(stream_payload), root)
+
+
+def run_paper_ready_stream(stream_payload, root):
+    dataset = stream_to_dataset(_approved_settings(stream_payload))
+    dataset.update(cost_policy_status=APPROVED_COST_STATUS, paper_ready=True)
+    return run_paper_session(dataset, root)
 
 
 class LiveSessionBridge:
@@ -250,6 +284,9 @@ class LiveSessionBridge:
 
     def add(self, record):
         clean = _clean_record(record, len(self._events), self.quality)
+        return self._capture(clean)
+
+    def _capture(self, clean):
         fingerprint = digest(clean)
         if clean["id"] in self._seen:
             if self._seen[clean["id"]] != fingerprint:
@@ -300,3 +337,109 @@ class LiveSessionBridge:
 
     def run(self, root):
         return run_observed_stream(self.to_stream(), root)
+
+
+class LivePaperSession(LiveSessionBridge):
+    """Incremental paper-only runner. Caller owns clocks and network adapters.
+
+    A true slot flag is required even though this object never connects. Each
+    callback commits a checkpoint before returning, so a separate read-only
+    dashboard connection can inspect the latest completed callback immediately.
+    """
+    orders_enabled = False
+    paper_ready = True
+
+    def __init__(self, root, *, websocket_slot_available=False, fixture_costs=None,
+                 ws_adapter=None, receive_clock=None, monotonic_clock=None, **settings):
+        if websocket_slot_available is not True:
+            raise ValueError("explicit websocket slot confirmation required")
+        options = _approved_settings({**settings, "fixture_costs":fixture_costs if fixture_costs is not None else {}})
+        options.pop("paper_ready")
+        super().__init__(receive_clock=receive_clock, monotonic_clock=monotonic_clock, **options)
+        source_kind, quality, costs, scanner, strategy = _configuration(self.settings)
+        config = BotConfig(self.settings.get("initial_capital", "10000000"),
+            self.settings.get("policy_version", POLICY_VERSION), self.settings.get("seed", 42),
+            quality, costs, scanner, strategy)
+        Path(root).mkdir(parents=True, exist_ok=True)
+        self.ledger = DaytradeLedger.create(root, initial_capital=config.initial_capital,
+            policy_version=config.policy_version, replay_seed=config.seed,
+            quality=config.quality, synthetic=True, costs=config.fixture_costs)
+        self.ws_adapter = ws_adapter
+        self._rankings, self._risk_metadata = {}, {}
+        self._closed = self._session_ended = False
+        self._source_hash = digest([])
+        try:
+            capability = {"cost_policy_status":APPROVED_COST_STATUS, "paper_ready":True,
+                "profile":strategy.profile, "stream_provenance":{"kind":source_kind, "format":STREAM_FORMAT}}
+            # Only this freshly-created isolated ledger gets the capability
+            # metadata. No fabricated wall-clock event and no existing DB edit.
+            with self.ledger.connection:
+                self.ledger.connection.executemany("INSERT INTO meta VALUES(?,?)",
+                    [(key, canonical(value)) for key,value in capability.items()])
+            self.ledger.meta.update(json.loads(canonical(capability)))
+            self._runner = _PaperSession(self.ledger, config, digest(self.settings))
+            self._runner.meta.update(capability)
+        except Exception:
+            self.ledger.close()
+            raise
+
+    def add(self, record):
+        if self._closed:
+            raise ValueError("paper session is closed")
+        clean = _clean_record(record, len(self._events), self.quality)
+        if clean["id"] in self._seen:
+            return self._capture(clean)
+        if self._session_ended:
+            raise ValueError("paper trading day has ended")
+        if clean["kind"] in {"ws_frame", "candles"} and clean["received_monotonic"] < self.ledger.state()["last_monotonic"]:
+            raise ValueError("observation monotonic time regressed")
+        self._capture(clean)
+        event = _to_bot_event(clean, self._rankings, self._risk_metadata)
+        self._runner.step(event)
+        self._source_hash = digest({"previous":self._source_hash, "event":clean})
+        self._runner.meta["stream_provenance"].update(source_hash=self._source_hash, hash_basis="ORDERED_EVENT_CHAIN")
+        self._runner.meta["dataset_hash"] = self._source_hash
+        self._runner.checkpoint(clean["at"])
+        self._session_ended = clean["kind"] == "end_session"
+        if (clean["kind"] == "rankings" and clean["ranking_type"] == "MARKET_TRADING_AMOUNT"
+                and self.ws_adapter is not None):
+            # Preserve held names even when a fresh scan removes them: exits
+            # still need quotes. Selected-only names are not execution approval.
+            names = set(self._runner.watches) | set(self.ledger.state()["positions"])
+            topics = {f"{channel}:kr:{code}" for channel in ("trade", "orderbook") for code in names}
+            self.ws_adapter.replace(topics, now=clean["received_monotonic"])
+        return True
+
+    def on_session(self, *, normal_session_verified=False, at=None, received_monotonic=None):
+        return self.add({"kind":"session", **self._receive(at, received_monotonic),
+                         "data":{"normal_session_verified":normal_session_verified}})
+
+    def on_clock(self, *, at=None, received_monotonic=None):
+        return self.add({"kind":"clock", **self._receive(at, received_monotonic)})
+
+    def close_session(self, *, at=None, received_monotonic=None):
+        return self.add({"kind":"end_session", **self._receive(at, received_monotonic)})
+
+    def report(self):
+        if self._closed:
+            raise ValueError("paper session is closed")
+        return build_trading_report(self.ledger)
+
+    def to_dataset(self):
+        dataset = super().to_dataset()
+        dataset.update(cost_policy_status=APPROVED_COST_STATUS, paper_ready=True)
+        return dataset
+
+    def run(self, root):
+        raise ValueError("LivePaperSession processes callbacks immediately; use report()")
+
+    def close(self):
+        if not self._closed:
+            self.ledger.close()
+            self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()

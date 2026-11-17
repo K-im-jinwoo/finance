@@ -1,0 +1,16 @@
+[Unit]
+Description=Loopback read-only paper dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/daytrade/current
+EnvironmentFile=/srv/daytrade/state/service.env
+ExecStart=/home/ubuntu/.hermes/hermes-agent/venv/bin/python -B /srv/daytrade/current/scripts/daytrade_dashboard.py --root /srv/daytrade/current --state-root /srv/daytrade/state --port 8765
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

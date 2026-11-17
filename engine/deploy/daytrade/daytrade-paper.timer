@@ -1,0 +1,10 @@
+[Unit]
+Description=Start daily paper collector at 08:55 KST
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:55:00 Asia/Seoul
+Persistent=true
+Unit=daytrade-paper.service
+
+[Install]
+WantedBy=timers.target

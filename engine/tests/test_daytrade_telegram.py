@@ -33,18 +33,20 @@ class TelegramFillTests(unittest.TestCase):
             'signal':{'score':100,'reasons':['VWAP_BREAKOUT','RISING_CLOSE','VOLUME_SPIKE','BID_DEPTH']}},
             symbol_names={'114800':'KODEX 인버스'},account={'cash':'8000398.2396','realized_pnl_net':'0'},positions={'114800':1534})
         for expected in ('🟢 [단타 모의체결 · 매수]','KODEX 인버스 (114800)','2026-11-16 11:42:04 KST',
-            '1,534주','1,303원 (1,303.2606원)','199만 9,202원','수수료 400원','분봉 근사 VWAP 돌파',
+            '1,534주','평균 체결가: 1,303원','199만 9,202원','수수료 400원','분봉 근사 VWAP 돌파',
             '조건 충족률 100%','800만 398원','보유 1종목','PAPER ONLY','실주문 없음'):
             self.assertIn(expected,text)
+        self.assertNotIn('.2606',text)
 
     def test_sell_message_includes_net_realized_costs_and_cumulative_profit(self):
         text=self.module().format_fill_telegram_message({'event_id':'fill-sell','symbol':'114800','side':'SELL',
             'at':'2026-11-16T02:55:42+00:00','quantity':1534,'gross':'2007604.3988','fee':'402','tax':'4015',
             'realized_pnl':'3585.6384','signal':{'exit_reason':'MOMENTUM_WEAK'}},
             symbol_names={'114800':'KODEX 인버스'},account={'cash':'10003585.6384','realized_pnl_net':'3585.6384'},positions={})
-        for expected in ('🔵 [단타 모의체결 · 매도]','1,309원','수수료 402원 · 세금 4,015원',
-                         '+3,586원 (+3,585.6384원)','청산 사유: 모멘텀 약화','1,000만 3,586원','누적 실현손익: +3,586원','보유 0종목'):
+        for expected in ('🔵 [단타 모의체결 · 매도]','평균 체결가: 1,309원','수수료 402원 · 세금 4,015원',
+                         '실현 순손익: +3,586원','청산 사유: 모멘텀 약화','1,000만 3,586원','누적 실현손익: +3,586원','보유 0종목'):
             self.assertIn(expected,text)
+        self.assertNotIn('.6384',text)
 
     def test_success_is_persistent_and_duplicate_runs_never_send_again(self):
         module=self.module();ledger,report=self.ledger();sent=[]

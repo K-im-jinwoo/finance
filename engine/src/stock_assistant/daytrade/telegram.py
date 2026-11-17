@@ -29,11 +29,11 @@ def _amount(value):
     return result
 
 
-def _won(value, *, signed=False, precise=False):
+def _won(value, *, signed=False):
     amount = _amount(value)
-    rounded = amount.quantize(Decimal("0.0001") if precise else Decimal(1), rounding=ROUND_HALF_UP)
+    rounded = amount.quantize(Decimal(1), rounding=ROUND_HALF_UP)
     prefix = "+" if signed and rounded > 0 else ""
-    return prefix + format(rounded, ",.4f" if precise else ",.0f") + "원"
+    return prefix + format(rounded, ",.0f") + "원"
 
 
 def _korean_won(value):
@@ -63,7 +63,7 @@ def format_fill_telegram_message(fill, *, symbol_names, account, positions):
     held = sum(amount > 0 for amount in positions.values())
     lines = ["🟢 [단타 모의체결 · 매수]" if side == "BUY" else "🔵 [단타 모의체결 · 매도]",
         f"종목: {name} ({code})", f"시각: {instant(fill['at']).astimezone(KST):%Y-%m-%d %H:%M:%S} KST",
-        f"수량: {quantity:,}주", f"평균 체결가: {_won(price)} ({_won(price, precise=True)})"]
+        f"수량: {quantity:,}주", f"평균 체결가: {_won(price)}"]
     fees = f"수수료 {_won(fill['fee'])}"
     if side == "BUY":
         lines.append(f"매수 금액: 약 {_korean_won(fill['gross'])} ({fees})")
@@ -75,7 +75,7 @@ def format_fill_telegram_message(fill, *, symbol_names, account, positions):
         lines.append(f"매도 금액: 약 {_korean_won(fill['gross'])} ({fees} · 세금 {_won(fill['tax'])})")
         pnl = fill.get("realized_pnl")
         lines.append("실현 순손익: 확인 불가" if pnl is None else
-                     f"실현 순손익: {_won(pnl, signed=True)} ({_won(pnl, signed=True, precise=True)})")
+                     f"실현 순손익: {_won(pnl, signed=True)}")
         reason = signal.get("exit_reason")
         lines.extend([f"청산 사유: {REASONS.get(reason, reason) or '확인 불가'}",
             f"체결 후 현금: {_korean_won(account['cash'])} · 누적 실현손익: {_won(account['realized_pnl_net'], signed=True)} (보유 {held}종목)"])

@@ -12,7 +12,8 @@
     "POST /v1/performance/evaluate",
     "GET /v1/performance/{report_id}",
     "POST /v1/journal/preview",
-    "EXEC /home/ubuntu/.hermes/profiles/stock-cio/scripts/stock-live-market-query.sh <1-5 symbols>"
+    "EXEC /home/ubuntu/.hermes/profiles/stock-cio/scripts/stock-live-market-query.sh <1-5 symbols>",
+    "MCP stock_experts / stock_expert_review <validated structured evidence>"
   ],
   "forbidden": ["/v1/orders", "direct WIKI write", "broker credentials"]
 }

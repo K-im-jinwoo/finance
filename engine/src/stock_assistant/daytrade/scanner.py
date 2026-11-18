@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
+import re
 
 from .contracts import KST, instant, number, symbol
 from .market import MarketEvent, QualityPolicy, normalize
@@ -26,6 +27,10 @@ class ScannerConfig:
     quote_max_age_seconds: int
     ranking_max_age_seconds: int
     max_watch: int = 10
+    require_common_stock: bool = False
+    max_price: str | Decimal | None = None
+    min_market_cap: str | Decimal | None = None
+    max_market_cap: str | Decimal | None = None
 
     def __post_init__(self):
         for key in ("min_price", "min_turnover", "max_spread_bps"):
@@ -35,12 +40,56 @@ class ScannerConfig:
                 raise ValueError("explicit non-negative freshness seconds required")
         if type(self.max_watch) is not int or not 1 <= self.max_watch <= 100:
             raise ValueError("max_watch must be between 1 and 100")
+        if type(self.require_common_stock) is not bool:
+            raise ValueError('explicit common-stock boolean required')
+        for key in ('max_price', 'min_market_cap', 'max_market_cap'):
+            if getattr(self,key) is not None:
+                object.__setattr__(self,key,number(getattr(self,key),positive=True))
+        if self.min_market_cap is not None and self.max_market_cap is not None and self.min_market_cap > self.max_market_cap:
+            raise ValueError('market-cap minimum exceeds maximum')
+
+
+def stock_reference_reasons(metadata, *, now):
+    """Fail closed for the live common-stock universe; raw fixtures remain usable."""
+    if not isinstance(metadata,dict):
+        return ['STOCK_METADATA_UNAVAILABLE']
+    if metadata.get('metadata_status','VERIFIED') != 'VERIFIED':
+        return ['STOCK_METADATA_UNAVAILABLE']
+    expires=metadata.get('metadata_valid_until')
+    if expires is not None and instant(expires) <= instant(now):
+        return ['STOCK_METADATA_STALE']
+    required=('market','securityType','isCommonShare','leverageFactor','status','name','koreanMarketDetail')
+    if any(key not in metadata for key in required):
+        return ['STOCK_METADATA_UNAVAILABLE']
+    if any(not isinstance(metadata[key],str) for key in ('name','market','securityType','status')):
+        return ['STOCK_METADATA_UNAVAILABLE']
+    if (metadata['market'] not in {'KOSPI','KOSDAQ'} or metadata['securityType'] != 'STOCK'
+            or metadata['isCommonShare'] is not True or metadata['leverageFactor'] is not None
+            or metadata['status'] != 'ACTIVE'):
+        return ['NOT_COMMON_STOCK']
+    if not isinstance(metadata['name'],str) or not metadata['name']:
+        return ['STOCK_METADATA_UNAVAILABLE']
+    # The provider has no dedicated SPAC classification in StockInfo.
+    if re.search(r'스팩|기업인수목적|\bSPAC\b',metadata['name'],re.IGNORECASE):
+        return ['SPAC_EXCLUDED']
+    detail=metadata['koreanMarketDetail']
+    if (not isinstance(detail,dict) or type(detail.get('liquidationTrading')) is not bool
+            or type(detail.get('krxTradingSuspended')) is not bool
+            or 'nxtTradingSuspended' not in detail and detail.get('nxtSupported') is not False
+            or detail.get('nxtTradingSuspended') is not None and type(detail.get('nxtTradingSuspended')) is not bool):
+        return ['STOCK_METADATA_UNAVAILABLE']
+    if detail['liquidationTrading']:
+        return ['DELISTING']
+    if detail['krxTradingSuspended'] or detail.get('nxtTradingSuspended') is True:
+        return ['HALTED']
+    return []
 
 
 @dataclass(frozen=True)
 class ScanResult:
     selected: list[dict]
     rejected: list[dict]
+    source_issues: tuple[str,...] = ()
 
 
 def risk_reasons(metadata):
@@ -175,6 +224,8 @@ def scan_rankings(turnover_snapshot, volume_snapshot=None, *, config, now,
                      if pair[0].source_timestamp else instant(pair[0].received_at_utc))
         metadata = risk_meta.get(code)
         reasons = snapshot_issues + list(risk_reasons(metadata))
+        if config.require_common_stock:
+            reasons.extend(stock_reference_reasons(metadata,now=at))
         book = orderbook_metrics(quotes.get(code), now=at,
                                 max_age_seconds=config.quote_max_age_seconds, issuer=code)
         if quotes.get(code) is not None:
@@ -184,6 +235,19 @@ def scan_rankings(turnover_snapshot, volume_snapshot=None, *, config, now,
             reasons.append("PRICE_UNAVAILABLE")
         elif price < config.min_price:
             reasons.append("LOW_PRICE")
+        elif config.max_price is not None and price > config.max_price:
+            reasons.append('HIGH_PRICE')
+        if config.min_market_cap is not None or config.max_market_cap is not None:
+            try:
+                cap=price*number((metadata or {}).get('sharesOutstanding'),positive=True) if price is not None else None
+            except (ValueError,TypeError):
+                cap=None
+            if cap is None:
+                reasons.append('MARKET_CAP_UNAVAILABLE')
+            elif config.min_market_cap is not None and cap < config.min_market_cap:
+                reasons.append('LOW_MARKET_CAP')
+            elif config.max_market_cap is not None and cap > config.max_market_cap:
+                reasons.append('HIGH_MARKET_CAP')
         amount = number(row["trading_amount"])
         if amount < config.min_turnover:
             reasons.append("LOW_TURNOVER")
@@ -201,14 +265,17 @@ def scan_rankings(turnover_snapshot, volume_snapshot=None, *, config, now,
             selection_reasons.append("VOLUME_RANKED")
         selection_reasons.append("QUOTE_ELIGIBLE" if not book["issues"] else "QUOTE_UNAVAILABLE_WATCH_ONLY")
         selection_reasons.append("RISK_METADATA_PROVIDED" if metadata is not None else "RISK_METADATA_UNAVAILABLE")
+        candidate_until=valid_until
+        if config.require_common_stock and metadata.get('metadata_valid_until'):
+            candidate_until=min(candidate_until,instant(metadata['metadata_valid_until'])) if candidate_until else instant(metadata['metadata_valid_until'])
         selected.append({"symbol": code, "name": row["name"] or (metadata or {}).get("name") or code,
             "rank_turnover": turnover.get(code, {}).get("rank"),
             "rank_volume": volume.get(code, {}).get("rank"), "turnover": amount,
             "spread_bps": spread, "selection_reasons": selection_reasons, "scope": SCOPE,
             "entry_blocked": bool(book["issues"]),
-            "valid_until": valid_until.isoformat() if valid_until is not None else None})
+            "valid_until": candidate_until.isoformat() if candidate_until is not None else None})
     selected.sort(key=lambda r: (-r["turnover"], r["rank_turnover"] or 101,
                                   r["rank_volume"] or 101, r["symbol"]))
     rejected.extend({"symbol": row["symbol"], "reason": "WATCH_LIMIT", "reasons": ["WATCH_LIMIT"]}
                     for row in selected[config.max_watch:])
-    return ScanResult(selected[:config.max_watch], sorted(rejected, key=lambda r: r["symbol"]))
+    return ScanResult(selected[:config.max_watch], sorted(rejected, key=lambda r: r["symbol"]),tuple(snapshot_issues))

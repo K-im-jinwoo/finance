@@ -77,6 +77,15 @@ class NewsArticle:
     timestamp_basis: str = "PROVIDER_PUBDATE"
 
 
+@dataclass(frozen=True, slots=True)
+class NewsPage:
+    articles: tuple[NewsArticle, ...]
+    total: int
+    start: int
+    raw_count: int
+    observed_at: datetime
+
+
 def normalize_naver_news(payload: dict, *, observed_at: datetime) -> list[NewsArticle]:
     """Keep search snippets and provider times; never fetch or certify article bodies."""
     if observed_at.tzinfo is None:
@@ -121,6 +130,35 @@ class NaverNewsClient:
         # Lazy import keeps the shared provider exception definitions independent.
         from ..news_cost import NewsApiBudget
         self._budget = budget if budget is not None else NewsApiBudget()
+        self._archive_remaining = 0
+
+    def archive_batch(self, calls: int):
+        self._budget.reserve(calls, at=self._clock())
+        self._archive_remaining = calls
+
+    def archive_page(self, *, query: str, start: int) -> NewsPage:
+        """Caller reserves one bounded batch before requesting its pages."""
+        if not isinstance(query, str) or not query.strip() or len(query) > 80 or type(start) is not int or not 1 <= start <= 1000:
+            raise ValueError("invalid archive query or start")
+        if self._archive_remaining < 1:
+            raise ValueError("archive page requires a budget reservation")
+        self._archive_remaining -= 1
+        try:
+            response = self._fetch_json(NAVER_NEWS_URL,
+                query={"query": query, "display": "100", "start": str(start), "sort": "date", "format": "json"},
+                headers={"X-NCP-APIGW-API-KEY-ID": self._client_id, "X-NCP-APIGW-API-KEY": self._client_secret}, timeout_seconds=10)
+        except (RateLimitError, AuthenticationError):
+            self._budget.halt_provider(at=self._clock())
+            raise
+        payload = response.payload
+        if (type(payload.get("total")) is not int or payload["total"] < 0
+                or payload.get("start") != start or not isinstance(payload.get("items"), list)):
+            raise UpstreamSchemaError("archive pagination metadata invalid")
+        observed = self._clock()
+        articles = tuple(normalize_naver_news(payload, observed_at=observed))
+        if any(a.published_at > observed for a in articles) or any(a.published_at < b.published_at for a, b in zip(articles, articles[1:])):
+            raise UpstreamSchemaError("archive dates are future or not descending")
+        return NewsPage(articles, payload["total"], start, len(payload["items"]), observed)
 
     def collect(self, *, observed_at: datetime, queries=DEFAULT_DISCOVERY_QUERIES,
                 display: int = 100) -> list[NewsArticle]:

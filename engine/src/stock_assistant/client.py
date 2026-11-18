@@ -75,6 +75,15 @@ class StockClient:
     def latest_report(self) -> dict[str, Any]:
         return self._request("GET", "/v1/reports/latest")["report"]
 
+    def latest_unified_report(self) -> dict[str, Any]:
+        return self._request('GET', '/v1/unified/reports/latest')['report']
+
+    def get_unified_report(self, report_id: str) -> dict[str, Any]:
+        import re
+        if not re.fullmatch(r'UR-[a-f0-9]{24}', report_id):
+            raise ValueError('unified report_id is invalid')
+        return self._request('GET', '/v1/unified/reports/' + report_id)['report']
+
     def list_holdings(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/holdings")["holdings"]
 

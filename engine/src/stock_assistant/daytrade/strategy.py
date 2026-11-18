@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from datetime import time
 from decimal import Decimal
 from statistics import median
+import re
 
 from .contracts import KST, canonical, instant, number, symbol as checked_symbol
 from .market import MarketEvent, bar_typical_vwap_approx
@@ -29,6 +30,9 @@ class StrategyConfig:
     take_profit_bps: str | Decimal
     stop_loss_bps: str | Decimal
     profile: str = "SYNTHETIC_PAPER_V1"
+    min_bid_notional: str | Decimal | None = None
+    entry_start_hhmm: str | None = None
+    min_hold_seconds_for_weak_exit: int | None = None
 
     def __post_init__(self):
         if self.profile != "SYNTHETIC_PAPER_V1":
@@ -43,6 +47,16 @@ class StrategyConfig:
         for value in (self.quote_max_age_seconds, self.candle_max_age_seconds):
             if type(value) is not int or value < 0:
                 raise ValueError("explicit non-negative freshness seconds required")
+        if self.min_bid_notional is not None:
+            object.__setattr__(self,'min_bid_notional',number(self.min_bid_notional,positive=True))
+        if self.entry_start_hhmm is not None:
+            if not isinstance(self.entry_start_hhmm,str) or re.fullmatch(r'\d{2}:\d{2}',self.entry_start_hhmm) is None:
+                raise ValueError('HH:MM entry start required')
+            hour,minute=map(int,self.entry_start_hhmm.split(':'))
+            if not time(9) <= time(hour,minute) < time(14,50):
+                raise ValueError('entry start must precede the market entry cutoff')
+        if self.min_hold_seconds_for_weak_exit is not None and (type(self.min_hold_seconds_for_weak_exit) is not int or self.min_hold_seconds_for_weak_exit < 0):
+            raise ValueError('nonnegative weak-exit grace required')
 
 
 @dataclass(frozen=True)
@@ -146,6 +160,12 @@ class StrategyEngine:
             "tick_vwap": "UNAVAILABLE", "bar_typical_vwap_approx": None,
             "volume_spike_ratio": None, "spread_bps": book["spread_bps"],
             "best_bid_volume": book["bid_volume"], "pnl_bps_gross": None}
+        notional=book['bid']*book['bid_volume'] if book['bid'] is not None and book['bid_volume'] is not None else None
+        raw_book=state.latest.get('orderbook') if state else None
+        bid_total=sum((number(v['volume']) for v in raw_book.data['bids']),Decimal(0)) if raw_book else 0
+        ask_total=sum((number(v['volume']) for v in raw_book.data['asks']),Decimal(0)) if raw_book else 0
+        indicators.update(best_bid_notional=notional,ask_bid_volume_ratio=ask_total/bid_total
+            if bid_total and raw_book.data['asks'] else None)
         quote_issues = list(book["issues"])
         if book["spread_bps"] is not None and book["spread_bps"] > config.max_spread_bps:
             quote_issues.append("WIDE_SPREAD")
@@ -179,6 +199,8 @@ class StrategyEngine:
         if state.day != local.date().isoformat():
             reasons.append("SESSION_DATE_MISMATCH")
         if not quantity:
+            if config.entry_start_hhmm is not None and clock < time.fromisoformat(config.entry_start_hhmm):
+                reasons.append('ENTRY_WINDOW_WARMUP')
             if (not risk_state.candidate_entry_allowed or not time(9) <= clock < time(14, 50)
                     or risk_state.session_date != local.date().isoformat()):
                 reasons.append("ENTRY_NOT_ALLOWED")
@@ -194,6 +216,8 @@ class StrategyEngine:
                     reasons.append("SCOPE_MISMATCH")
                 if candidate_meta.get("entry_blocked"):
                     reasons.append("CANDIDATE_ENTRY_BLOCKED")
+                if candidate_meta.get('warmup_until') and at < instant(candidate_meta['warmup_until']):
+                    reasons.append('SUBSCRIPTION_WARMUP')
                 reasons.extend(candidate_meta.get("issues", ()))
                 if "valid_until" in candidate_meta and (candidate_meta["valid_until"] is None
                         or at > instant(candidate_meta["valid_until"])):
@@ -228,11 +252,17 @@ class StrategyEngine:
         rising = number(bars[-1]["close"]) > number(bars[-2]["close"])
         if quantity:
             if price < vwap and number(bars[-1]["close"]) < number(bars[-2]["close"]):
+                entry=positions.get(symbol,{})
+                entered=entry.get('entry_at') if isinstance(entry,dict) else None
+                if config.min_hold_seconds_for_weak_exit and (entered is None or
+                        (at-instant(entered)).total_seconds() < config.min_hold_seconds_for_weak_exit):
+                    return signal(reasons=('MOMENTUM_WEAK_GRACE',))
                 return signal("SELL", ("MOMENTUM_WEAK",), "MOMENTUM_WEAK", 100)
             return signal(reasons=("POSITION_HELD",) if basis is not None else ("COST_BASIS_UNAVAILABLE",))
         checks = {"VWAP_BREAKOUT": price > vwap and number(bars[-2]["close"]) <= previous_approximate["value"],
                   "RISING_CLOSE": rising, "VOLUME_SPIKE": volume_ratio >= config.volume_spike_ratio,
-                  "BID_DEPTH": book["bid_volume"] >= config.min_bid_volume}
+                  "BID_DEPTH": book["bid_volume"] >= config.min_bid_volume and
+                    (config.min_bid_notional is None or notional is not None and notional >= config.min_bid_notional)}
         score = 25 * sum(checks.values())
         if all(checks.values()):
             return signal("BUY", tuple(checks), score=score)

@@ -33,6 +33,7 @@ class ApiResponse:
 class StockApi:
     SPECIALIST_ROLES = frozenset({"market", "fundamentals", "risk"})
     _REPORT_ROUTE = re.compile(r"^/v1/reports/(R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8})$")
+    _UNIFIED_ROUTE = re.compile(r"^/v1/unified/reports/(UR-[a-f0-9]{24}|latest)$")
     _PERFORMANCE_ROUTE = re.compile(r"^/v1/performance/(R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8})$")
 
     def __init__(
@@ -58,6 +59,8 @@ class StockApi:
         return None
 
     def _allowed(self, role: str, method: str, route: str) -> bool:
+        if method == "GET" and self._UNIFIED_ROUTE.fullmatch(route):
+            return role in self.SPECIALIST_ROLES | {"cio", "scheduler"}
         if role == "cio":
             return True
         if role in self.SPECIALIST_ROLES:
@@ -110,6 +113,23 @@ class StockApi:
             return ApiResponse(400, {"error": "invalid JSON body"})
 
         try:
+            unified_match = self._UNIFIED_ROUTE.fullmatch(route)
+            if unified_match is not None and method == 'GET':
+                import os
+                from .research_data import ResearchData
+                path = os.getenv('STOCK_UNIFIED_RESEARCH_DATABASE')
+                if not path or not Path(path).is_file():
+                    return ApiResponse(404, {'error': 'unified report not available'})
+                store = ResearchData(Path(path), source_database=self.repository.database_path, read_only=True)
+                now = datetime.now(timezone.utc)
+                if unified_match.group(1) == 'latest':
+                    record = store.latest('unified_report', 'ALL', as_of=now)
+                else:
+                    record = next((r for r in reversed(store.records('unified_report', 'ALL', as_of=now))
+                                   if r['payload']['report_id'] == unified_match.group(1)), None)
+                if not record:
+                    return ApiResponse(404, {'error': 'unified report not found'})
+                return ApiResponse(200, {'contract': 'UNIFIED_RESEARCH_V1', 'report': record['payload']})
             if route == "/v1/holdings" and method == "GET":
                 return ApiResponse(200, {"contract_version": "1.0", "holdings": to_json_value(self.repository.list_holdings())})
             if route == "/v1/holdings" and method == "POST":

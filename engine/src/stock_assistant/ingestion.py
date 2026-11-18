@@ -51,6 +51,15 @@ class KrxIngestionSummary:
     latest_trading_date: date | None
 
 
+class KrxDailyDataUnavailable(ValueError):
+    """Empty official data for a verified session, distinct from transport failure."""
+    code = 'KRX_DAILY_DATA_UNAVAILABLE'
+
+    def __init__(self, market: str, business_date: date):
+        self.market, self.business_date = market, business_date
+        super().__init__(f"KRX daily data unavailable: {market} {business_date}")
+
+
 class KrxHistoryIngestor:
     def __init__(
         self,
@@ -88,7 +97,7 @@ class KrxHistoryIngestor:
             if any(bar.trade_date != business_date for bar in snapshot.bars):
                 raise ValueError(f"KRX returned a different trade date for {market}")
             if require_complete and not snapshot.bars:
-                raise ValueError(f"KRX daily data unavailable: {market} {business_date}")
+                raise KrxDailyDataUnavailable(market, business_date)
             snapshots[market] = snapshot
         # Validate every market before saving any part of the day.
         for market, snapshot in snapshots.items():

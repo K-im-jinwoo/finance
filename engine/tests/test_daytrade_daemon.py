@@ -298,4 +298,68 @@ class DaemonTests(unittest.TestCase):
             self.assertEqual(session.ledger.meta['symbol_names']['005930'], '삼성전자')
 
 
+class DailySummaryDaemonTests(unittest.TestCase):
+    def test_market_close_writes_reports_then_sends_once_and_closed_restart_sends_nothing(self):
+        m = importlib.import_module('stock_assistant.daytrade.daemon')
+        with tempfile.TemporaryDirectory() as root:
+            calls = []
+            def send(text):
+                path = Path(root)/'daily/2026-11-17'
+                self.assertTrue((path/'report.md').is_file())
+                report = json.loads((path/'report.json').read_text(encoding='utf-8'))
+                self.assertEqual(report['sessions'], {'2026-11-17':'CLOSED'})
+                calls.append(text)
+                return {'status':'SENT','http_status':200}
+            s = m.open_or_resume_session(root, '2026-11-17', send_fn=send)
+            s.on_session(normal_session_verified=True, at='2026-11-17T09:10:00+09:00')
+            m.finish_session(s, None, at='2026-11-17T15:30:00+09:00', end='2026-11-17T15:30:00+09:00')
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(s.delivery_results, [{'session_date':'2026-11-17','status':'SENT','http_status':200}])
+            self.assertIsNone(m.open_or_resume_session(root, '2026-11-17', send_fn=send))
+            self.assertEqual(len(calls), 1)
+
+    def test_intraday_shutdown_never_claims_or_sends_daily_summary(self):
+        m = importlib.import_module('stock_assistant.daytrade.daemon')
+        with tempfile.TemporaryDirectory() as root:
+            s = m.open_or_resume_session(root, '2026-11-17', send_fn=lambda _: self.fail('intraday summary sent'))
+            s.on_session(normal_session_verified=True, at='2026-11-17T09:10:00+09:00')
+            m.finish_session(s, None, at='2026-11-17T15:29:59+09:00', end='2026-11-17T15:30:00+09:00')
+            s = m.open_or_resume_session(root, '2026-11-17')
+            try:
+                self.assertNotIn('telegram_daily_summary_v1', s.ledger.meta)
+                self.assertEqual(s.ledger.state()['sessions']['2026-11-17'], 'OBSERVING')
+            finally:
+                s.close()
+
+    def test_notification_failure_cannot_prevent_adapter_and_ledger_close(self):
+        m = importlib.import_module('stock_assistant.daytrade.daemon')
+        class Adapter:
+            socket = None
+            closed = False
+            def close(self): self.closed = True
+        for injected_error in (False, True):
+            with self.subTest(injected_error=injected_error), tempfile.TemporaryDirectory() as root:
+                def send(_): raise TimeoutError('sensitive-transport-secret')
+                s = m.open_or_resume_session(root, '2026-11-17', send_fn=send)
+                s.on_session(normal_session_verified=True, at='2026-11-17T09:10:00+09:00')
+                adapter = Adapter()
+                # A storage/notifier error and a caught transport failure both
+                # leave the shutdown path operational and do not leak messages.
+                from contextlib import nullcontext
+                injection = patch.object(m, 'notify_daily_summary', side_effect=RuntimeError('sensitive-storage-secret'), create=True) if injected_error else nullcontext()
+                with injection:
+                    m.finish_session(s, adapter, at='2026-11-17T15:31:00+09:00', end='2026-11-17T15:30:00+09:00')
+                self.assertTrue(adapter.closed)
+                self.assertEqual(s.notification_errors, 1)
+                self.assertNotIn('sensitive-', json.dumps(s.delivery_results))
+                from stock_assistant.daytrade.ledger import DaytradeLedger
+                other = DaytradeLedger(Path(root)/'daily/2026-11-17')
+                try:
+                    self.assertEqual(other.state()['sessions'], {'2026-11-17':'CLOSED'})
+                    self.assertTrue(other.audit()['cash_identity'])
+                    self.assertNotIn('sensitive-', json.dumps(list(other.connection.execute('SELECT * FROM meta'))))
+                finally:
+                    other.close()
+
+
 if __name__ == '__main__': unittest.main()

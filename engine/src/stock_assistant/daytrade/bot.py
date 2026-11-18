@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from collections import Counter
+from copy import deepcopy
 from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN
 import json
@@ -13,7 +15,7 @@ from .ledger import DaytradeLedger, FixtureCosts
 from .market import QualityPolicy, normalize
 from .report import build_trading_report, trading_inventory
 from .risk import RiskState, Phase
-from .scanner import ScannerConfig, orderbook_metrics, scan_rankings
+from .scanner import ScannerConfig, orderbook_metrics, scan_rankings, risk_reasons, stock_reference_reasons
 from .strategy import StrategyConfig, StrategyEngine
 
 
@@ -26,6 +28,8 @@ class BotConfig:
     fixture_costs: FixtureCosts
     scanner_config: ScannerConfig
     strategy_config: StrategyConfig
+    max_daily_entries: int | None = None
+    reentry_cooldown_seconds: int | None = None
 
     def __post_init__(self):
         number(self.initial_capital, positive=True)
@@ -35,6 +39,10 @@ class BotConfig:
                                 (self.scanner_config, ScannerConfig), (self.strategy_config, StrategyConfig)):
             if not isinstance(value, expected):
                 raise ValueError("explicit typed bot configuration required")
+        if self.max_daily_entries is not None and (type(self.max_daily_entries) is not int or self.max_daily_entries < 1):
+            raise ValueError('positive daily entry limit required')
+        if self.reentry_cooldown_seconds is not None and (type(self.reentry_cooldown_seconds) is not int or self.reentry_cooldown_seconds < 0):
+            raise ValueError('nonnegative reentry cooldown required')
 
     @classmethod
     def from_dataset(cls, dataset):
@@ -42,7 +50,8 @@ class BotConfig:
             raise ValueError("bot execution requires an explicit SYNTHETIC dataset")
         return cls(dataset["initial_capital"], dataset["policy_version"], dataset["seed"],
             QualityPolicy(**dataset["quality"]), FixtureCosts(**dataset["fixture_costs"]),
-            ScannerConfig(**dataset["scanner_config"]), StrategyConfig(**dataset["strategy_config"]))
+            ScannerConfig(**dataset["scanner_config"]), StrategyConfig(**dataset["strategy_config"]),
+            dataset.get('max_daily_entries'), dataset.get('reentry_cooldown_seconds'))
 
 
 def _events(dataset):
@@ -118,6 +127,9 @@ class _PaperSession:
         self.sequence = 0
         self.watches, self.books = {}, {}
         self.inactive = set()
+        self.subscription_symbols=None  # None retains the offline replay contract.
+        self.critical_sequence=0
+        self.ranking_source_issues=()
         self.compact_live, self.last_signal = compact_live, {}
         self.meta = {"profile": config.strategy_config.profile, "dataset_hash": dataset_hash,
                      "scan_history": [], "signals": [], "decisions": [], "equity_curve": []}
@@ -127,6 +139,8 @@ class _PaperSession:
         event_id = f"bot-{self.sequence:08d}"
         result = self.ledger.apply({"id": event_id, "sequence": self.sequence, "at": at,
             "kind": kind, "policy_version": self.config.policy_version, "data": data})
+        if kind in {'INTENT','FILL'}:
+            self.critical_sequence=self.sequence
         state = self.ledger.state()
         equity = self.ledger.valuation(at)["equity"]
         point = {"at": instant(at).isoformat(), "equity": equity,
@@ -155,6 +169,11 @@ class _PaperSession:
                 self.decision(at, book.symbol, "SKIPPED", "BUY_REMAINDER_ENTRY_BLOCKED", intent_id=key)
                 continue
             if intent["side"] == "BUY":
+                blocked=self.entry_block_reason(book.symbol,at,reserved_intent=key)
+                if blocked:
+                    self.inactive.add(key)
+                    self.decision(at,book.symbol,'SKIPPED',blocked,intent_id=key)
+                    continue
                 candidate = self.watches.get(book.symbol)
                 if (candidate is None or candidate["entry_blocked"] or candidate["valid_until"] is None
                         or instant(at) > instant(candidate["valid_until"])):
@@ -165,6 +184,10 @@ class _PaperSession:
                     max_age_seconds=self.config.strategy_config.quote_max_age_seconds, issuer=book.symbol)
                 if metrics["issues"] or metrics["spread_bps"] > self.config.strategy_config.max_spread_bps:
                     self.decision(at, book.symbol, "SKIPPED", "BUY_FILL_QUOTE_QUALITY", intent_id=key)
+                    continue
+                minimum=self.config.strategy_config.min_bid_notional
+                if minimum is not None and metrics['bid']*metrics['bid_volume'] < minimum:
+                    self.decision(at,book.symbol,'SKIPPED','BUY_FILL_QUOTE_DEPTH',intent_id=key)
                     continue
             earliest = instant(intent["at"]) + timedelta(milliseconds=self.config.fixture_costs.latency_ms)
             if (book.issues or book.source_timestamp is None or instant(book.source_timestamp) < earliest
@@ -212,6 +235,52 @@ class _PaperSession:
             quantity -= 1
         return quantity
 
+    def entry_history(self, at):
+        """Reconstruct entry reservations and full exits from committed paper data."""
+        day=instant(at).astimezone(KST).date()
+        filled,quantities,entered,last_flat=set(),{},{},{}
+        for raw, in self.ledger.connection.execute('SELECT f.payload FROM paper_fills f JOIN events e ON e.id=f.event_id ORDER BY e.sequence'):
+            fill=json.loads(raw)
+            if instant(fill['at'])>instant(at):
+                continue
+            code,qty=fill['symbol'],fill['quantity']
+            previous=quantities.get(code,0)
+            if fill['side']=='BUY':
+                if instant(fill['at']).astimezone(KST).date()==day:
+                    filled.add(fill['intent_id'])
+                if previous==0:
+                    entered[code]=fill['at']
+                quantities[code]=previous+qty
+            else:
+                quantities[code]=previous-qty
+                if quantities[code]==0:
+                    last_flat[code]=fill['at']
+                    entered.pop(code,None)
+        reserved={key for key,value in self.pending(side='BUY').items()
+            if instant(value['at']).astimezone(KST).date()==day and instant(value['at'])<=instant(at)}
+        return {'filled_entries':len(filled),'filled_intents':sorted(filled),
+            'reserved_intents':sorted(reserved-filled),'used_entries':len(filled|reserved),
+            'entered_at':entered,'last_flat_at':last_flat}
+
+    def entry_block_reason(self, code, at, *, reserved_intent=None):
+        issues=self.watches.get(code,{}).get('issues',())
+        if issues:
+            return 'STALE_RANKINGS' if 'STALE_RANKINGS' in issues else 'RANKINGS_UNAVAILABLE'
+        if self.subscription_symbols is not None and code not in self.subscription_symbols:
+            return 'NOT_SUBSCRIBED'
+        history=self.entry_history(at)
+        last=history['last_flat_at'].get(code)
+        if self.config.reentry_cooldown_seconds and last is not None and (
+                instant(at)-instant(last)).total_seconds() < self.config.reentry_cooldown_seconds:
+            return 'REENTRY_COOLDOWN'
+        limit=self.config.max_daily_entries
+        if limit is not None:
+            used=history['used_entries']
+            owns=reserved_intent in history['filled_intents']+history['reserved_intents']
+            if used > limit or used==limit and not owns:
+                return 'DAILY_ENTRY_LIMIT'
+        return None
+
     def evaluate(self, at):
         # Strategy positions require fills only; avoid copying the entire event
         # history into memory on every tick in a long-running live session.
@@ -219,6 +288,12 @@ class _PaperSession:
         inventory, _, _ = trading_inventory(fills)
         positions = {code: {"quantity": item["quantity"], "average_price": item["cost"] / item["quantity"]}
                      for code, item in inventory.items() if item["quantity"]}
+        history=self.entry_history(at)
+        for code,position in positions.items():
+            position['entry_at']=history['entered_at'].get(code)
+        if self.config.max_daily_entries is not None or self.config.reentry_cooldown_seconds is not None:
+            self.meta['entry_controls']={**history,'max_daily_entries':self.config.max_daily_entries,
+                'reentry_cooldown_seconds':self.config.reentry_cooldown_seconds}
         for code in [*sorted(positions), *sorted(set(self.watches) - set(positions))]:
             # Risk can change after each generated intent/fill; never cache it.
             risk = RiskState.restore(self.ledger.state()["risk"])
@@ -248,6 +323,10 @@ class _PaperSession:
             else:
                 if self.pending(code=code, side="BUY") or self.pending(code=code, side="SELL"):
                     continue
+                blocked=self.entry_block_reason(code,at)
+                if blocked:
+                    self.decision(at,code,'SKIPPED',blocked)
+                    continue
                 quantity = self.buy_quantity(code, at) if risk.candidate_entry_allowed else 0
                 if quantity < 1:
                     self.decision(at, code, "SKIPPED", "CAPITAL_OR_POSITION_LIMIT")
@@ -255,6 +334,42 @@ class _PaperSession:
             _, result = self.emit("INTENT", {"symbol": code, "side": signal.action,
                 "quantity": quantity, "strategy_signal": asdict(signal)}, at)
             self.decision(at, code, "INTENT", signal.exit_reason or "VWAP_BREAKOUT", quantity=quantity)
+        self.trim_live_history()
+
+    def trim_live_history(self, *, signal_limit=200, scan_limit=20):
+        """Bound replaceable live diagnostics; events/fills and offline history stay intact."""
+        if not self.compact_live:
+            return
+        scans=self.meta['scan_history'][-scan_limit:]
+        for scan in scans:
+            rejected=scan.get('rejected',[])
+            if len(rejected)>5:
+                scan['rejected_count']=len(rejected)
+                scan['rejected_counts']=dict(Counter(r['reason'] for r in rejected))
+                scan['rejected']=rejected[:5]
+        self.meta['scan_history']=scans
+        signals=self.meta['signals']
+        latest={row['symbol']:i for i,row in enumerate(signals)}
+        indexes=list(latest.values())
+        if len(indexes)>200:
+            indexes=sorted(indexes,key=lambda i:(instant(signals[i]['at']),i))[-200:]
+        chosen=set(indexes)
+        signal_limit=max(signal_limit,len(chosen))
+        for i in range(len(signals)-1,-1,-1):
+            if len(chosen)>=signal_limit:break
+            chosen.add(i)
+        self.meta['signals']=[signals[i] for i in sorted(chosen)]
+        self.last_signal={row['symbol']:i for i,row in enumerate(self.meta['signals'])}
+        self.meta['decisions']=self.meta['decisions'][-100:]
+        curve=self.meta['equity_curve']
+        if len(curve)>64:
+            tail=curve[-63:]
+            # Preserve honest drawdown uncertainty after diagnostic history truncation.
+            marker={**tail[0],'equity':None,'diagnostic_truncation':True}
+            curve=[marker]+tail
+        self.meta['equity_curve']=curve
+        self.meta['diagnostic_retention']={'scan_history':scan_limit,'signals':signal_limit,
+            'rejected_per_scan':5,'decisions':100,'equity_curve':64,'live_only':True}
 
     def refresh_watch_quote(self, book, at):
         candidate = self.watches.get(book.symbol)
@@ -262,7 +377,7 @@ class _PaperSession:
             return
         metrics = orderbook_metrics(book, now=at,
             max_age_seconds=self.config.scanner_config.quote_max_age_seconds, issuer=book.symbol)
-        eligible = not metrics["issues"] and metrics["spread_bps"] <= self.config.scanner_config.max_spread_bps
+        eligible = not metrics["issues"] and metrics["spread_bps"] <= self.config.scanner_config.max_spread_bps and not candidate.get('issues')
         candidate.update(spread_bps=metrics["spread_bps"] if not metrics["issues"] else None,
                          entry_blocked=not eligible)
         reasons = [reason for reason in candidate["selection_reasons"]
@@ -297,11 +412,26 @@ class _PaperSession:
             scan = scan_rankings(data["turnover"], data.get("volume"),
                 config=self.config.scanner_config, now=at, quotes=active_quotes,
                 risk_meta=data.get("risk_meta", risk_meta))
+            self.ranking_source_issues=scan.source_issues
+            previous=self.watches
             self.watches = {r["symbol"]: r for r in scan.selected}
+            if self.compact_live and not scan.selected and scan.source_issues:
+                # A stale source is not evidence that an otherwise valid watch
+                # should lose its subscription and accumulated warm-up coverage.
+                extra={r['symbol']:set(r['reasons'])-set(scan.source_issues) for r in scan.rejected}
+                metadata=data.get('risk_meta',risk_meta) or {}
+                for code in previous:
+                    adverse=list(risk_reasons(metadata.get(code)))
+                    if self.config.scanner_config.require_common_stock:
+                        adverse.extend(stock_reference_reasons(metadata.get(code),now=at))
+                    if adverse:extra.setdefault(code,set()).update(adverse)
+                self.watches={code:{**row,'issues':list(scan.source_issues),'entry_blocked':True}
+                    for code,row in previous.items() if not extra.get(code)}
             for key, intent in self.pending(side="BUY").items():
-                if intent["symbol"] not in self.watches:
+                stale=self.watches.get(intent['symbol'],{}).get('issues')
+                if intent["symbol"] not in self.watches or stale:
                     self.inactive.add(key)
-                    self.decision(at, intent["symbol"], "SKIPPED", "CANDIDATE_REMOVED", intent_id=key)
+                    self.decision(at, intent["symbol"], "SKIPPED", 'STALE_RANKINGS' if stale else "CANDIDATE_REMOVED", intent_id=key)
             self.meta["scan_history"].append({"at": instant(at).isoformat(), **asdict(scan)})
         else:
             normalized = _observation(event, self.config.quality) if kind == "MARKET" else None
@@ -326,13 +456,21 @@ class _PaperSession:
     def checkpoint(self, at, *, latest_only=False):
         # Persist structured diagnostics inside the existing generic CLOCK
         # envelope. Reopened reports need no sidecar or ledger schema changes.
-        saved = json.loads(canonical({**self.meta, "inactive_intents": sorted(self.inactive)}))
         if latest_only:
+            self.trim_live_history()
+            saved=deepcopy({**self.meta,'inactive_intents':sorted(self.inactive)})
             saved["_checkpoint_sequence"] = self.sequence
+            payload=canonical(saved)
+            for signals,scans in ((100,10),(50,5)):
+                if not self.compact_live or len(payload.encode('utf-8'))<=190000:break
+                self.trim_live_history(signal_limit=signals,scan_limit=scans)
+                saved=deepcopy({**self.meta,'inactive_intents':sorted(self.inactive),'_checkpoint_sequence':self.sequence})
+                payload=canonical(saved)
             with self.ledger.connection:
-                self.ledger.connection.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", ("_bot_summary", canonical(saved)))
+                self.ledger.connection.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", ("_bot_summary", payload))
             self.ledger.meta["_bot_summary"] = saved
             return
+        saved = json.loads(canonical({**self.meta, "inactive_intents": sorted(self.inactive)}))
         self.emit("CLOCK", {"_bot_summary": saved}, at)
 
     def run(self, events, risk_meta):

@@ -1,5 +1,6 @@
 """Offline notification contracts; senders are injected and never use Telegram."""
 from decimal import Decimal
+from copy import deepcopy
 import importlib
 import importlib.util
 import json
@@ -107,6 +108,136 @@ class TelegramFillTests(unittest.TestCase):
         self.assertTrue(all(r['status']=='FAILED' and r['http_status']==429 for r in result))
         self.assertNotIn('sensitive-transport-value',json.dumps(result))
         self.assertEqual(module.notify_new_fills(ledger,lambda text:self.fail('must not retry an attempted send')),[])
+
+
+class TelegramDailySummaryTests(unittest.TestCase):
+    module = TelegramFillTests.module
+    ledger = TelegramFillTests.ledger
+
+    def summary(self, report, **kwargs):
+        function = getattr(self.module(), 'format_daily_summary_telegram_message', None)
+        self.assertTrue(callable(function), 'daily summary formatter missing')
+        return function(report, **kwargs)
+
+    def notify(self, ledger, report, send, **kwargs):
+        function = getattr(self.module(), 'notify_daily_summary', None)
+        self.assertTrue(callable(function), 'daily summary notifier missing')
+        return function(ledger, report, send, **kwargs)
+
+    def report(self):
+        return {'account': {'initial_capital':'1000000', 'cash':'1001234.5',
+                    'final_equity':'1001234.5', 'valuation_status':'KNOWN',
+                    'realized_pnl_net':'1234.5', 'return_pct':'0.12345'},
+            'sessions': {'2026-11-17':'CLOSED'}, 'positions': {},
+            'symbol_names': {'005930':'삼성전자', '000660':'SK하이닉스'},
+            'fills': [
+                {'symbol':'005930','side':'BUY','quantity':10,'fee':'5.2','tax':'0','realized_pnl':None},
+                {'symbol':'005930','side':'SELL','quantity':10,'fee':'5.2','tax':'100.1','realized_pnl':'1500'},
+                {'symbol':'000660','side':'BUY','quantity':5,'fee':'5.2','tax':'0','realized_pnl':None},
+                {'symbol':'000660','side':'SELL','quantity':5,'fee':'5.2','tax':'100.1','realized_pnl':'-265.5'}],
+            'completed_trades': [{'symbol':'005930','buy_quantity':10,'realized_pnl':'1500'},
+                                 {'symbol':'000660','buy_quantity':5,'realized_pnl':'-265.5'}]}
+
+    def test_summary_reports_hand_checked_net_return_costs_and_symbol_quantities(self):
+        report = self.report(); before = deepcopy(report)
+        text = self.summary(report)
+        for expected in ('📊 [단타 모의거래 · 일일 마감 요약]', '2026-11-17', 'CLOSED',
+                '1,000,000원', '1,001,235원', '+1,235원', '+0.12%',
+                '수수료 21원', '세금 200원', '완결 거래 2건', '승 1', '패 1', '체결 4건',
+                '삼성전자 (005930)', '매수 10주', '매도 10주', 'SK하이닉스 (000660)', '-266원'):
+            self.assertIn(expected, text)
+        self.assertEqual(report, before)
+        self.assertTrue(text.endswith('※ 모의거래(PAPER ONLY) · 실주문 없음'))
+
+    def test_zero_fills_and_unflattened_or_held_unknown_valuation_are_explicit(self):
+        report = self.report(); report['fills'] = []; report['completed_trades'] = []
+        report['account']['realized_pnl_net'] = '0'
+        self.assertIn('오늘 체결된 거래가 없습니다.', self.summary(report))
+        for state, positions in [('UNFLATTENED', {}), ('CLOSED', {'005930':{'quantity':10,'cost':'10000'}})]:
+            with self.subTest(state=state):
+                report['sessions']['2026-11-17'] = state; report['positions'] = positions
+                report['account'].update(valuation_status='UNKNOWN', final_equity=None)
+                text = self.summary(report)
+                self.assertTrue(text.startswith('⚠️ [단타 모의거래 · 미청산 마감 경고]'))
+                self.assertIn('평가 불확실', text)
+                self.assertNotIn('None', text)
+
+    def test_many_symbols_are_bounded_with_omission_count_and_footer(self):
+        report = self.report(); report['fills'] = []; report['completed_trades'] = []
+        for index in range(1000):
+            code = f'{index:06d}'; report['symbol_names'][code] = '긴종목명😀' * 25
+            report['fills'].append({'symbol':code,'side':'SELL','quantity':100,
+                'fee':'1','tax':'2','realized_pnl':'10'})
+        text = self.summary(report)
+        self.assertLessEqual(len(text.encode('utf-16-le'))//2, 4096)
+        self.assertIn('생략', text)
+        self.assertTrue(text.endswith('※ 모의거래(PAPER ONLY) · 실주문 없음'))
+
+    def test_summary_claim_is_durable_and_reentrant_sender_has_no_write_lock(self):
+        ledger, report = self.ledger(); calls = []
+        day = next(iter(report['sessions']))
+        def send(text):
+            calls.append(text)
+            other = DaytradeLedger(ledger.path.parent.parent)
+            try:
+                reserved = json.loads(other.connection.execute(
+                    "SELECT value FROM meta WHERE key='telegram_daily_summary_v1'").fetchone()[0])
+                self.assertEqual(reserved[day]['status'], 'RESERVED')
+                self.assertEqual(self.notify(other, report, send), [])
+            finally:
+                other.close()
+            return {'status':'SENT','http_status':200}
+        self.assertEqual(self.notify(ledger, report, send), [{'session_date':day,'status':'SENT','http_status':200}])
+        self.assertEqual(self.notify(ledger, report, send), [])
+        other = DaytradeLedger(ledger.path.parent.parent)
+        try:
+            self.assertEqual(self.notify(other, report, send), [])
+        finally:
+            other.close()
+        self.assertEqual(len(calls), 1)
+
+    def test_summary_failure_is_sanitized_never_retried_and_financial_rows_unchanged(self):
+        ledger, report = self.ledger(); before = ledger.snapshot(); calls = []
+        def fail(text):
+            calls.append(text); raise TimeoutError('sensitive-token-url-and-chat')
+        result = self.notify(ledger, report, fail)
+        self.assertEqual(result[0]['status'], 'FAILED')
+        self.assertEqual(self.notify(ledger, report, fail), [])
+        self.assertEqual(len(calls), 1)
+        after = ledger.snapshot()
+        for key in ('state', 'events', 'fills'):
+            self.assertEqual(after[key], before[key])
+        persisted = list(ledger.connection.execute("SELECT value FROM meta WHERE key LIKE 'telegram_%'"))
+        self.assertNotIn('sensitive-token-url-and-chat', json.dumps([result, persisted]))
+        self.assertTrue(ledger.audit()['cash_identity'])
+
+    def test_summary_reserved_crash_and_api_rejection_never_retry(self):
+        for crash in (True, False):
+            with self.subTest(crash=crash):
+                ledger, report = self.ledger()
+                def send(text):
+                    if crash:
+                        raise KeyboardInterrupt()
+                    return {'status':'FAILED','http_status':429,'description':'sensitive-response'}
+                if crash:
+                    with self.assertRaises(KeyboardInterrupt):
+                        self.notify(ledger, report, send)
+                else:
+                    self.assertEqual(self.notify(ledger, report, send)[0],
+                        {'session_date':next(iter(report['sessions'])),'status':'FAILED','http_status':429})
+                other = DaytradeLedger(ledger.path.parent.parent)
+                try:
+                    self.assertEqual(self.notify(other, report, lambda _: self.fail('duplicate attempt')), [])
+                finally:
+                    other.close()
+
+    def test_invalid_sender_or_session_date_cannot_claim_a_summary(self):
+        ledger, report = self.ledger()
+        with self.assertRaises(ValueError):
+            self.notify(ledger, report, None)
+        with self.assertRaises(ValueError):
+            self.notify(ledger, report, lambda _: self.fail('invalid date sent'), session_date='2026-11-18')
+        self.assertIsNone(ledger.connection.execute("SELECT value FROM meta WHERE key='telegram_daily_summary_v1'").fetchone())
 
 
 if __name__=='__main__':unittest.main()

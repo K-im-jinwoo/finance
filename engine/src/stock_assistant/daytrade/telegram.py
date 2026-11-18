@@ -6,6 +6,7 @@ automatically: Telegram does not supply an idempotency key for sendMessage.
 """
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 import json
 
@@ -14,6 +15,7 @@ from .report import _symbol_names, trading_inventory
 
 DELIVERIES_KEY = "telegram_fill_deliveries_v1"
 SENT_IDS_KEY = "telegram_notified_fill_ids"
+DAILY_SUMMARY_KEY = "telegram_daily_summary_v1"
 REASONS = {"VWAP_BREAKOUT":"분봉 근사 VWAP 돌파", "RISING_CLOSE":"완료 분봉 상승",
     "VOLUME_SPIKE":"완료 분봉 거래량 급증", "BID_DEPTH":"매수호가 잔량 충족",
     "TIME_EXIT":"시간 청산", "LOSS_EXIT":"일손실 한도 청산", "TAKE_PROFIT":"익절",
@@ -86,14 +88,92 @@ def format_fill_telegram_message(fill, *, symbol_names, account, positions):
     return message
 
 
+def _daily_session_date(report, session_date):
+    sessions = report['sessions']
+    if not sessions:
+        raise ValueError('reported session date required')
+    day = session_date if session_date is not None else max(sessions)
+    if not isinstance(day, str) or date.fromisoformat(day).isoformat() != day or day not in sessions:
+        raise ValueError('date must identify a reported KST session')
+    return day
+
+
+def _daily_trade_lines(report):
+    totals = {}
+    for fill in report['fills']:
+        code, side, quantity = symbol(fill['symbol']), fill['side'], fill['quantity']
+        if side not in {'BUY', 'SELL'} or type(quantity) is not int or quantity <= 0:
+            raise ValueError('BUY/SELL fill with positive integer quantity required')
+        row = totals.setdefault(code, {'BUY':0, 'SELL':0, 'pnl':Decimal(0), 'name':fill.get('name')})
+        row[side] += quantity
+        if fill.get('realized_pnl') is not None:
+            row['pnl'] += _amount(fill['realized_pnl'])
+    lines = []
+    for code, row in sorted(totals.items()):
+        name = report.get('symbol_names', {}).get(code) or row['name'] or '종목명 확인 중'
+        if not isinstance(name, str) or len(name) > 200 or any(c in name for c in '\r\n\0'):
+            raise ValueError('bounded stock name required')
+        lines.append(f"{name} ({code}) · 매수 {row['BUY']:,}주 / 매도 {row['SELL']:,}주 · 실현 순손익 {_won(row['pnl'], signed=True)}")
+    return lines
+
+
+def format_daily_summary_telegram_message(report, *, session_date=None):
+    """Format audited daily account/fill totals without changing the report."""
+    day = _daily_session_date(report, session_date)
+    account = report['account']
+    held = sum(_amount(row['quantity']) > 0 for row in report['positions'].values())
+    warning = held or 'UNFLATTENED' in report['sessions'].values()
+    capital, realized = _amount(account['initial_capital']), _amount(account['realized_pnl_net'])
+    if capital <= 0:
+        raise ValueError('positive initial capital required')
+    percent = (realized * 100 / capital).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    fees = sum((_amount(fill['fee']) for fill in report['fills']), Decimal(0))
+    taxes = sum((_amount(fill['tax']) for fill in report['fills']), Decimal(0))
+    pnls = [_amount(trade['realized_pnl']) for trade in report['completed_trades']]
+    wins, losses = sum(value > 0 for value in pnls), sum(value < 0 for value in pnls)
+    lines = ['⚠️ [단타 모의거래 · 미청산 마감 경고]' if warning else '📊 [단타 모의거래 · 일일 마감 요약]',
+        f"날짜: {day} KST · 세션 상태: {report['sessions'][day]}",
+        f"초기 자본 {_won(capital)} → 마감 현금 {_won(account['cash'])}"]
+    if account['valuation_status'] == 'KNOWN' and account['final_equity'] is not None:
+        lines.append(f"마감 평가자산: {_won(account['final_equity'])}")
+    else:
+        lines.append('마감 평가자산: 평가 불확실')
+    lines.extend([f"실현 순손익: {_won(realized, signed=True)} ({percent:+.2f}%)",
+        f"총 수수료 {_won(fees)} · 총 세금 {_won(taxes)}",
+        f"완결 거래 {len(pnls)}건 (승 {wins} / 패 {losses} / 보합 {len(pnls)-wins-losses}) · 체결 {len(report['fills'])}건"])
+    if warning:
+        lines.append(f'미청산 보유: {held}종목')
+    if not report['fills']:
+        lines.append('오늘 체결된 거래가 없습니다.')
+    else:
+        lines.append('종목별 거래:')
+    footer = '※ 모의거래(PAPER ONLY) · 실주문 없음'
+    rows = _daily_trade_lines(report)
+    # Reserve space for both the omission notice and the mandatory footer.
+    # UTF-16 units are conservative for stock names containing supplementary text.
+    def size(parts):
+        return len('\n'.join(parts).encode('utf-16-le')) // 2
+    for index, row in enumerate(rows):
+        omitted = len(rows) - index - 1
+        tail = [f'… 외 {omitted}종목 생략'] if omitted else []
+        if size(lines + [row] + tail + [footer]) > 4096:
+            lines.append(f'… 외 {len(rows)-index}종목 생략')
+            break
+        lines.append(row)
+    lines.append(footer)
+    if size(lines) > 4096:
+        raise ValueError('Telegram message length exceeded')
+    return '\n'.join(lines)
+
+
 def _read_meta(connection, key, default):
     row = connection.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return json.loads(row[0]) if row else default
 
 
-def _delivery_state(connection):
-    deliveries = _read_meta(connection, DELIVERIES_KEY, {})
-    sent = _read_meta(connection, SENT_IDS_KEY, [])
+def _delivery_state(connection, deliveries_key=DELIVERIES_KEY):
+    deliveries = _read_meta(connection, deliveries_key, {})
+    sent = _read_meta(connection, SENT_IDS_KEY, []) if deliveries_key == DELIVERIES_KEY else []
     if not isinstance(deliveries, dict) or not isinstance(sent, list):
         raise ValueError("invalid notification metadata; sending blocked")
     return deliveries, sent
@@ -104,24 +184,24 @@ def _write_meta(ledger, key, value):
     ledger.meta[key] = value
 
 
-def _claim(ledger, event_id):
+def _claim(ledger, event_id, *, deliveries_key=DELIVERIES_KEY):
     with ledger.connection:
         ledger.connection.execute("BEGIN IMMEDIATE")
-        deliveries, sent = _delivery_state(ledger.connection)
+        deliveries, sent = _delivery_state(ledger.connection, deliveries_key)
         if event_id in deliveries or event_id in sent:
             return False
         deliveries[event_id] = {"status":"RESERVED", "http_status":None}
-        _write_meta(ledger, DELIVERIES_KEY, deliveries)
+        _write_meta(ledger, deliveries_key, deliveries)
     return True
 
 
-def _finish(ledger, event_id, result):
+def _finish(ledger, event_id, result, *, deliveries_key=DELIVERIES_KEY):
     with ledger.connection:
         ledger.connection.execute("BEGIN IMMEDIATE")
-        deliveries, sent = _delivery_state(ledger.connection)
+        deliveries, sent = _delivery_state(ledger.connection, deliveries_key)
         deliveries[event_id] = result
-        _write_meta(ledger, DELIVERIES_KEY, deliveries)
-        if result["status"] == "SENT" and event_id not in sent:
+        _write_meta(ledger, deliveries_key, deliveries)
+        if deliveries_key == DELIVERIES_KEY and result["status"] == "SENT" and event_id not in sent:
             _write_meta(ledger, SENT_IDS_KEY, sent + [event_id])
 
 
@@ -179,3 +259,26 @@ def notify_new_fills(ledger, send_fn):
         _finish(ledger, event_id, result)
         results.append({"event_id":event_id, **result})
     return results
+
+
+def notify_daily_summary(ledger, report, send_fn, *, session_date=None):
+    """Reserve the KST date before I/O; FAILED/RESERVED dates never auto-retry."""
+    if not callable(send_fn):
+        raise ValueError('explicit injected sender required')
+    day = _daily_session_date(report, session_date)
+    if not _claim(ledger, day, deliveries_key=DAILY_SUMMARY_KEY):
+        return []
+    result = {'status':'FAILED', 'http_status':None}
+    try:
+        text = format_daily_summary_telegram_message(report, session_date=day)
+        response = send_fn(text)
+        if isinstance(response, dict):
+            http = response.get('http_status')
+            result['http_status'] = http if type(http) is int and 100 <= http <= 599 else None
+            if response.get('status') == 'SENT' and http == 200:
+                result['status'] = 'SENT'
+    except Exception:
+        # Token-bearing transport URLs and response bodies never enter metadata.
+        pass
+    _finish(ledger, day, result, deliveries_key=DAILY_SUMMARY_KEY)
+    return [{'session_date':day, **result}]

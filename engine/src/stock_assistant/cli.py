@@ -12,6 +12,7 @@ from pathlib import Path
 from .client import StockClient, StockClientError
 from .alerts import AlertStore
 from .daily_refresh import DailyRefresh
+from .daily_requests import DailyRefreshRequests
 from .http_api import serve
 from .ingestion import DartDisclosureEnricher, DartFinancialEnricher, KrxHistoryIngestor
 from .intraday import build_intraday_signal
@@ -24,7 +25,7 @@ from .performance import (
 )
 from .pipeline import CandidatePipeline
 from .presentation import render_candidate_report
-from .providers.http import ProviderError
+from .providers.http import ProviderError, RateLimitError
 from .providers.dart import DartClient
 from .providers.krx import KrxClient
 from .providers.news import NaverNewsClient
@@ -86,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
     daily_parser.add_argument("--client-id-file", type=Path, required=True)
     daily_parser.add_argument("--client-secret-file", type=Path, required=True)
     daily_parser.add_argument("--max-calendar-days", type=int, default=31)
+    daily_parser.add_argument("--include-completed-today", action="store_true")
+    daily_parser.add_argument("--allow-unpublished-latest", action="store_true")
     candidates_parser = subparsers.add_parser("generate-candidates")
     candidates_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
     candidates_parser.add_argument("--as-of", type=datetime.fromisoformat)
@@ -147,19 +150,28 @@ def main(argv: list[str] | None = None) -> int:
                 sys.path.insert(0, '/opt/stock-shared-auth')
                 from shared_toss_auth import SharedTossMarketDataClient
                 calendar_client = SharedTossMarketDataClient
+            requests = DailyRefreshRequests()
             client = calendar_client(
                 args.client_id_file.read_text(encoding="utf-8").strip(),
                 args.client_secret_file.read_text(encoding="utf-8").strip(),
+                fetch_json=requests.get_json,
             )
-            ingestor = KrxHistoryIngestor(repository, KrxClient(args.key_file.read_text(encoding="utf-8").strip()))
+            ingestor = KrxHistoryIngestor(repository, KrxClient(
+                args.key_file.read_text(encoding="utf-8").strip(), fetch_json=requests.get_json,
+            ))
             result = DailyRefresh(repository, ingestor, client.calendar).run(
                 max_calendar_days=args.max_calendar_days,
+                include_completed_today=args.include_completed_today,
+                allow_unpublished_latest=args.allow_unpublished_latest,
             )
             print(json.dumps(result, ensure_ascii=False))
             return 0
         except (OSError, ValueError, KeyError, TypeError, ImportError, ProviderError, sqlite3.Error) as exc:
-            print(json.dumps({'stage': 'DAILY_REFRESH', 'status': 'FAILED',
-                              'error_class': type(exc).__name__, 'error': str(exc)}, ensure_ascii=False), file=sys.stderr)
+            failure = {'stage': 'DAILY_REFRESH', 'status': 'FAILED',
+                       'error_class': type(exc).__name__, 'error': str(exc)}
+            if getattr(exc, 'request_context', None):
+                failure['request'] = exc.request_context
+            print(json.dumps(failure, ensure_ascii=False), file=sys.stderr)
             return 1
 
     if args.command == "discover-news":
@@ -309,7 +321,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result_payload, ensure_ascii=False, indent=2))
             return 0
         except (OSError, ValueError, ProviderError) as exc:
-            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            if args.alerts_only and isinstance(exc, RateLimitError):
+                failed_at = datetime.now(timezone.utc).astimezone(KST).isoformat(timespec="seconds")
+                print(
+                    "장중 시세·거래량 조회 실패\n"
+                    f"발생 시각: {failed_at}\n"
+                    "원인: 토스증권 API 호출 제한 (HTTP 429)\n"
+                    "이유: API가 요청 한도 초과로 이번 조회 요청을 거절했습니다.\n"
+                    "이번 실행의 시세·거래량 확인을 완료하지 못했습니다.",
+                    file=sys.stderr,
+                )
+            else:
+                print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 1
     if args.command == "serve":
         secret_file = args.secret_file

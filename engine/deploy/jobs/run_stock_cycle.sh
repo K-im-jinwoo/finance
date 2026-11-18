@@ -41,10 +41,50 @@ case "${STOCK_NEWS_ENABLED:-false}" in
   *) echo "STOCK_NEWS_ENABLED must be true or false" >&2; exit 2 ;;
 esac
 
+case "${STOCK_CANDIDATE_CHARTS:-false}" in
+  true|false) ;;
+  *) echo "STOCK_CANDIDATE_CHARTS must be true or false" >&2; exit 2 ;;
+esac
+
+emit_candidate_charts() {
+  chart_report_id=$(printf '%s\n' "$1" | sed -n 's/^보고서: //p')
+  chart_python=${STOCK_CHART_PYTHON:-/home/ubuntu/.hermes/hermes-agent/venv/bin/python}
+  chart_state=${STOCK_STATE_HOST_DIR:-/srv/stock-assistant/state}
+  chart_home=${HERMES_HOME:-/home/ubuntu/.hermes/profiles/stock-cio}
+  PYTHONPATH="$project_root/src" "$chart_python" -m stock_assistant.candidate_charts \
+    --database "$chart_state/stock-assistant.sqlite3" \
+    --research-database "$chart_state/unified-research-inputs.sqlite3" \
+    --report-id "$chart_report_id" --format telegram \
+    --output-dir "${STOCK_CHART_OUTPUT_DIR:-$chart_home/cache/candidate-charts}"
+}
+
 stage=DAILY_REFRESH
+daily_args=""
+if [ "${STOCK_UNIFIED_ENABLED:-false}" = true ]; then
+  daily_args="--include-completed-today --allow-unpublished-latest"
+fi
 compose exec -T stock-assistant python -m stock_assistant refresh-daily \
   --database "$database" --key-file /run/secrets/krx-auth-key \
-  --client-id-file /run/secrets/toss-client-id --client-secret-file /run/secrets/toss-client-secret >&2
+  --client-id-file /run/secrets/toss-client-id --client-secret-file /run/secrets/toss-client-secret $daily_args >&2
+
+if [ "${STOCK_UNIFIED_ENABLED:-false}" = true ]; then
+  stage=UNIFIED_RESEARCH
+  unified_output=$(compose exec -T stock-assistant python -m stock_assistant.research_cli refresh-unified \
+    --database "$database" --research-database /var/lib/stock/unified-research-inputs.sqlite3 \
+    --api-key-file /run/secrets/dart-api-key --batch-size 25 --archive-pages 5 \
+    --client-id-file /run/secrets/naver-news-client-id --client-secret-file /run/secrets/naver-news-client-secret \
+    --usage-database /var/lib/stock/news-api-usage.sqlite3 \
+    --toss-client-id-file /run/secrets/toss-client-id --toss-client-secret-file /run/secrets/toss-client-secret --format text)
+  printf '%s\n' "$unified_output"
+  if [ "${STOCK_CANDIDATE_CHARTS:-false}" = true ]; then
+    stage=CANDIDATE_CHARTS
+    if ! emit_candidate_charts "$unified_output"; then
+      printf '기술적 차트 첨부 실패 · 후보 보고서와 판정은 유지합니다.\n'
+    fi
+  fi
+  printf 'STOCK_CYCLE status=READY mode=%s stage=UNIFIED_RESEARCH\n' "$mode" >&2
+  exit 0
+fi
 
 news_report_args=""
 news_enrichment_args=""

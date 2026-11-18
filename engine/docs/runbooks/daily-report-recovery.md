@@ -17,6 +17,23 @@ The existing shared Toss token cache is used whenever
 `/opt/stock-shared-auth` must support `calendar`; missing shared authentication
 fails instead of issuing an independent token.
 
+Only `refresh-daily` wraps calendar and KRX GET requests with timeout recovery.
+The initial request plus at most two retries use the existing 15-second socket
+timeout, with waits of 2 and 5 seconds. Only a real `TimeoutError`, including one
+wrapped in `URLError`, qualifies. Authentication errors, HTTP failures (including
+429), schema errors and invalid or empty trading data still fail immediately.
+Token issuance and the full report cycle are not retried.
+
+Failed attempts emit structured JSON to stderr with the fixed public API path,
+provider, market, validated request date, attempt count and transport timing.
+`CONNECTION_OR_HEADERS` covers opening the connection and waiting for response
+headers; the existing opener cannot distinguish those two phases. `RESPONSE_BODY`
+identifies a timeout while reading the body. Status and JSON-decoding failures
+have separate phases. Headers, credentials, arbitrary query values and response
+bodies are never included. The terminal request context is also saved in the
+existing daily readiness JSON and included in the CLI failure output. Retried
+success remains silent on stdout until the normal result is produced.
+
 Schema 9 adds `daily_data_checks` without removing existing tables. A successful
 check records its real observation time and verified daily date. After readiness
 tracking is enabled, new reports require a successful check on the same KST day

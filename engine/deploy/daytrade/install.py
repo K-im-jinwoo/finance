@@ -103,6 +103,22 @@ def install(archive, stamp):
     for name in ('daytrade-paper.service', 'daytrade-dashboard.service'):
         if command('systemctl', '--user', 'show', name, '-p', 'LoadState', '--value') != 'not-found':
             command('systemctl', '--user', 'stop', name)
+    preserved=None
+    latest=state/'latest'
+    if latest.exists():
+        live=latest.resolve()/'.runtime/intraday-paper.sqlite3'
+        if live.is_file():
+            source_db=sqlite3.connect(live.as_uri()+'?mode=ro',uri=True)
+            backup_db=sqlite3.connect(backup/'daily-paper.sqlite3')
+            try:
+                source_db.backup(backup_db)
+                saved=json.loads(source_db.execute('SELECT payload FROM state').fetchone()[0])
+                preserved={'daily_root':str(latest.resolve()),'cash':saved['cash'],
+                    'positions':saved['positions'],'last_sequence':saved['last_sequence'],
+                    'fill_count':source_db.execute('SELECT count(*) FROM paper_fills').fetchone()[0],
+                    'backup':str(backup/'daily-paper.sqlite3')}
+            finally:
+                source_db.close();backup_db.close()
     switch(current, release)
     if not (state/'latest').exists():
         switch(state/'latest', previous)
@@ -112,6 +128,7 @@ def install(archive, stamp):
     command('systemctl', '--user', 'start', 'daytrade-paper.service')
     after = inventory()
     result = {'release_id': stamp, 'release': str(release), 'previous_release': prior,
+              'preserved_ledger':preserved,
               'before': before, 'after': after, 'protected_unchanged': before == after,
               'at_utc': datetime.now(timezone.utc).isoformat()}
     (state/'deployment.json').write_text(json.dumps(result, indent=2))

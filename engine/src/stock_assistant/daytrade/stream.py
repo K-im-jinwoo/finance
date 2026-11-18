@@ -11,6 +11,7 @@ from dataclasses import asdict
 from collections import Counter
 from datetime import timedelta
 import json
+import time
 from pathlib import Path
 
 from . import POLICY_VERSION
@@ -160,7 +161,9 @@ def _clean_record(row, index, quality):
             if not isinstance(row["risk_meta"], dict):
                 raise ValueError("symbol-keyed risk metadata required")
             clean["risk_meta"] = {code:_only(meta, ("name", "halted", "delisting", "warning_or_caution",
-                                                   "major_negative_disclosure")) for code,meta in row["risk_meta"].items()}
+                "major_negative_disclosure", "market", "securityType", "isCommonShare", "leverageFactor",
+                "status", "sharesOutstanding", "koreanMarketDetail", "metadata_status", "metadata_valid_until"))
+                for code,meta in row["risk_meta"].items()}
             for code, meta in clean["risk_meta"].items():
                 symbol(code)
                 risk_reasons(meta)
@@ -256,7 +259,8 @@ def stream_to_dataset(stream_payload):
         "seed":stream_payload.get("seed", 42), "policy_version":stream_payload.get("policy_version", POLICY_VERSION),
         "quality":asdict(quality), "fixture_costs":asdict(costs), "scanner_config":asdict(scanner),
         "strategy_config":asdict(strategy), "events":events, "cost_policy_status":STAGE4_COST_PROFILE_STATUS,
-        "stream_provenance":{"kind":source_kind, "format":STREAM_FORMAT, "source_hash":digest(cleaned)}}
+        "stream_provenance":{"kind":source_kind, "format":STREAM_FORMAT, "source_hash":digest(cleaned)},
+        **{key:stream_payload[key] for key in ('max_daily_entries','reentry_cooldown_seconds') if key in stream_payload}}
 
 
 def run_observed_stream(stream_payload, root):
@@ -281,7 +285,7 @@ class LiveSessionBridge:
 
     def __init__(self, *, receive_clock=None, monotonic_clock=None, **settings):
         allowed = {"initial_capital", "seed", "stream_kind", "quality", "fixture_costs",
-                   "scanner_config", "strategy_config", "policy_version"}
+                   "scanner_config", "strategy_config", "policy_version", "max_daily_entries", "reentry_cooldown_seconds"}
         if set(settings)-allowed:
             raise ValueError("unsupported offline capture settings")
         self.settings = json.loads(canonical(settings))
@@ -558,7 +562,8 @@ class LivePaperSession(LiveSessionBridge):
     paper_ready = True
 
     def __init__(self, root, *, websocket_slot_available=False, fixture_costs=None,
-                 ws_adapter=None, receive_clock=None, monotonic_clock=None, **settings):
+                 ws_adapter=None, receive_clock=None, monotonic_clock=None,
+                 checkpoint_interval_seconds=0,checkpoint_clock=None, **settings):
         if websocket_slot_available is not True:
             raise ValueError("explicit websocket slot confirmation required")
         options = _approved_settings({**settings, "fixture_costs":fixture_costs if fixture_costs is not None else {}})
@@ -567,7 +572,7 @@ class LivePaperSession(LiveSessionBridge):
         source_kind, quality, costs, scanner, strategy = _configuration(self.settings)
         config = BotConfig(self.settings.get("initial_capital", "10000000"),
             self.settings.get("policy_version", POLICY_VERSION), self.settings.get("seed", 42),
-            quality, costs, scanner, strategy)
+            quality, costs, scanner, strategy, self.settings.get('max_daily_entries'), self.settings.get('reentry_cooldown_seconds'))
         Path(root).mkdir(parents=True, exist_ok=True)
         self.ledger = DaytradeLedger.create(root, initial_capital=config.initial_capital,
             policy_version=config.policy_version, replay_seed=config.seed,
@@ -576,6 +581,13 @@ class LivePaperSession(LiveSessionBridge):
         self._rankings, self._risk_metadata = {}, {}
         self._closed = self._session_ended = False
         self._source_hash = digest([])
+        if checkpoint_interval_seconds < 0:
+            raise ValueError('nonnegative checkpoint interval required')
+        self._checkpoint_interval=checkpoint_interval_seconds
+        self._checkpoint_clock=checkpoint_clock or time.monotonic
+        self._last_checkpoint=float('-inf')
+        self._checkpoint_fills=0
+        self._checkpoint_critical=0
         try:
             capability = {"cost_policy_status":APPROVED_COST_STATUS, "paper_ready":True,
                 "profile":strategy.profile, "stream_provenance":{"kind":source_kind, "format":STREAM_FORMAT}}
@@ -614,7 +626,14 @@ class LivePaperSession(LiveSessionBridge):
         self._source_hash = digest({"previous":self._source_hash, "event":clean})
         self._runner.meta["stream_provenance"].update(source_hash=self._source_hash, hash_basis="ORDERED_EVENT_CHAIN")
         self._runner.meta["dataset_hash"] = self._source_hash
-        self._runner.checkpoint(clean["at"], latest_only=True)
+        checkpoint_now=self._checkpoint_clock()
+        fills=self.ledger.connection.execute('SELECT count(*) FROM paper_fills').fetchone()[0]
+        if (checkpoint_now-self._last_checkpoint>=self._checkpoint_interval or fills!=self._checkpoint_fills
+                or self._runner.critical_sequence!=self._checkpoint_critical
+                or clean['kind'] in {'session','rankings','end_session'}):
+            self._runner.checkpoint(clean["at"], latest_only=True)
+            self._last_checkpoint,self._checkpoint_fills=checkpoint_now,fills
+            self._checkpoint_critical=self._runner.critical_sequence
         self._session_ended = clean["kind"] == "end_session"
         if clean["kind"] == "rankings" and self.ws_adapter is not None:
             # Preserve held names even when a fresh scan removes them: exits

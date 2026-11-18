@@ -119,6 +119,80 @@ class DailyRefreshTests(unittest.TestCase):
             self.refresh()
         self.assertEqual(set(self.repo.daily_market_dates(as_of=self.clock()).values()), {'2026-09-23'})
 
+    def completed_calendar(self, day):
+        payload = calendar(day)
+        regular = payload['today']['integrated'].get('regularMarket')
+        if regular:
+            regular['endTime'] = day.isoformat() + 'T15:30:00+09:00'
+        return payload
+
+    def stepping_clock(self, start):
+        from itertools import count
+        ticks = count()
+        return lambda: start + timedelta(microseconds=next(ticks))
+
+    def test_opt_in_uses_today_only_at_verified_market_close(self):
+        self.cal.side_effect = self.completed_calendar
+        closed = datetime(2026, 10, 6, 6, 30, tzinfo=UTC)
+        for instant, expected in [(closed-timedelta(seconds=1), '2026-10-02'), (closed, '2026-10-06')]:
+            result = DailyRefresh(self.repo, KrxHistoryIngestor(self.repo, self.client, request_interval_seconds=0),
+                                  self.cal, clock=self.stepping_clock(instant)).run(include_completed_today=True)
+            self.assertEqual(result['target_date'], expected)
+        self.assertEqual(set(self.repo.daily_market_dates(as_of=closed+timedelta(seconds=1)).values()), {'2026-10-06'})
+
+    def test_opt_in_rejects_unverified_close_without_fetching_prices(self):
+        for end in [None, '2026-10-06T15:30:00', '2026-10-07T15:30:00+09:00']:
+            def bad_calendar(day):
+                payload = calendar(day)
+                if end:payload['today']['integrated']['regularMarket']['endTime'] = end
+                return payload
+            self.cal.side_effect = bad_calendar
+            with self.assertRaisesRegex(ValueError, 'market close|close date'):
+                self.refresh(include_completed_today=True)
+            self.assertEqual(self.client.calls, [])
+
+    def test_opt_in_holiday_and_legacy_default_preserve_previous_session(self):
+        self.cal.side_effect = self.completed_calendar
+        for day, expected, opt_in in [(date(2026,10,5), '2026-10-02', True),
+                                     (date(2026,10,6), '2026-10-02', False)]:
+            now = datetime.combine(day, datetime.min.time(), tzinfo=UTC) + timedelta(hours=11)
+            result = DailyRefresh(self.repo, KrxHistoryIngestor(self.repo,self.client,request_interval_seconds=0),
+                                  self.cal,clock=self.stepping_clock(now)).run(include_completed_today=opt_in)
+            self.assertEqual(result['target_date'], expected)
+
+    def test_unpublished_today_does_not_fall_back_to_stale_readiness(self):
+        self.cal.side_effect = self.completed_calendar
+        self.refresh()
+        self.client.empty_market = 'ETF'
+        now = datetime(2026,10,6,11,tzinfo=UTC)
+        with self.assertRaisesRegex(ValueError, 'unavailable: ETF'):
+            DailyRefresh(self.repo,KrxHistoryIngestor(self.repo,self.client,request_interval_seconds=0),
+                         self.cal,clock=self.stepping_clock(now)).run(include_completed_today=True)
+        self.assertEqual(self.repo.latest_daily_check(as_of=now+timedelta(seconds=1))['status'], 'FAILED')
+        self.assertEqual(set(self.repo.daily_market_dates(as_of=now+timedelta(seconds=1)).values()), {'2026-10-02'})
+
+    def test_opt_in_latest_empty_response_records_pending_and_old_pipeline_stays_blocked(self):
+        self.cal.side_effect = self.completed_calendar
+        self.refresh()
+        self.client.empty_market='ETF'
+        now=datetime(2026,10,6,11,tzinfo=UTC)
+        result=DailyRefresh(self.repo,KrxHistoryIngestor(self.repo,self.client,request_interval_seconds=0),
+                            self.cal,clock=self.stepping_clock(now)).run(include_completed_today=True,allow_unpublished_latest=True)
+        self.assertEqual(result['status'],'VERIFY_PENDING')
+        self.assertEqual(result['target_date'],'2026-10-06')
+        self.assertEqual(result['error_code'],'KRX_DAILY_DATA_UNAVAILABLE')
+        self.assertEqual(set(result['market_dates'].values()),{'2026-10-02'})
+        with self.assertRaisesRegex(ValueError,'DAILY_DATA_NOT_READY'):
+            CandidatePipeline(self.repo).run(as_of=now+timedelta(seconds=1))
+
+    def test_latest_empty_opt_in_does_not_mask_older_gaps_or_authentication(self):
+        self.client.empty_market='ETF'
+        with self.assertRaisesRegex(ValueError,'unavailable: ETF 2026-09-28'):
+            self.refresh(allow_unpublished_latest=True)
+        self.client.empty_market=None
+        self.client.error_market='ETF'
+        with self.assertRaises(AuthenticationError):self.refresh(allow_unpublished_latest=True)
+
     def test_unverified_calendar_and_oversized_gap_fail_closed(self):
         self.cal.side_effect = AuthenticationError('calendar denied')
         with self.assertRaises(AuthenticationError):

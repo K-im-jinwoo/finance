@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from stock_assistant.candidate_charts import prepare_chart
+from stock_assistant.candidate_charts import candidate_charts, prepare_chart, telegram_attachments
 from stock_assistant.dart_research import DartResearchCollector
 from stock_assistant.models import Evidence, to_json_value
 from stock_assistant.news_archive import collect_actionable_news
@@ -160,14 +160,27 @@ class ActionableScreeningTests(unittest.TestCase):
         self.assertEqual(len(cand["recent_headlines"]), 1)
 
         rendered = render_recommendations(report)
-        self.assertIn("삼성전자 (005930) · 매수 추천 (다음 거래일 조건부) · 모멘텀 지속", rendered)
-        self.assertIn("⚠️ 확인 필요: 희석(유상증자/CB/BW)", rendered)
+        self.assertIn("장기투자 종목 리서치", rendered)
+        self.assertIn("KST)", rendered)
+        self.assertIn(f"보고서: {report['report_id']}", rendered)
+        self.assertIn("[오늘의 후보 1종목]", rendered)
+        self.assertIn("1️⃣ 삼성전자 (005930) · 매수 추천 · 모멘텀 지속", rendered)
+        self.assertIn("• ⚠️ 확인: 희석(유상증자/CB/BW)", rendered)
+        self.assertIn("📌 공통 진입·무효화 조건", rendered)
+        self.assertEqual(rendered.count("다음 거래일 최신 시세로 유동성·가격 조건 재확인"), 1)
         self.assertNotIn("재무 점수 상위 검증 대기 종목", rendered)
 
-        # Verify candidate_charts.prepare_chart accepts this actionable fallback-session candidate seamlessly!
+        # Verify candidate_charts.prepare_chart and compact telegram_attachments work seamlessly!
         chart_data = prepare_chart(report, cand, self.reader)
         self.assertEqual(chart_data["symbol"], "005930")
         self.assertEqual(chart_data["session"], date(2026, 9, 19))
+        chart_result = candidate_charts(report, self.reader, Path(self.tmp.name) / "charts", renderer=Mock())
+        self.assertTrue(chart_result["compact"])
+        caption = telegram_attachments(chart_result)
+        self.assertIn("📈 삼성전자 (005930)", caption)
+        self.assertIn("20일선 위(", caption)
+        self.assertIn("MEDIA:", caption)
+        self.assertNotIn("평균선 배열만으로 골든크로스를", caption)
 
         # Verify stock-committee-brief.py loads the real saved ResearchData report (matching APPLICATION_ID).
         loaded = committee.load_saved_report(self.research_path, report["report_id"], source_database=self.source)

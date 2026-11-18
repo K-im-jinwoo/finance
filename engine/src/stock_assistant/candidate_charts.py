@@ -319,18 +319,55 @@ def candidate_charts(report, repository, output_dir: Path, *, renderer=render_ch
         items.append(item)
     return {"contract": VERSION, "report_id": report["report_id"], "as_of": report["as_of"],
             "source_read_only": True, "orders_enabled": False, "report_modified": False,
+            "compact": report.get("policy_mode") == "ACTIONABLE_COMMITTEE",
             "charts": items}
 
 
-def telegram_attachments(result):
+def _compact_chart_caption(item: dict) -> list[str]:
+    analysis = item.get("technical_analysis") or {}
+    methods = {m.get("code"): m.get("values", {}) for m in analysis.get("methods", [])}
+    ohlc = methods.get("OHLC_CANDLE") or {}
+    sma = methods.get("SMA20_60") or {}
+    vol = methods.get("VOLUME_RATIO20") or {}
+    atr = methods.get("WILDER_ATR14") or {}
+    pattern = (analysis.get("stored_pattern") or {}).get("name")
+    pattern_tag = f" · {pattern}" if pattern else ""
+    header = f"📈 {item['name']} ({item['symbol']}){pattern_tag} ({item['session']})"
+
+    parts = []
+    if ohlc.get("close") is not None:
+        candle = ohlc.get("candle") or ""
+        candle_tag = f"({candle})" if candle else ""
+        parts.append(f"종가 {Decimal(str(ohlc['close'])):,.0f}원{candle_tag}")
+    pos_kr = {"ABOVE": "위", "BELOW": "아래", "EQUAL": "동일"}
+    if sma.get("sma20") is not None and sma.get("sma60") is not None:
+        p20 = pos_kr.get(sma.get("close_vs_sma20"), "")
+        p60 = pos_kr.get(sma.get("close_vs_sma60"), "")
+        parts.append(f"20일선 {p20}({Decimal(str(sma['sma20'])):,.0f}) / 60일선 {p60}({Decimal(str(sma['sma60'])):,.0f})")
+    if vol.get("multiple") is not None:
+        parts.append(f"거래량 {Decimal(str(vol['multiple'])):.2f}배")
+    elif vol:
+        parts.append("거래량 배율 확인 불가")
+    if atr.get("atr_pct_of_close") is not None:
+        parts.append(f"ATR {Decimal(str(atr['atr_pct_of_close'])):.1f}%")
+    return [header, " · ".join(parts), "MEDIA:" + item["path"]]
+
+
+def telegram_attachments(result, *, compact: bool | None = None):
+    use_compact = bool(result.get("compact")) if compact is None else compact
     lines = []
     for item in result["charts"]:
         title = f"기술적 차트 · {item['name']} ({item['symbol']})"
         if item["status"] == "READY":
-            lines.extend([f"{title} · 일봉 {item['session']} · {LABELS[item['decision']]}",
-                          explain_technical_analysis(item["technical_analysis"]) if item.get("technical_analysis")
-                          else "지표 설명 정보 확인 필요 · 저장 보고서와 판정은 유지합니다.",
-                          "MEDIA:" + item["path"]])
+            if use_compact and item.get("technical_analysis"):
+                if lines:
+                    lines.append("")
+                lines.extend(_compact_chart_caption(item))
+            else:
+                lines.extend([f"{title} · 일봉 {item['session']} · {LABELS[item['decision']]}",
+                              explain_technical_analysis(item["technical_analysis"]) if item.get("technical_analysis")
+                              else "지표 설명 정보 확인 필요 · 저장 보고서와 판정은 유지합니다.",
+                              "MEDIA:" + item["path"]])
         else:
             reasons = {"PRICE_NOT_VERIFIED": "가격 확인 대기", "PRICE_HISTORY_UNAVAILABLE": "일봉 이력 부족",
                        "PRICE_SESSION_INCOMPLETE": "기준일 일봉 부족", "REPORT_PRICE_INPUT_MISMATCH": "보고서와 가격 자료 불일치",

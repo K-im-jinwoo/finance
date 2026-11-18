@@ -32,6 +32,13 @@ _RISK_CATEGORY_LABELS = {
     "DILUTION": "희석(유상증자/CB/BW)",
     "BUSINESS_DAMAGE": "사업 훼손(계약해지/거래정지/회생)",
 }
+_ADVISORY_LABELS = {
+    "TURNOVER_WEAKENING": "회전율 둔화",
+    "FCF_NEGATIVE_GROWTH_INVESTMENT": "음수 FCF(성장투자 확인)",
+    "FCF_UNAVAILABLE_OPTIONAL": "FCF 미제공",
+    "SEPARATE_ASSET_POLICY_REQUIRED": "별도 자산군 정책 대상",
+}
+_RANK_BADGES = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣")
 
 
 def price_review(symbol, bars, *, as_of, expected_session=None, verified_close_at=None):
@@ -448,7 +455,93 @@ def build_recommendations(repository, store, *, as_of, expected_session=None, ve
     return report
 
 
+def _format_kst(as_of_iso: str) -> str:
+    try:
+        dt = datetime.fromisoformat(as_of_iso).astimezone(KST)
+        return dt.strftime("%Y-%m-%d %H:%M KST")
+    except (ValueError, TypeError):
+        return str(as_of_iso)
+
+
+def _render_actionable_report(report: dict) -> str:
+    candidates = report.get("candidates", [])
+    kst_str = _format_kst(report.get("as_of", ""))
+    prices = (report.get("refresh_stages") or {}).get("prices") or {}
+    archive = (report.get("refresh_stages") or {}).get("archive") or {}
+
+    session_str = report.get("expected_price_session") or prices.get("required_session") or "확인 불가"
+    if report.get("price_session_basis") == "LATEST_AVAILABLE_SESSION":
+        price_summary = f"기준일봉: {session_str} (당일 일봉 미발행)"
+    else:
+        price_summary = f"기준일봉: {session_str}"
+
+    archive_status = archive.get("status")
+    archive_error = archive.get("error_code")
+    if archive_status == "UNAVAILABLE":
+        news_summary = "뉴스: 쿨다운(중립 기준)" if archive_error == "NEWS_REFRESH_COOLDOWN" else "뉴스: 미수집(중립 기준)"
+    elif archive.get("actual_calls"):
+        news_summary = f"뉴스: 최근 기사 수집 완료({archive['actual_calls']}회)"
+    else:
+        news_summary = "뉴스: 최근 스냅샷 반영"
+
+    lines = [
+        f"📊 장기투자 종목 리서치 ({kst_str})",
+        f"보고서: {report['report_id']}",
+        f"{price_summary} · {news_summary}",
+        "",
+        f"[오늘의 후보 {len(candidates)}종목]",
+    ]
+    for idx, row in enumerate(candidates, 1):
+        strategy = STRATEGY_LABELS.get((row.get("price") or {}).get("strategy", ""), "")
+        tag = f" · {strategy}" if strategy else ""
+        lines.append(f"{idx}. {row['name']} ({row['symbol']}) · 총점 {row['total_score']}{tag}")
+
+    lines.extend(["", "━━━━━━━━━━━━━━━"])
+
+    for idx, row in enumerate(candidates):
+        badge = _RANK_BADGES[idx] if idx < len(_RANK_BADGES) else f"{idx + 1}."
+        strategy = STRATEGY_LABELS.get((row.get("price") or {}).get("strategy", ""), "")
+        strategy_suffix = f" · {strategy}" if strategy else ""
+        decision_short = "매수 추천" if row.get("action_decision") == "BUY_RECOMMENDATION" else row.get("label", "")
+        lines.append("")
+        lines.append(f"{badge} {row['name']} ({row['symbol']}) · {decision_short}{strategy_suffix}")
+        lines.append(f"• 점수: 총점 {row['total_score']} (재무 {row['financial_score']} / 뉴스 {row['news_score']} / 위험 -{row['risk_penalty']})")
+        metrics = (row.get("price") or {}).get("metrics") or {}
+        if metrics.get("average_value20") and metrics.get("return20") is not None:
+            avg_eok = Decimal(str(metrics["average_value20"])) / Decimal("100000000")
+            ret20 = Decimal(str(metrics["return20"])) * Decimal("100")
+            dd60 = Decimal(str(metrics["drawdown60"])) * Decimal("100")
+            lines.append(f"• 시세: 거래대금 {avg_eok:,.1f}억 · 20일 {ret20:+.1f}% · 60일 고점대비 {dd60:+.1f}%")
+
+        # Keep only issuer-specific warnings/advisories; common notices live once in header/footer.
+        specific_notes = []
+        for w in row.get("warnings", []):
+            if w.startswith("⚠️ 가격 기준:") or "최근 뉴스 미수집" in w:
+                continue
+            specific_notes.append(w.removeprefix("⚠️ 확인 필요: ").strip())
+        for adv in row.get("advisories", []):
+            if adv == "LEGACY_FINANCIAL_AVAILABILITY_AND_REVISION_UNCERTIFIED":
+                continue
+            specific_notes.append(_ADVISORY_LABELS.get(adv, adv))
+        if specific_notes:
+            lines.append("• ⚠️ 확인: " + " · ".join(dict.fromkeys(specific_notes)))
+        if row.get("financial_source_url"):
+            lines.append(f"• 원문: {row['financial_source_url']}")
+
+    lines.extend([
+        "",
+        "━━━━━━━━━━━━━━━",
+        "📌 공통 진입·무효화 조건",
+        "• 다음 거래일 최신 시세로 유동성·가격 조건 재확인",
+        "• 종가 20일선 이탈 또는 새 악재·정정·취소 발생 시 추천 무효",
+        "• Naver 색인 범위 참고 · 자동 주문 및 모의계좌 연동 없음",
+    ])
+    return "\n".join(lines)
+
+
 def render_recommendations(report):
+    if report.get("policy_mode") == "ACTIONABLE_COMMITTEE" and report.get("candidates"):
+        return _render_actionable_report(report)
     fin_threshold = (report.get("thresholds") or {}).get("financial", 70)
     tot_threshold = (report.get("thresholds") or {}).get("total", 75)
     lines = ["통합 종목 연구 · 다음 거래일 조건부", f"보고서: {report['report_id']}", f"기준: {report['as_of']}", f"총점 = 재무 70% + 뉴스 30% - 위험 감점 · 기준 F≥{fin_threshold} / 총점≥{tot_threshold}"]

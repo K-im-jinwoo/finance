@@ -1,10 +1,10 @@
 """Approved operational refresh; external reads, isolated research writes, no orders."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
 
 from .dart_research import DartResearchCollector
-from .news_archive import collect_archive
+from .news_archive import collect_actionable_news, collect_archive
 from .material_archive import collect_material_archive
 from .official_events import review_official_contracts
 from .providers.dart import DartClient
@@ -12,7 +12,7 @@ from .providers.http import ProviderError
 from .research_workflow import collect_calendar, market_session
 from .unified_research import build_recommendations
 from .risk_history import refresh_risk_coverage
-from .research_focus import choose_focus
+from .research_focus import choose_actionable_focus, choose_focus
 
 
 class _ArchiveBatch:
@@ -55,16 +55,104 @@ class _ArchiveBatch:
             raise
 
 
+def _latest_available_price_session(repository, *, as_of: datetime) -> date | None:
+    dates = repository.daily_market_dates(as_of=as_of)
+    valid = [date.fromisoformat(value) for value in dates.values() if value]
+    return min(valid) if valid else None
+
+
 def refresh_unified(repository, store, *, dart_client, news_client, calendar_client, dart_key,
-                    batch_size=25, archive_pages=5, clock=None, seed_symbols=None):
+                    batch_size=25, archive_pages=5, clock=None, seed_symbols=None, actionable=False):
     clock = clock or (lambda: datetime.now(timezone.utc))
+    if not isinstance(actionable, bool):
+        raise ValueError("actionable must be boolean")
     batch = _ArchiveBatch(news_client, archive_pages)
+    stages = {}
+
+    if actionable:
+        try:
+            stages['calendar'] = collect_calendar(store, calendar_client, clock=clock)
+        except (ProviderError, ValueError) as exc:
+            stages['calendar'] = {'status': 'UNAVAILABLE', 'error_code': exc.code if isinstance(exc, ProviderError) else str(exc)}
+        now = clock()
+        session, closed = market_session(store, as_of=now)
+        check = repository.latest_daily_check(as_of=now)
+        from .unified_research import KST
+        ready = bool(check and check.get('status') == 'READY' and session and check.get('target_date') == session.isoformat()
+                     and datetime.fromisoformat(check['checked_at']).astimezone(KST).date() == now.astimezone(KST).date())
+        fallback_session = None if ready else _latest_available_price_session(repository, as_of=now)
+        effective_session = session if ready else (fallback_session or session)
+        effective_close = closed if ready else None
+
+        pre_focus = choose_actionable_focus(
+            repository, store, as_of=now,
+            expected_session=effective_session, verified_close_at=effective_close,
+            limit=min(5, archive_pages),
+        )
+        try:
+            stages['financials'] = DartResearchCollector(repository, store, dart_client, clock=clock).run(
+                symbols=seed_symbols, batch_size=batch_size,
+                priority_symbols=pre_focus['ready_pool'] if seed_symbols is None else None,
+            )
+        except (ProviderError, ValueError) as exc:
+            stages['financials'] = {'status': 'UNAVAILABLE', 'error_code': exc.code if isinstance(exc, ProviderError) else str(exc)}
+
+        now = clock()
+        post_focus = choose_actionable_focus(
+            repository, store, as_of=now,
+            expected_session=effective_session, verified_close_at=effective_close,
+            limit=min(5, archive_pages),
+        )
+        focus_symbols_list = [item['symbol'] for item in post_focus['selected']]
+        store.put('research_focus', 'ALL', {
+            'symbols': focus_symbols_list, 'limit': min(5, archive_pages),
+            'ready_pool_count': len(post_focus['ready_pool']), 'mode': 'ACTIONABLE_COMMITTEE',
+        }, observed_at=now)
+        stages['research_focus'] = {
+            'symbols': focus_symbols_list,
+            'limit': min(5, archive_pages),
+            'ready_pool_count': len(post_focus['ready_pool']),
+        }
+        try:
+            stages['archive'] = (
+                collect_actionable_news(repository, store, batch, symbols=focus_symbols_list, clock=clock, max_calls=archive_pages)
+                if focus_symbols_list else {'status': 'CURRENT', 'requested': 0, 'actual_calls': 0, 'results': []}
+            )
+        except (ProviderError, ValueError) as exc:
+            stages['archive'] = {'status': 'UNAVAILABLE', 'error_code': exc.code if isinstance(exc, ProviderError) else str(exc)}
+        stages['news_budget'] = {'reserved_calls': batch.reserved_calls, 'actual_calls': batch.actual_calls}
+        try:
+            stages['official_events'] = review_official_contracts(store, api_key=dart_key, as_of=clock(), clock=clock)
+        except (ProviderError, ValueError) as exc:
+            stages['official_events'] = {'status': 'UNAVAILABLE', 'error_code': exc.code if isinstance(exc, ProviderError) else str(exc)}
+        stages['prices'] = {k: check.get(k) for k in ['status', 'target_date', 'market_dates', 'error_code', 'missing_market']} if check else {'status': 'UNAVAILABLE'}
+        if check and check.get('research_status'):
+            stages['prices']['status'] = check['research_status']
+        if not ready:
+            stages['prices']['status'] = 'FALLBACK_LATEST_SESSION' if fallback_session else 'VERIFY_PENDING'
+            if fallback_session:
+                stages['prices']['fallback_session'] = fallback_session.isoformat()
+        stages['prices']['required_session'] = session.isoformat() if session else None
+
+        now = clock()
+        report = build_recommendations(
+            repository, store, as_of=now,
+            expected_session=session, verified_close_at=closed,
+            price_refresh_ready=ready, actionable=True,
+            fallback_price_session=fallback_session, actionable_focus=post_focus,
+        )
+        report['refresh_stages'] = stages
+        import hashlib, json
+        report.pop('report_id', None)
+        report['report_id'] = 'UR-' + hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest()[:24]
+        store.put('unified_report', 'ALL', report, observed_at=now)
+        return report
+
     def focus_symbols():
         selected = choose_focus(repository, store, as_of=clock())
         store.put('research_focus', 'ALL', {'symbols': selected, 'limit': 10}, observed_at=clock())
         return selected
     focus_symbols()
-    stages = {}
     try:
         stages['financials'] = DartResearchCollector(repository, store, dart_client, clock=clock).run(
             symbols=seed_symbols, batch_size=batch_size)

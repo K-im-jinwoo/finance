@@ -149,3 +149,86 @@ def _collect_issuer(store, client, chosen, *, old, start, end, pages, clock, rec
     return {"symbol": chosen.symbol, "status": state["status"], "actual_calls": used, "reserved_calls": pages,
             "pagination_restarts": mismatches, "oldest_seen": state.get("oldest_seen"), "scope": state.get("scope"),
             "next_start": state.get("next_start"), "history_review_complete": state["status"] == "COMPLETE"}
+
+
+def collect_actionable_news(repository, store, client, *, symbols, clock=None, max_calls=5):
+    """Fetch 1 page (up to 100 latest headlines) per actionable candidate within the bounded budget."""
+    if type(max_calls) is not int or not 1 <= max_calls <= 5:
+        raise ValueError("actionable news max_calls must be between 1 and 5")
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    now = validate_analysis_time(clock())
+    windows = news_windows(now)
+    start, end = windows["recent_start"], windows["end"]
+    by_symbol = {s.symbol: s for s in repository.list_securities()}
+    targets = [by_symbol[sym] for sym in symbols if sym in by_symbol][:max_calls]
+    if not targets:
+        return {"status": "CURRENT", "requested": 0, "actual_calls": 0, "results": []}
+    client.archive_batch(len(targets))
+    results = []
+    used = 0
+    for security in targets:
+        page = client.archive_page(query=security.name, start=1)
+        used += 1
+        inputs = []
+        matched = 0
+        for article in page.articles:
+            if _matches(article.title, security.name, article.title.casefold()):
+                matched += 1
+                evidence = Evidence(
+                    "NEWS", article.title, article.url, article.published_at, article.observed_at, False,
+                    (f"ISSUER:{security.symbol}", "NAVER_INDEXED_QUERY_RESULT"),
+                )
+                inputs.append((
+                    "recent_archive_article", security.symbol,
+                    {"evidence": to_json_value(evidence), "description": article.description},
+                ))
+        store.put_many(inputs, observed_at=page.observed_at)
+        oldest = page.articles[-1].published_at if page.articles else None
+        exhausted = page.raw_count < 100 and page.raw_count >= page.total
+        reached = bool(oldest and oldest.astimezone(KST).date() < start)
+        status = "COMPLETE" if (reached or exhausted) else "SNAPSHOT_100"
+        observed = clock()
+        snapshot_payload = {
+            "symbol": security.symbol,
+            "query": security.name,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "status": status,
+            "matched_articles": matched,
+            "raw_count": page.raw_count,
+            "provider_total": page.total,
+            "oldest_seen": oldest.isoformat() if oldest else None,
+            "observed_at": observed.isoformat(),
+            "scope": "NAVER_RECENT_NEWS_QUERY_RESULTS",
+        }
+        snap_id = store.put("recent_news_snapshot", security.symbol, snapshot_payload, observed_at=observed)
+        if status == "COMPLETE":
+            store.put(
+                "recent_news_coverage", security.symbol,
+                {
+                    "symbol": security.symbol, "start": start.isoformat(), "end": end.isoformat(),
+                    "observed_at": observed.isoformat(), "reviewed_at": observed.isoformat(),
+                    "status": "AUTO_SEARCH_VERIFIED", "scope": "NAVER_RECENT_NEWS_QUERY_RESULTS",
+                    "window_days": 90, "sources": ["RECENT_NEWS_ARCHIVE"], "source_refs": [snap_id],
+                    "reviewer": "actionable-news-snapshot-v1",
+                    "rationale": "single-page 100-result query reached 90-day cutoff or exhausted results",
+                },
+                observed_at=observed,
+            )
+        results.append({
+            "symbol": security.symbol,
+            "status": status,
+            "matched_articles": matched,
+            "provider_total": page.total,
+            "actual_calls": 1,
+            "oldest_seen": snapshot_payload["oldest_seen"],
+            "history_review_complete": status == "COMPLETE",
+        })
+    return {
+        "status": "COMPLETE" if all(r["status"] == "COMPLETE" for r in results) else "SNAPSHOT_100",
+        "requested": len(targets),
+        "actual_calls": used,
+        "reserved_calls": len(targets),
+        "scope": "NAVER_RECENT_NEWS_QUERY_RESULTS",
+        "results": results,
+    }

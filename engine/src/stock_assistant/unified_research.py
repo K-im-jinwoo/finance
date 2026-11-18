@@ -18,9 +18,20 @@ from .repository import _evidence_from_dict
 from .validation import assert_point_in_time, validate_analysis_time
 
 POLICY_VERSION = "unified-research-2026-10-14.1"
+POLICY_VERSION_ACTIONABLE = "unified-research-2026-11-18.1"
 KST = timezone(timedelta(hours=9))
 LABELS = {"BUY_RECOMMENDATION": "매수 추천 (다음 거래일 조건부)", "WATCH": "관찰",
           "VERIFY_PENDING": "확인 대기", "EXCLUDED": "제외", "NOT_APPLICABLE": "별도 평가 필요"}
+STRATEGY_LABELS = {
+    "BOTTOM_REBOUND": "바닥 반등",
+    "MOMENTUM_CONTINUATION": "모멘텀 지속",
+    "WAIT_FOR_SETUP": "셋업 대기",
+}
+_RISK_CATEGORY_LABELS = {
+    "MANAGEMENT": "경영·감사(횡령/배임/감사의견)",
+    "DILUTION": "희석(유상증자/CB/BW)",
+    "BUSINESS_DAMAGE": "사업 훼손(계약해지/거래정지/회생)",
+}
 
 
 def price_review(symbol, bars, *, as_of, expected_session=None, verified_close_at=None):
@@ -110,24 +121,213 @@ def financial_universe(repository, store, *, as_of):
     return results
 
 
+def _actionable_news_score(news: dict, snapshot: dict | None, *, as_of: datetime) -> tuple[Decimal, list[str]]:
+    """Derive a transparent news score even when 90-day exhaustive pagination is incomplete."""
+    warnings: list[str] = []
+    if news["news_score"] is not None:
+        return news["news_score"], warnings
+    pos = sum(int(e["points"]) for e in news.get("events", []) if e.get("status") == "VERIFIED_ACTIVE" and e.get("points", 0) > 0)
+    neg = sum(abs(int(e["points"])) for e in news.get("events", [])
+              if e.get("status") == "ACTIVE_RISK" and e.get("score_target") == "news_score")
+    score = Decimal(max(0, min(100, 50 + min(50, pos) - min(50, neg))))
+    if snapshot and as_of - datetime.fromisoformat(snapshot["observed_at"]) <= timedelta(days=7):
+        if snapshot["payload"].get("status") != "COMPLETE":
+            warnings.append("뉴스 최근 100건 스냅샷 기준(90일 전체 미도달)")
+    else:
+        warnings.append("⚠️ 확인 필요: 최근 뉴스 미수집(중립 50점 기준)")
+    return score, warnings
+
+
+def _risk_warning_tags(news: dict) -> list[str]:
+    counts = Counter(sig["category"] for sig in news.get("review_signals", []))
+    tags = []
+    for category, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        label = _RISK_CATEGORY_LABELS.get(category, category)
+        tags.append(f"⚠️ 확인 필요: {label} 관련 기사/공시 {count}건")
+    return tags
+
+
+def evaluate_actionable(
+    financial,
+    news: dict,
+    price: dict,
+    *,
+    as_of: datetime,
+    dart_fresh: bool,
+    news_snapshot: dict | None = None,
+    price_fallback_session: date | None = None,
+    tie_breaker: Decimal | None = None,
+    liquidity_tier: str | None = None,
+    in_cooldown: bool = False,
+) -> dict:
+    """Actionable evaluation: preserve hard exclusions, turn soft pending checks into warnings."""
+    if financial.as_of.tzinfo is None:
+        raise ValueError("financial evaluation time is required")
+    reasons = list(financial.blocking_reasons) + list(news["hard_exclusions"])
+    warnings: list[str] = []
+    pending = list(financial.pending_checks) + list(news["pending_checks"])
+    if not dart_fresh:
+        pending.append("DART_COLLECTION_NOT_CURRENT")
+
+    if financial.gate == "EXCLUDED" or news["hard_exclusions"]:
+        decision = "EXCLUDED"
+        n_score = news["news_score"]
+        total = None
+    elif financial.gate == "NOT_APPLICABLE":
+        decision = "NOT_APPLICABLE"
+        n_score = news["news_score"]
+        total = None
+    elif financial.gate != "PASS" or financial.financial_score is None:
+        decision = "VERIFY_PENDING"
+        n_score = news["news_score"]
+        total = None
+    else:
+        n_score, news_warnings = _actionable_news_score(news, news_snapshot, as_of=as_of)
+        warnings.extend(news_warnings)
+        warnings.extend(_risk_warning_tags(news))
+        if not dart_fresh:
+            warnings.append("⚠️ 확인 필요: DART 공시 7일 이상 미갱신")
+        if "FCF_CAUSE_REVIEW_REQUIRED" in financial.pending_checks:
+            warnings.append("⚠️ 확인 필요: 음수 FCF 원인 검토")
+        if "TURNOVER_HISTORY_UNAVAILABLE" in financial.pending_checks:
+            warnings.append("⚠️ 확인 필요: 회전율 이력 부족")
+        if price_fallback_session is not None:
+            warnings.append(f"⚠️ 가격 기준: 직전 확보 거래일({price_fallback_session.isoformat()}) · 당일 KRX 일봉 미발행")
+        for check in news["pending_checks"]:
+            if check.startswith("UNRESOLVED_NEGATIVE_EVENT:"):
+                warnings.append(f"⚠️ 확인 필요: 미해소 위험 사건({check.split(':', 1)[1]})")
+
+        f = financial.financial_score
+        risk = news["risk_penalty"]
+        total = max(Decimal("0"), min(Decimal("100"), Decimal("0.7") * f + Decimal("0.3") * n_score - risk))
+        if price["status"] == "VERIFY_PENDING":
+            decision = "VERIFY_PENDING"
+            pending.extend(price["reasons"])
+        elif f >= 75 and total >= 75 and price["status"] == "READY":
+            decision = "BUY_RECOMMENDATION"
+        else:
+            decision = "WATCH"
+            if f < 75:
+                reasons.append("FINANCIAL_SCORE_BELOW_THRESHOLD")
+            if total < 75:
+                reasons.append("TOTAL_SCORE_BELOW_THRESHOLD")
+            reasons.extend(price.get("reasons", []))
+
+    return {
+        "symbol": financial.symbol,
+        "name": financial.name,
+        "action_decision": decision,
+        "label": LABELS[decision],
+        "financial_score": financial.financial_score,
+        "news_score": n_score,
+        "risk_penalty": news["risk_penalty"],
+        "total_score": total,
+        "tie_breaker": tie_breaker,
+        "liquidity_tier": liquidity_tier,
+        "in_cooldown": in_cooldown,
+        "financial_breakdown": financial.score_breakdown,
+        "news_events": news["events"],
+        "price": price,
+        "reasons": list(dict.fromkeys(reasons)),
+        "warnings": list(dict.fromkeys(warnings)),
+        "pending_checks": list(dict.fromkeys(pending)),
+        "advisories": list(financial.advisories),
+        "financial_evaluation_id": financial.evaluation_id,
+        "recent_news_complete": news.get("recent_coverage_complete", False),
+        "risk_history_complete": news.get("risk_coverage_complete", False),
+    }
+
+
+def _candidate_evidence_context(store, symbol: str, *, as_of: datetime, cursor, risk_urls: set[str]) -> dict:
+    """Attach bounded recent news headlines, risk headlines, and DART filings for committee review."""
+    news_items: list[dict] = []
+    seen_news: set[str] = set()
+    for kind in ("recent_archive_article", "risk_archive_article", "archive_article", "material_archive_article"):
+        for record in store.records(kind, symbol, as_of=as_of):
+            ev = record["payload"].get("evidence") or {}
+            url = ev.get("url")
+            if not url or url in seen_news:
+                continue
+            seen_news.add(url)
+            news_items.append({
+                "title": ev.get("title", ""),
+                "url": url,
+                "published_at": ev.get("published_at"),
+                "description": (record["payload"].get("description") or "")[:200],
+                "is_risk_signal": url in risk_urls,
+            })
+    news_items.sort(key=lambda x: x.get("published_at") or "", reverse=True)
+    risk_headlines = [item for item in news_items if item["is_risk_signal"]][:10]
+    recent_headlines = [item for item in news_items if not item["is_risk_signal"]][:15]
+
+    filings = stored_filings(store, symbol, as_of=as_of, cursor=cursor)
+    filings.sort(key=lambda e: e.published_at, reverse=True)
+    recent_dart = [
+        {
+            "title": e.title,
+            "url": e.url,
+            "published_at": e.published_at.isoformat(),
+            "is_risk_signal": e.url in risk_urls,
+        }
+        for e in filings[:10]
+    ]
+    return {
+        "recent_headlines": recent_headlines,
+        "risk_headlines": risk_headlines,
+        "recent_dart_filings": recent_dart,
+    }
+
+
 def build_recommendations(repository, store, *, as_of, expected_session=None, verified_close_at=None,
-                          max_candidates=5, price_refresh_ready=True):
+                          max_candidates=5, price_refresh_ready=True, actionable=False,
+                          fallback_price_session=None, actionable_focus=None):
     as_of = validate_analysis_time(as_of)
     if type(max_candidates) is not int or not 1 <= max_candidates <= 5:
         raise ValueError("recommendation limit must be between 1 and 5")
-    if not isinstance(price_refresh_ready,bool):
+    if not isinstance(price_refresh_ready, bool):
         raise ValueError('price_refresh_ready must be boolean')
+    if not isinstance(actionable, bool):
+        raise ValueError('actionable must be boolean')
+
+    effective_session = expected_session
+    effective_close = verified_close_at
+    used_fallback_session = None
+    if actionable and not price_refresh_ready and fallback_price_session is not None:
+        effective_session = fallback_price_session
+        effective_close = None
+        used_fallback_session = fallback_price_session
+
+    focus_meta: dict[str, dict] = {}
+    focus_order: list[str] = []
+    if actionable:
+        if actionable_focus is None and effective_session is not None:
+            from .research_focus import choose_actionable_focus
+            actionable_focus = choose_actionable_focus(
+                repository, store, as_of=as_of,
+                expected_session=effective_session, verified_close_at=effective_close,
+                limit=max_candidates,
+            )
+        if actionable_focus:
+            for item in actionable_focus.get("selected", []):
+                focus_meta[item["symbol"]] = item
+                focus_order.append(item["symbol"])
+
     rows = []
+    symbol_context: dict[str, tuple[object, set[str]]] = {}
     for security, financial, bundle in financial_universe(repository, store, as_of=as_of):
         cursor = store.latest("dart_cursor", security.symbol, as_of=as_of)
         attempt = store.latest("dart_attempt", security.symbol, as_of=as_of)
         current = bool(bundle and bundle["payload"].get("status") == "COLLECTED" and cursor
                        and date.fromisoformat(cursor["payload"]["end"]) >= (as_of.astimezone(KST).date() - timedelta(days=1)))
+        dart_fresh = bool(bundle and bundle["payload"].get("status") == "COLLECTED" and cursor
+                          and date.fromisoformat(cursor["payload"]["end"]) >= (as_of.astimezone(KST).date() - timedelta(days=7)))
         if attempt and attempt["payload"].get("status") == "FAILED" and cursor and (
                 datetime.fromisoformat(attempt["observed_at"]) >= datetime.fromisoformat(cursor["observed_at"])):
             current = False
+            dart_fresh = False
         inputs = [r["input_id"] for r in (bundle, cursor, attempt) if r]
         bars = []
+        news_snapshot = None
         if financial.gate == "PASS":
             event_records = store.records("reviewed_event", security.symbol, as_of=as_of)
             events = [event_from_dict(r["payload"]) for r in event_records]
@@ -138,6 +338,10 @@ def build_recommendations(repository, store, *, as_of, expected_session=None, ve
                 coverage = legacy
             if coverage:
                 inputs.append(coverage["input_id"])
+            if actionable:
+                news_snapshot = store.latest("recent_news_snapshot", security.symbol, as_of=as_of)
+                if news_snapshot:
+                    inputs.append(news_snapshot["input_id"])
             risk_coverage = risk_coverage_payload(store, security.symbol, as_of=as_of)
             manual_risk = store.latest('risk_coverage', security.symbol, as_of=as_of)
             if risk_coverage is None and manual_risk and manual_risk['payload'].get('status') == 'REVIEWED':
@@ -167,44 +371,76 @@ def build_recommendations(repository, store, *, as_of, expected_session=None, ve
                               raw_evidence=raw, risk_coverage=risk_coverage)
             inputs.extend(r["input_id"] for r in store.records("fcf_review", security.symbol, as_of=as_of))
             bars = repository.bars_for(security.symbol, as_of=as_of)
-            price = price_review(security.symbol, bars, as_of=as_of, expected_session=expected_session, verified_close_at=verified_close_at)
-            if not price_refresh_ready:
+            price = price_review(security.symbol, bars, as_of=as_of, expected_session=effective_session, verified_close_at=effective_close)
+            if not price_refresh_ready and used_fallback_session is None:
                 price = {'status':'VERIFY_PENDING','reasons':['PRICE_REFRESH_UNVERIFIED']}
+            if actionable:
+                symbol_context[security.symbol] = (cursor, {s["url"] for s in news.get("review_signals", [])})
         else:
-            news = {"news_score": None, "risk_penalty": Decimal("0"), "pending_checks": (), "hard_exclusions": (), "events": []}
+            news = {"news_score": None, "risk_penalty": Decimal("0"), "pending_checks": (), "hard_exclusions": (), "events": [], "review_signals": []}
             price = {"status": "NOT_EVALUATED", "reasons": []}
-        row = evaluate_unified(financial, news, price, provenance_current=current)
+        if actionable:
+            meta = focus_meta.get(security.symbol, {})
+            row = evaluate_actionable(
+                financial, news, price, as_of=as_of, dart_fresh=dart_fresh,
+                news_snapshot=news_snapshot, price_fallback_session=used_fallback_session,
+                tie_breaker=meta.get("tie_breaker"), liquidity_tier=meta.get("liquidity_tier"),
+                in_cooldown=meta.get("in_cooldown", False),
+            )
+        else:
+            row = evaluate_unified(financial, news, price, provenance_current=current)
         row["source_input_ids"] = sorted(set(inputs))
         row["financial_source_url"] = financial.source_inputs.get('financial', {}).get('source_url') if financial.source_inputs.get('financial') else None
         if bars:
             row["price_input_fingerprint"] = hashlib.sha256(json.dumps(to_json_value(bars), sort_keys=True).encode()).hexdigest()
         rows.append(row)
     priority = {"BUY_RECOMMENDATION": 0, "WATCH": 1, "VERIFY_PENDING": 2, "EXCLUDED": 3, "NOT_APPLICABLE": 4}
-    rows.sort(key=lambda r: (priority[r["action_decision"]], -(r["total_score"] or Decimal("0")),
-                            -(r["financial_score"] or Decimal("0")), r["symbol"]))
+    if actionable:
+        focus_rank = {sym: idx for idx, sym in enumerate(focus_order)}
+        rows.sort(key=lambda r: (
+            priority[r["action_decision"]],
+            r["symbol"] not in focus_rank,
+            focus_rank.get(r["symbol"], 999),
+            -(r["total_score"] or Decimal("0")),
+            -(r["financial_score"] or Decimal("0")),
+            -(r.get("tie_breaker") or Decimal("0")),
+            r["symbol"],
+        ))
+    else:
+        rows.sort(key=lambda r: (priority[r["action_decision"]], -(r["total_score"] or Decimal("0")),
+                                -(r["financial_score"] or Decimal("0")), r["symbol"]))
     selected = [r for r in rows if r["action_decision"] in {"BUY_RECOMMENDATION", "WATCH"}][:max_candidates]
     for i, row in enumerate(selected, 1):
         row["rank"] = i
+        if actionable and row["symbol"] in symbol_context:
+            cursor, risk_urls = symbol_context[row["symbol"]]
+            row.update(_candidate_evidence_context(store, row["symbol"], as_of=as_of, cursor=cursor, risk_urls=risk_urls))
     financial_targets = [r for r in rows if r.get("financial_score") is not None and r["financial_score"] >= 70
                          and r["action_decision"] not in {"EXCLUDED", "NOT_APPLICABLE"}]
     pending_targets = sorted((r for r in financial_targets if r["action_decision"] == "VERIFY_PENDING"),
                              key=lambda r: (-r["financial_score"], r["symbol"]))[:max_candidates]
     calendar = store.latest("market_calendar", "KR", as_of=as_of)
-    report = to_json_value({"contract": "UNIFIED_RESEARCH_V1", "policy_version": POLICY_VERSION,
+    policy_version = POLICY_VERSION_ACTIONABLE if actionable else POLICY_VERSION
+    thresholds = {"financial": 75 if actionable else 70, "total": 75}
+    report = to_json_value({"contract": "UNIFIED_RESEARCH_V1", "policy_version": policy_version,
                           "policy_status": "OPERATING_APPROVED" if os.getenv('STOCK_UNIFIED_ENABLED') == 'true' else "LOCAL_VALIDATION_PROPOSAL", "as_of": as_of,
-                          "score_formula": "clip(0.7*F + 0.3*N - R, 0, 100)", "thresholds": {"financial": 70, "total": 75},
+                          "score_formula": "clip(0.7*F + 0.3*N - R, 0, 100)", "thresholds": thresholds,
                           "source_read_only": True, "orders_enabled": False, "paper_account_eligible": False,
                           "recommendation_scope": "NEXT_SESSION_CONDITIONAL", "candidates": selected,
                           'research_windows': {k: v.isoformat() for k, v in news_windows(as_of).items()},
-                          'coverage_scope': 'RECENT_NEWS_90D_AND_TARGETED_RISK_3Y_WITH_DART_10Y',
+                          'coverage_scope': 'ACTIONABLE_PRICE_FIRST_WITH_COMMITTEE' if actionable else 'RECENT_NEWS_90D_AND_TARGETED_RISK_3Y_WITH_DART_10Y',
                           "research_queue": pending_targets,
                           "research_progress": {"financial_qualified": len(financial_targets),
                                                 "news_scored": sum(r["news_score"] is not None for r in financial_targets),
                                                 'risk_history_completed': sum(r['risk_history_complete'] for r in financial_targets),
                                                 "pending_reason_counts": dict(Counter(reason.split(":", 1)[0]
                                                     for r in financial_targets for reason in r["pending_checks"]))},
-                          "expected_price_session": expected_session,
+                          "expected_price_session": effective_session,
                           "market_calendar_input_id": calendar["input_id"] if calendar else None, "evaluations": rows})
+    if actionable:
+        report["policy_mode"] = "ACTIONABLE_COMMITTEE"
+        if used_fallback_session is not None:
+            report["price_session_basis"] = "LATEST_AVAILABLE_SESSION"
     report['decision_counts'] = dict(Counter(row['action_decision'] for row in rows))
     report['pending_reason_counts'] = dict(Counter(reason.split(':', 1)[0] for row in rows if row['action_decision']=='VERIFY_PENDING'
                                                   for reason in row['pending_checks']))
@@ -213,10 +449,15 @@ def build_recommendations(repository, store, *, as_of, expected_session=None, ve
 
 
 def render_recommendations(report):
-    lines = ["통합 종목 연구 · 다음 거래일 조건부", f"보고서: {report['report_id']}", f"기준: {report['as_of']}", "총점 = 재무 70% + 뉴스 30% - 위험 감점 · 기준 F≥70 / 총점≥75"]
+    fin_threshold = (report.get("thresholds") or {}).get("financial", 70)
+    tot_threshold = (report.get("thresholds") or {}).get("total", 75)
+    lines = ["통합 종목 연구 · 다음 거래일 조건부", f"보고서: {report['report_id']}", f"기준: {report['as_of']}", f"총점 = 재무 70% + 뉴스 30% - 위험 감점 · 기준 F≥{fin_threshold} / 총점≥{tot_threshold}"]
     prices=report.get('refresh_stages',{}).get('prices')
     if prices:
-        lines.append('가격 자료: '+('확보 완료' if prices.get('status')=='READY' else '확인 대기')+' · 필요한 일봉 '+str(prices.get('required_session') or prices.get('target_date') or '확인 불가'))
+        if report.get('price_session_basis') == 'LATEST_AVAILABLE_SESSION' and report.get('expected_price_session'):
+            lines.append(f"가격 자료: 직전 확보 거래일 기준 ({report['expected_price_session']}) · 당일 일봉 {prices.get('required_session') or prices.get('target_date') or '미발행'}")
+        else:
+            lines.append('가격 자료: '+('확보 완료' if prices.get('status')=='READY' else '확인 대기')+' · 필요한 일봉 '+str(prices.get('required_session') or prices.get('target_date') or '확인 불가'))
     reasons={'COMPANY_KIND_UNAVAILABLE':'기업 유형 미확인','DART_COLLECTION_NOT_CURRENT':'공시 갱신 대기',
              'NEWS_HISTORY_COVERAGE_UNAVAILABLE':'3년 뉴스 검토 미완료','MATERIAL_EVENT_REVIEW_REQUIRED':'위험 사건 원문 검토 항목',
              'NEWS_RECENT_COVERAGE_UNAVAILABLE':'최근 90일 뉴스 조사 미완료',
@@ -231,7 +472,7 @@ def render_recommendations(report):
         lines.append('뉴스 평가: 최근 90일 ' + windows['recent_start'] + '~' + windows['end']
                      + ' · 위험 조사: 과거 3년 ' + windows['risk_start'] + '~' + windows['end'])
     archive_rows = archive.get('results', [archive] if archive.get('symbol') else [])
-    status_labels = {'PARTIAL': '조사 중', 'COMPLETE': '검색 완료', 'PROVIDER_LIMIT': '검색 한도 도달'}
+    status_labels = {'PARTIAL': '조사 중', 'COMPLETE': '검색 완료', 'PROVIDER_LIMIT': '검색 한도 도달', 'SNAPSHOT_100': '최신 100건 수집'}
     if archive_rows:
         lines.append('이번 뉴스 수집: ' + ', '.join(r['symbol'] + ' ' + status_labels.get(r['status'], r['status'])
                                                   for r in archive_rows)
@@ -241,6 +482,7 @@ def render_recommendations(report):
         lines.append('위험 검색 보완: ' + material['symbol'] + ' · '
                      + status_labels.get(material['status'], material['status'])
                      + ' · 요청 ' + str(material.get('actual_calls', 0)) + '회')
+    actionable_with_candidates = report.get("policy_mode") == "ACTIONABLE_COMMITTEE" and bool(report.get("candidates"))
     if not report["candidates"]:
         lines.append("추천·관찰 기준을 충족한 종목 없음")
         rows=report.get('evaluations',[])
@@ -250,12 +492,12 @@ def render_recommendations(report):
         lines.append('판정 집계: ' + ', '.join(LABELS.get(k,k) + ' ' + str(v) for k,v in report.get('decision_counts', {}).items()))
         lines.append('미완료: ' + ', '.join(reasons.get(k,k) + ' ' + str(v) for k,v in sorted(report.get('pending_reason_counts', {}).items(), key=lambda i:-i[1])[:5]))
     progress = report.get('research_progress')
-    if progress and progress['pending_reason_counts']:
+    if not actionable_with_candidates and progress and progress['pending_reason_counts']:
         lines.append('재무 70점 이상 대상의 미완료: ' + ', '.join(
             reasons.get(k, k) + ' ' + str(v) + ('항목' if k == 'MATERIAL_EVENT_REVIEW_REQUIRED' else '개')
             for k, v in sorted(progress['pending_reason_counts'].items(), key=lambda item: -item[1])[:5]))
     queue = report.get('research_queue', [])
-    if queue:
+    if not actionable_with_candidates and queue:
         lines.append('재무 점수 상위 검증 대기 종목')
         for row in queue:
             pending_counts = Counter(reason.split(':', 1)[0] for reason in row['pending_checks'])
@@ -265,8 +507,20 @@ def render_recommendations(report):
             total_score = row['total_score'] if row['total_score'] is not None else '확인 불가'
             lines.append(f"{row['name']} ({row['symbol']}) · 재무 {row['financial_score']} / 뉴스 {news_score} / 총점 {total_score} · 확인 대기: {missing}")
     for row in report["candidates"]:
-        lines.extend([f"{row['rank']}. {row['name']} ({row['symbol']}) · {row['label']}",
-                      f"재무 {row['financial_score']} / 뉴스 {row['news_score']} / 위험 -{row['risk_penalty']} / 총점 {row['total_score']}"])
+        strategy = STRATEGY_LABELS.get((row.get("price") or {}).get("strategy", ""), "")
+        strategy_suffix = f" · {strategy}" if strategy else ""
+        lines.extend([
+            f"{row['rank']}. {row['name']} ({row['symbol']}) · {row['label']}{strategy_suffix}",
+            f"재무 {row['financial_score']} / 뉴스 {row['news_score']} / 위험 -{row['risk_penalty']} / 총점 {row['total_score']}",
+        ])
+        metrics = (row.get("price") or {}).get("metrics") or {}
+        if metrics.get("average_value20") and metrics.get("return20") is not None:
+            avg_eok = Decimal(str(metrics["average_value20"])) / Decimal("100000000")
+            ret20 = Decimal(str(metrics["return20"])) * Decimal("100")
+            dd60 = Decimal(str(metrics["drawdown60"])) * Decimal("100")
+            lines.append(f"일봉({row['price'].get('session', '')}): 20일 거래대금 {avg_eok:,.1f}억 · 20일 수익률 {ret20:+.1f}% · 60일 고점대비 {dd60:+.1f}%")
+        for warning in row.get("warnings", []):
+            lines.append(warning)
         if row["advisories"]:
             lines.append("참고: " + ", ".join(row["advisories"]))
         lines.extend(row["price"].get("entry_conditions", []))

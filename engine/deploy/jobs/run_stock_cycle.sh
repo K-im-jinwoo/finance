@@ -46,6 +46,16 @@ case "${STOCK_CANDIDATE_CHARTS:-false}" in
   *) echo "STOCK_CANDIDATE_CHARTS must be true or false" >&2; exit 2 ;;
 esac
 
+case "${STOCK_ACTIONABLE_ENABLED:-false}" in
+  true|false) ;;
+  *) echo "STOCK_ACTIONABLE_ENABLED must be true or false" >&2; exit 2 ;;
+esac
+
+case "${STOCK_COMMITTEE_BRIEF:-false}" in
+  true|false) ;;
+  *) echo "STOCK_COMMITTEE_BRIEF must be true or false" >&2; exit 2 ;;
+esac
+
 emit_candidate_charts() {
   chart_report_id=$(printf '%s\n' "$1" | sed -n 's/^보고서: //p')
   chart_python=${STOCK_CHART_PYTHON:-/home/ubuntu/.hermes/hermes-agent/venv/bin/python}
@@ -56,6 +66,18 @@ emit_candidate_charts() {
     --research-database "$chart_state/unified-research-inputs.sqlite3" \
     --report-id "$chart_report_id" --format telegram \
     --output-dir "${STOCK_CHART_OUTPUT_DIR:-$chart_home/cache/candidate-charts}"
+}
+
+emit_committee_brief() {
+  brief_report_id=$(printf '%s\n' "$1" | sed -n 's/^보고서: //p')
+  brief_python=${STOCK_COMMITTEE_PYTHON:-${STOCK_CHART_PYTHON:-/home/ubuntu/.hermes/hermes-agent/venv/bin/python}}
+  brief_state=${STOCK_STATE_HOST_DIR:-/srv/stock-assistant/state}
+  brief_home=${HERMES_HOME:-/home/ubuntu/.hermes/profiles/stock-cio}
+  brief_script=${STOCK_COMMITTEE_SCRIPT:-$brief_home/scripts/stock-committee-brief.py}
+  "$brief_python" "$brief_script" \
+    --database "$brief_state/stock-assistant.sqlite3" \
+    --research-database "$brief_state/unified-research-inputs.sqlite3" \
+    --report-id "$brief_report_id" --format telegram
 }
 
 stage=DAILY_REFRESH
@@ -69,13 +91,24 @@ compose exec -T stock-assistant python -m stock_assistant refresh-daily \
 
 if [ "${STOCK_UNIFIED_ENABLED:-false}" = true ]; then
   stage=UNIFIED_RESEARCH
+  actionable_args=""
+  if [ "${STOCK_ACTIONABLE_ENABLED:-false}" = true ]; then
+    actionable_args="--actionable"
+  fi
   unified_output=$(compose exec -T stock-assistant python -m stock_assistant.research_cli refresh-unified \
     --database "$database" --research-database /var/lib/stock/unified-research-inputs.sqlite3 \
     --api-key-file /run/secrets/dart-api-key --batch-size 25 --archive-pages 5 \
     --client-id-file /run/secrets/naver-news-client-id --client-secret-file /run/secrets/naver-news-client-secret \
     --usage-database /var/lib/stock/news-api-usage.sqlite3 \
-    --toss-client-id-file /run/secrets/toss-client-id --toss-client-secret-file /run/secrets/toss-client-secret --format text)
+    --toss-client-id-file /run/secrets/toss-client-id --toss-client-secret-file /run/secrets/toss-client-secret \
+    $actionable_args --format text)
   printf '%s\n' "$unified_output"
+  if [ "${STOCK_COMMITTEE_BRIEF:-false}" = true ]; then
+    stage=COMMITTEE_BRIEF
+    if ! emit_committee_brief "$unified_output"; then
+      printf '투자위원회 요약 실패 · 후보 보고서와 판정은 유지합니다.\n'
+    fi
+  fi
   if [ "${STOCK_CANDIDATE_CHARTS:-false}" = true ]; then
     stage=CANDIDATE_CHARTS
     if ! emit_candidate_charts "$unified_output"; then

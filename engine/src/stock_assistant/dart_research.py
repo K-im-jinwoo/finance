@@ -91,7 +91,7 @@ class DartResearchCollector:
             return [replace(e, observed_at=max(e.observed_at, self.clock())) for p in pages for e in p.filings]
         return window(start, end)
 
-    def run(self, *, symbols=None, batch_size=25, force=False):
+    def run(self, *, symbols=None, batch_size=25, force=False, priority_symbols=None):
         if type(batch_size) is not int or not 1 <= batch_size <= 50:
             raise ValueError("DART batch size must be between 1 and 50")
         now = validate_analysis_time(self.clock())
@@ -108,17 +108,35 @@ class DartResearchCollector:
         eligible.sort(key=lambda s: ((attempts.get(s.symbol) or {}).get("observed_at", ""), s.symbol))
         selected = []
         end = now.astimezone(KST).date() - timedelta(days=1)
+        priority_set = set(priority_symbols or ())
+        if priority_set and symbols is None:
+            priority_order = {sym: idx for idx, sym in enumerate(priority_symbols)}
+            priority_due = []
+            for security in eligible:
+                if security.symbol not in priority_set:
+                    continue
+                cursor, attempt = cursors.get(security.symbol), attempts.get(security.symbol)
+                failed = attempt and attempt["payload"].get("status") == "FAILED"
+                if not force and not failed and cursor and date.fromisoformat(cursor["payload"]["end"]) >= end:
+                    continue
+                priority_due.append(security)
+            priority_due.sort(key=lambda s: priority_order[s.symbol])
+            selected.extend(priority_due[:batch_size])
+        selected_symbols = {s.symbol for s in selected}
         for security in eligible:
+            if len(selected) >= batch_size:
+                break
+            if security.symbol in selected_symbols:
+                continue
             cursor, attempt = cursors.get(security.symbol), attempts.get(security.symbol)
             failed = attempt and attempt["payload"].get("status") == "FAILED"
             if not force and not failed and cursor and date.fromisoformat(cursor["payload"]["end"]) >= end:
                 continue
             selected.append(security)
-            if len(selected) == batch_size:
-                break
+            selected_symbols.add(security.symbol)
         if not selected:
             return {"selected": 0, "requests": 0, "results": [], "source_read_only": True}
-        if symbols is None and not force:
+        if symbols is None and not force and not priority_set:
             # Keep issuers under active second-stage review current, without exhausting the rotation batch.
             followed=set(self.store.latest_by_symbol('news_coverage',as_of=now))
             focus = self.store.latest('research_focus', 'ALL', as_of=now)

@@ -94,10 +94,12 @@ def main(argv=None) -> int:
     refresh.add_argument("--batch-size", type=int, default=25)
     refresh.add_argument("--archive-pages", type=int, default=5)
     refresh.add_argument("--symbols")
+    refresh.add_argument("--actionable", action="store_true")
     refresh.add_argument("--format", choices=("json", "text"), default="text")
     commands.choices["collect-news"].add_argument("--limit", type=int, default=5)
     commands.choices["import-reviews"].add_argument("--review-file", type=Path, required=True)
     commands.choices["recommend"].add_argument("--format", choices=("json", "text"), default="json")
+    commands.choices["recommend"].add_argument("--actionable", action="store_true")
     commands.choices["recommend"].add_argument("--save-report", action="store_true",
                                             help="save this new-contract report only to the separate research data database")
     commands.choices["review-queue"].add_argument("--limit", type=int, default=25)
@@ -157,7 +159,8 @@ def main(argv=None) -> int:
                     result = refresh_unified(repository, store, dart_client=DartClient(key), news_client=client,
                         calendar_client=shared_calendar(_credential(args.toss_client_id_file), _credential(args.toss_client_secret_file)),
                         dart_key=key, batch_size=args.batch_size, archive_pages=args.archive_pages,
-                        seed_symbols=args.symbols.split(',') if args.symbols else None)
+                        seed_symbols=args.symbols.split(',') if args.symbols else None,
+                        actionable=args.actionable)
                     if args.format == 'text':
                         print(render_recommendations(result))
                         return 0
@@ -173,7 +176,12 @@ def main(argv=None) -> int:
                 result = review_queue(repository, store, as_of=as_of, limit=args.limit)
             else:
                 session, closed = market_session(store, as_of=as_of)
-                result = build_recommendations(repository, store, as_of=as_of, expected_session=session, verified_close_at=closed)
+                fallback = None
+                if args.actionable:
+                    from .unified_cycle import _latest_available_price_session
+                    fallback = _latest_available_price_session(repository, as_of=as_of)
+                result = build_recommendations(repository, store, as_of=as_of, expected_session=session, verified_close_at=closed,
+                                               actionable=args.actionable, fallback_price_session=fallback)
                 if args.save_report:
                     store.put("unified_report", "ALL", result, observed_at=datetime.now(timezone.utc))
                 if args.format == "text":

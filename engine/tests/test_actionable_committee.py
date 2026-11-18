@@ -169,6 +169,11 @@ class ActionableScreeningTests(unittest.TestCase):
         self.assertEqual(chart_data["symbol"], "005930")
         self.assertEqual(chart_data["session"], date(2026, 9, 19))
 
+        # Verify stock-committee-brief.py loads the real saved ResearchData report (matching APPLICATION_ID).
+        loaded = committee.load_saved_report(self.research_path, report["report_id"], source_database=self.source)
+        self.assertEqual(loaded["report_id"], report["report_id"])
+        self.assertEqual(loaded["candidates"][0]["symbol"], "005930")
+
     def test_actionable_preserves_hard_exclusions(self):
         self._seed_bundle("005930", "삼성전자", volume=1_000_000, rising=True)
         # Flip OCF to negative -> hard exclusion MUST still exclude the stock

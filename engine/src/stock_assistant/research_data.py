@@ -39,7 +39,29 @@ class ResearchData:
             db.commit()
 
     def _connect(self):
-        return sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True) if self.read_only else sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True) if self.read_only else sqlite3.connect(self.path)
+        conn.execute("PRAGMA temp_store=MEMORY")
+        return conn
+
+    def recent_unified_candidates(self, *, as_of: datetime, since: datetime) -> list[list[dict]]:
+        """Read only $.candidates arrays from recent unified_report rows without loading full blobs."""
+        as_of = validate_analysis_time(as_of)
+        since = validate_analysis_time(since)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT json_extract(payload_json, '$.candidates') FROM research_inputs "
+                "WHERE kind='unified_report' AND symbol='ALL' "
+                "AND julianday(observed_at)>=julianday(?) AND julianday(observed_at)<=julianday(?)",
+                (since.isoformat(), as_of.isoformat()),
+            ).fetchall()
+        out = []
+        for (raw,) in rows:
+            if not raw:
+                continue
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                out.append(parsed)
+        return out
 
     def put(self, kind: str, symbol: str, payload: dict, *, observed_at: datetime) -> str:
         return self.put_many([(kind, symbol, payload)], observed_at=observed_at)[0]

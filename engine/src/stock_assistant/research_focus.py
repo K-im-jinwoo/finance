@@ -55,12 +55,17 @@ def recent_recommended_symbols(store, *, as_of, cooldown_days: int = 30) -> set[
     """Collect symbols recently emitted as BUY_RECOMMENDATION or WATCH within cooldown_days."""
     cutoff = as_of - timedelta(days=cooldown_days)
     recent: set[str] = set()
-    for record in store.records("unified_report", "ALL", as_of=as_of):
-        observed = datetime.fromisoformat(record["observed_at"])
-        if observed < cutoff:
-            continue
-        for row in record["payload"].get("candidates", []):
-            if row.get("action_decision") in {"BUY_RECOMMENDATION", "WATCH"} and row.get("symbol"):
+    if hasattr(store, "recent_unified_candidates"):
+        candidate_lists = store.recent_unified_candidates(as_of=as_of, since=cutoff)
+    else:
+        candidate_lists = [
+            record["payload"].get("candidates", [])
+            for record in store.records("unified_report", "ALL", as_of=as_of)
+            if datetime.fromisoformat(record["observed_at"]) >= cutoff
+        ]
+    for candidates in candidate_lists:
+        for row in candidates:
+            if isinstance(row, dict) and row.get("action_decision") in {"BUY_RECOMMENDATION", "WATCH"} and row.get("symbol"):
                 recent.add(row["symbol"])
     return recent
 

@@ -25,7 +25,7 @@ REPORT_ID = re.compile(r"UR-[a-f0-9]{24}")
 FINAL_DECISIONS = {"BUY_RECOMMENDATION", "WATCH"}
 CIO_PROFILE = "stock-cio"
 CIO_MEMO_LIMIT = 4000
-APPLICATION_ID = 0x53545244
+APPLICATION_ID = 0x52534431
 STATUS_KR = {"COMPLETE": "완료", "UNAVAILABLE": "미완료"}
 
 
@@ -49,6 +49,7 @@ def load_saved_report(research_database: Path, report_id: str, *, source_databas
             raise ValueError("RESEARCH_DATABASE_MUST_DIFFER")
     with closing(sqlite3.connect(resolved.as_uri() + "?mode=ro", uri=True)) as db:
         db.execute("PRAGMA query_only=ON")
+        db.execute("PRAGMA temp_store=MEMORY")
         if db.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
             raise ValueError("INVALID_RESEARCH_DATABASE")
         row = db.execute(

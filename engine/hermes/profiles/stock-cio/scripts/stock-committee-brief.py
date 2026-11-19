@@ -36,9 +36,9 @@ STATUS_KR = {"COMPLETE": "완료", "UNAVAILABLE": "미완료"}
 
 def _ensure_engine_path() -> None:
     local_src = Path(__file__).resolve().parents[4] / "src"
-    for candidate in (ENGINE_SOURCE, local_src):
+    for candidate in (local_src, ENGINE_SOURCE):
         if candidate.is_dir() and str(candidate) not in sys.path:
-            sys.path.insert(0, str(candidate))
+            sys.path.append(str(candidate))
 
 
 def load_chart_analyses(report: dict, source_database: Path | None) -> dict[str, dict]:

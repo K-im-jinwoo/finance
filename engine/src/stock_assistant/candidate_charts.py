@@ -301,6 +301,11 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
         "ABOVE_SIGNAL_EXPANDING": "상승확대", "ABOVE_SIGNAL_CONTRACTING": "상승둔화",
         "BELOW_SIGNAL_IMPROVING": "반등시도", "BELOW_SIGNAL_WEAKENING": "하락우위",
     }
+    macd_short_en = {
+        "BULLISH_CROSS": "BULL CROSS", "BEARISH_CROSS": "BEAR CROSS",
+        "ABOVE_SIGNAL_EXPANDING": "EXPANDING", "ABOVE_SIGNAL_CONTRACTING": "SLOWING",
+        "BELOW_SIGNAL_IMPROVING": "REBOUND", "BELOW_SIGNAL_WEAKENING": "WEAKENING",
+    }
     rsi_str = f"{rsi_info['value']:.1f}" if rsi_info["value"] is not None else "N/A"
     bb_str = f"%B {bb_info['percent_b']:.2f}" if bb_info["percent_b"] is not None else "%B N/A"
     poc_str = f"{vp_info['poc_price']:,.0f}" if vp_info.get("poc_price") is not None else "N/A"
@@ -309,7 +314,7 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
         (words("종가 · 이평배열", "CLOSE / MA ALIGN"),
          f"{Decimal(m['close']):,.0f}  {words(align_kr.get(ma_info['alignment'], '혼조'), ma_info['alignment'])}"),
         (words("RSI(14) · MACD", "RSI14 / MACD"),
-         f"RSI {rsi_str}  |  {words(macd_short.get(macd_info['state'], '-'), macd_info['state'][:10])}"),
+         f"RSI {rsi_str}  |  {words(macd_short.get(macd_info['state'], '-'), macd_short_en.get(macd_info['state'], '-'))}"),
         (words("볼린저(20,2σ) · 일목", "BOLLINGER / CLOUD"),
          f"{bb_str}  |  {words(cloud_kr.get(ichi_info['cloud_position'], '-'), ichi_info['cloud_position'])}"),
         (words("매물대 POC · 상단매물", "POC / OVERHEAD"),
@@ -366,12 +371,16 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
         if lo <= float(level) <= hi:
             y = py1(float(level))
             _draw_dashed_hline(draw, left, right, y, res_c, dash=8, gap=6, width=1)
-            draw.text((left + 4, max(p1_top, y - 16)), f"R {float(level):,.0f}", font=font(13), fill=res_c)
+            ly = max(p1_top, y - 18)
+            draw.rectangle((left + 2, ly - 1, left + 96, ly + 16), fill="#101c30")
+            draw.text((left + 5, ly), f"R {float(level):,.0f}", font=font(13), fill=res_c)
     for level in sr_info.get("supports") or []:
         if lo <= float(level) <= hi:
             y = py1(float(level))
             _draw_dashed_hline(draw, left, right, y, sup_c, dash=8, gap=6, width=1)
-            draw.text((left + 4, min(p1_bot - 16, y + 2)), f"S {float(level):,.0f}", font=font(13), fill=sup_c)
+            ly = min(p1_bot - 18, y + 2)
+            draw.rectangle((left + 2, ly - 1, left + 96, ly + 16), fill="#101c30")
+            draw.text((left + 5, ly), f"S {float(level):,.0f}", font=font(13), fill=sup_c)
 
     # Bollinger Bands (20, 2std)
     _draw_series_line(draw, bb_info["series"]["upper"], px, py1, bb_c, width=1)

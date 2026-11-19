@@ -167,10 +167,11 @@ def build_committee_request(
         }
         sources.append({"kind": "UNIFIED_CANDIDATE_PACKET", "data": compact})
     vision_note = (
-        " 시장 담당은 첨부된 다중 패널 차트 시트 이미지(이평 5/20/60/120·볼린저·지지/저항·매물대 POC·거래량·RSI·MACD)를 "
-        "수치 JSON과 교차 판독하여 추세·과열·매물벽·지지/저항 가격대를 구체적으로 평가하라."
+        " 시장 담당은 첨부된 작도 차트 시트 이미지(이평 5/20/60/120·추세선·6대 패턴 작도·지지/돌파/손절선·매물대 POC·거래량·RSI·MACD)를 "
+        "chart_analysis의 trade_plan(실행 등급·돌파가·지지가·손절가)·primary_pattern·trendlines JSON과 교차 판독하여 "
+        "패턴 신뢰도·매물벽·과열·구체적 진입/손절 가격을 평가하라."
         if has_chart_vision
-        else " 시장 담당은 chart_analysis의 다중 지표(이평 5/20/60/120·볼린저·RSI·MACD·일목구름·지지/저항·매물대 POC·OBV·캔들)를 교차 검토하라."
+        else " 시장 담당은 chart_analysis의 trade_plan·primary_pattern·trendlines 및 다중 지표(이평·볼린저·RSI·MACD·일목·지지/저항·POC·OBV·캔들)를 교차 검토하라."
     )
     return {
         "mode": "research",

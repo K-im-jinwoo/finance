@@ -422,6 +422,32 @@ def build_recommendations(repository, store, *, as_of, expected_session=None, ve
         if actionable and row["symbol"] in symbol_context:
             cursor, risk_urls = symbol_context[row["symbol"]]
             row.update(_candidate_evidence_context(store, row["symbol"], as_of=as_of, cursor=cursor, risk_urls=risk_urls))
+            meta = focus_meta.get(row["symbol"], {})
+            if meta.get("chart_signal"):
+                row["chart_signal"] = meta["chart_signal"]
+            else:
+                sel_bars = repository.bars_for(row["symbol"], as_of=as_of)
+                if len(sel_bars) >= 61:
+                    try:
+                        from .chart_analysis import compute_full_chart_analysis
+                        ca = compute_full_chart_analysis(sel_bars)
+                        tp = ca["trade_plan"]
+                        primary = (ca.get("patterns") or {}).get("primary")
+                        row["chart_signal"] = {
+                            "grade": tp["grade"],
+                            "grade_label": tp["grade_label"],
+                            "reasons": tp["reasons"],
+                            "annotations": tp["annotations"],
+                            "breakout_price": tp["breakout_price"],
+                            "support_price": tp["support_price"],
+                            "stop_loss": tp["stop_loss"],
+                            "primary_pattern": (
+                                {"code": primary["code"], "name_ko": primary["name_ko"], "status": primary["status"]}
+                                if primary else None
+                            ),
+                        }
+                    except ValueError:
+                        pass
     financial_targets = [r for r in rows if r.get("financial_score") is not None and r["financial_score"] >= 70
                          and r["action_decision"] not in {"EXCLUDED", "NOT_APPLICABLE"}]
     pending_targets = sorted((r for r in financial_targets if r["action_decision"] == "VERIFY_PENDING"),
@@ -493,8 +519,11 @@ def _render_actionable_report(report: dict) -> str:
     ]
     for idx, row in enumerate(candidates, 1):
         strategy = STRATEGY_LABELS.get((row.get("price") or {}).get("strategy", ""), "")
-        tag = f" · {strategy}" if strategy else ""
-        lines.append(f"{idx}. {row['name']} ({row['symbol']}) · 총점 {row['total_score']}{tag}")
+        cs = row.get("chart_signal") or {}
+        grade_tag = f" · {cs['grade_label']}" if cs.get("grade_label") else (f" · {strategy}" if strategy else "")
+        pat = cs.get("primary_pattern")
+        pat_tag = f" · {pat['name_ko']}" if isinstance(pat, dict) and pat.get("name_ko") else ""
+        lines.append(f"{idx}. {row['name']} ({row['symbol']}) · 총점 {row['total_score']}{grade_tag}{pat_tag}")
 
     lines.extend(["", "━━━━━━━━━━━━━━━"])
 
@@ -512,6 +541,25 @@ def _render_actionable_report(report: dict) -> str:
             ret20 = Decimal(str(metrics["return20"])) * Decimal("100")
             dd60 = Decimal(str(metrics["drawdown60"])) * Decimal("100")
             lines.append(f"• 시세: 거래대금 {avg_eok:,.1f}억 · 20일 {ret20:+.1f}% · 60일 고점대비 {dd60:+.1f}%")
+        cs = row.get("chart_signal") or {}
+        if cs.get("grade_label"):
+            c_parts = [cs["grade_label"]]
+            pat = cs.get("primary_pattern")
+            if isinstance(pat, dict) and pat.get("name_ko"):
+                st_ko = "돌파" if pat.get("status") == "BREAKOUT" else "이탈" if pat.get("status") == "BREAKDOWN" else "형성"
+                c_parts.append(f"{pat['name_ko']}({st_ko})")
+            lvls = []
+            if cs.get("breakout_price") is not None:
+                lvls.append(f"돌파 {float(cs['breakout_price']):,.0f}")
+            if cs.get("support_price") is not None:
+                lvls.append(f"지지 {float(cs['support_price']):,.0f}")
+            if cs.get("stop_loss") is not None:
+                lvls.append(f"손절 {float(cs['stop_loss']):,.0f}")
+            if lvls:
+                c_parts.append(" / ".join(lvls) + "원")
+            if cs.get("reasons"):
+                c_parts.append(", ".join(cs["reasons"][:2]))
+            lines.append("• 차트: " + " · ".join(c_parts))
 
         # Keep only issuer-specific warnings/advisories; common notices live once in header/footer.
         specific_notes = []

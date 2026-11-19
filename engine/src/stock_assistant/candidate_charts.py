@@ -27,7 +27,7 @@ from .validation import validate_analysis_time
 
 
 VERSION = "CANDIDATE_CHARTS_V1"
-RENDER_VERSION = "2026-11-19.1"
+RENDER_VERSION = "2026-11-19.2"
 KST = timezone(timedelta(hours=9))
 FINAL_DECISIONS = {"BUY_RECOMMENDATION", "WATCH"}
 REPORT_ID = re.compile(r"UR-[a-f0-9]{24}")
@@ -251,8 +251,18 @@ def build_committee_chart_sheet(chart_paths: list[Path], target: Path) -> Path:
     return target
 
 
+def _place_non_overlapping_y(raw_y: float, used: list[float], lo_y: float, hi_y: float, min_gap: float = 20.0) -> float:
+    y = max(lo_y, min(hi_y, raw_y))
+    for _ in range(8):
+        if all(abs(y - prev) >= min_gap for prev in used):
+            break
+        y = min(hi_y, y + min_gap) if y + min_gap <= hi_y else max(lo_y, y - min_gap)
+    used.append(y)
+    return y
+
+
 def render_chart(data, target: Path, *, font_file=None, demo=False):
-    """Draw multi-panel technical chart (OHLC+MA5/20/60/120+BB+S/R+VP / Volume / RSI / MACD)."""
+    """Draw analyst-annotated chart (~70% main price/patterns/trendlines/zones + compact volume & RSI|MACD)."""
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError as exc:
@@ -264,8 +274,8 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
     ink, muted, grid = "#e9eff8", "#9cadc7", "#233148"
     up, down = "#ef6874", "#64aaff"
     ma5_c, ma20_c, ma60_c, ma120_c = "#f7a8b8", "#ffcc72", "#68dbc8", "#b794f6"
-    bb_c, sup_c, res_c, poc_c = "#4e6a94", "#4fd18b", "#f87171", "#f6c453"
-    rsi_c, macd_c, sig_c = "#90cdf4", "#63b3ed", "#f6ad55"
+    bb_c, sup_c, res_c, stop_c, poc_c = "#4e6a94", "#4fd18b", "#f87171", "#fb923c", "#f6c453"
+    pat_c, tri_c, rsi_c, macd_c, sig_c = "#38bdf8", "#facc15", "#90cdf4", "#63b3ed", "#f6ad55"
     words = (lambda ko, en: ko if korean else en)
 
     ext = data.get("extended_analysis") or compute_full_chart_analysis(data["bars"])
@@ -278,79 +288,121 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
     vp_info = ext["volume_profile"]
     obv_info = ext["obv"]
     candle_info = ext["candle"]
+    trendlines = ext.get("trendlines") or {}
+    patterns = ext.get("patterns") or {}
+    primary_pat = patterns.get("primary")
+    trade_plan = ext.get("trade_plan") or {}
+    grade = trade_plan.get("grade", "ENTRY_READY")
 
-    # Header
+    # Header with execution grade badge & detected pattern badge
     title = f"{data['name']}  {data['symbol']}" if korean else data["symbol"]
-    draw.text((60, 22), title, font=font(34), fill=ink)
-    status = LABELS[data["decision"]] if korean else ("WATCH" if data["decision"] == "WATCH" else "NEXT SESSION: CONDITIONAL")
-    draw.text((60, 68), status, font=font(20), fill=ma20_c)
-    if demo:
-        draw.text((760, 32), words("표시 예시 · 가상 데이터 · 추천 아님", "DEMO / SYNTHETIC / NOT A RECOMMENDATION"),
-                  font=font(22), fill=up)
-    draw.text((60, 98), words("일봉 기준일", "DAILY CLOSE") + f" {data['session']}   |   "
-              + words("보고서 시각", "REPORT AS OF") + " " + data["as_of"].astimezone(KST).strftime("%Y-%m-%d %H:%M KST"),
-              font=font(17), fill=muted)
+    draw.text((56, 18), title, font=font(32), fill=ink)
 
-    # Summary cards (4 compact cards)
+    grade_styles = {
+        "ENTRY_READY": ("#123c2b", "#4fd18b", words("진입 검토", "ENTRY READY")),
+        "WAIT_BREAKOUT": ("#3b2f12", "#f6c453", words("돌파 대기", "WAIT BREAKOUT")),
+        "WAIT_PULLBACK": ("#422414", "#fb923c", words("눌림 대기(과열)", "WAIT PULLBACK")),
+        "CHART_CAUTION": ("#42181f", "#f87171", words("차트 주의", "CAUTION")),
+    }
+    g_bg, g_fg, g_txt = grade_styles.get(grade, ("#14213a", ma20_c, grade))
+    bx = 56
+    by = 62
+    badge_w = max(140, len(g_txt) * (16 if korean else 11) + 28)
+    draw.rounded_rectangle((bx, by, bx + badge_w, by + 30), radius=8, fill=g_bg, outline=g_fg, width=1)
+    draw.text((bx + 14, by + 5), g_txt, font=font(17), fill=g_fg)
+    bx += badge_w + 12
+
+    if primary_pat:
+        st_ko = "돌파" if primary_pat.get("status") == "BREAKOUT" else "이탈" if primary_pat.get("status") == "BREAKDOWN" else "형성"
+        p_txt = words(f"패턴: {primary_pat['name_ko']} {st_ko}", f"PATTERN: {primary_pat['code']} {primary_pat['status']}")
+        pw = max(160, len(p_txt) * (13 if korean else 9) + 24)
+        p_col = res_c if primary_pat.get("bias") == "BEARISH" else pat_c
+        draw.rounded_rectangle((bx, by, bx + pw, by + 30), radius=8, fill="#112942", outline=p_col, width=1)
+        draw.text((bx + 12, by + 5), p_txt, font=font(16), fill=p_col)
+        bx += pw + 12
+
+    reasons_txt = " · ".join(trade_plan.get("reasons") or []) if korean else ""
+    meta_line = (
+        words("일봉", "CLOSE") + f" {data['session']}  |  "
+        + data["as_of"].astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
+        + (f"  |  {reasons_txt}" if reasons_txt else "")
+    )
+    draw.text((bx + 4, by + 6), meta_line[:90], font=font(16), fill=muted)
+    if demo:
+        draw.text((920, 22), words("표시 예시 · 가상 데이터 · 추천 아님", "DEMO / SYNTHETIC / NOT A RECOMMENDATION"),
+                  font=font(20), fill=up)
+
+    # 4 compact summary cards (104..174)
     m = data["metrics"]
     align_kr = {"BULLISH_FULL": "완전 정배열", "BULLISH_MID": "중기 정배열",
                 "BEARISH_FULL": "완전 역배열", "BEARISH_MID": "중기 역배열", "MIXED": "혼조"}
-    cloud_kr = {"ABOVE_CLOUD": "구름 위", "IN_CLOUD": "구름 안", "BELOW_CLOUD": "구름 아래", "UNAVAILABLE": "-"}
-    macd_short = {
-        "BULLISH_CROSS": "골든크로스", "BEARISH_CROSS": "데드크로스",
-        "ABOVE_SIGNAL_EXPANDING": "상승확대", "ABOVE_SIGNAL_CONTRACTING": "상승둔화",
-        "BELOW_SIGNAL_IMPROVING": "반등시도", "BELOW_SIGNAL_WEAKENING": "하락우위",
-    }
-    macd_short_en = {
-        "BULLISH_CROSS": "BULL CROSS", "BEARISH_CROSS": "BEAR CROSS",
-        "ABOVE_SIGNAL_EXPANDING": "EXPANDING", "ABOVE_SIGNAL_CONTRACTING": "SLOWING",
-        "BELOW_SIGNAL_IMPROVING": "REBOUND", "BELOW_SIGNAL_WEAKENING": "WEAKENING",
-    }
-    rsi_str = f"{rsi_info['value']:.1f}" if rsi_info["value"] is not None else "N/A"
-    bb_str = f"%B {bb_info['percent_b']:.2f}" if bb_info["percent_b"] is not None else "%B N/A"
+    brk_p = trade_plan.get("breakout_price")
+    brk_pct = trade_plan.get("breakout_pct")
+    sup_p = trade_plan.get("support_price")
+    stop_p = trade_plan.get("stop_loss")
+    stop_pct = trade_plan.get("stop_loss_pct")
     poc_str = f"{vp_info['poc_price']:,.0f}" if vp_info.get("poc_price") is not None else "N/A"
     ov_str = f"{vp_info['overhead_supply_pct']:.0f}%" if vp_info.get("overhead_supply_pct") is not None else "N/A"
     cards = [
         (words("종가 · 이평배열", "CLOSE / MA ALIGN"),
-         f"{Decimal(m['close']):,.0f}  {words(align_kr.get(ma_info['alignment'], '혼조'), ma_info['alignment'])}"),
-        (words("RSI(14) · MACD", "RSI14 / MACD"),
-         f"RSI {rsi_str}  |  {words(macd_short.get(macd_info['state'], '-'), macd_short_en.get(macd_info['state'], '-'))}"),
-        (words("볼린저(20,2σ) · 일목", "BOLLINGER / CLOUD"),
-         f"{bb_str}  |  {words(cloud_kr.get(ichi_info['cloud_position'], '-'), ichi_info['cloud_position'])}"),
+         f"{Decimal(m['close']):,.0f}  {words(align_kr.get(ma_info['alignment'], '혼조'), ma_info['alignment'])}", ink),
+        (words("돌파선 (저항)", "BREAKOUT / RES"),
+         f"{brk_p:,.0f} ({brk_pct:+.1f}%)" if brk_p is not None and brk_pct is not None else words("확인 불가", "N/A"), res_c),
+        (words("지지선 / 손절(무효화)", "SUPPORT / STOP"),
+         f"{sup_p:,.0f} / {stop_p:,.0f} ({stop_pct:+.1f}%)" if sup_p is not None and stop_p is not None and stop_pct is not None else words("확인 불가", "N/A"), sup_c),
         (words("매물대 POC · 상단매물", "POC / OVERHEAD"),
-         f"{poc_str}  |  {words('위 ', 'UP ')}{ov_str}"),
+         f"{poc_str}  |  {words('상단 ', 'UP ')}{ov_str}", poc_c),
     ]
-    for i, (label, value) in enumerate(cards):
-        x = 60 + i * 374
-        draw.rounded_rectangle((x, 132, x + 358, 214), radius=10, fill="#14213a")
-        draw.text((x + 14, 142), label, font=font(15), fill=muted)
-        draw.text((x + 14, 170), value, font=font(22), fill=ink)
+    for i, (label, value, vcol) in enumerate(cards):
+        x = 56 + i * 376
+        draw.rounded_rectangle((x, 106, x + 362, 178), radius=10, fill="#14213a")
+        draw.text((x + 14, 114), label, font=font(14), fill=muted)
+        draw.text((x + 14, 140), value, font=font(20), fill=vcol)
 
-    # Common horizontal coordinate system for all 4 aligned panels
-    left, right = 82, 1310
-    vp_left, vp_right = 1322, 1456
+    # Panel 1 (~70% chart area): Main price + zones + trendlines + 6 classic patterns + S/R/Stop + Volume Profile
+    left, right = 82, 1306
+    vp_left, vp_right = 1318, 1456
+    p1_box_top, p1_box_bot = 188, 760
+    p1_top, p1_bot = 224, 742
+    draw.rounded_rectangle((56, p1_box_top, 1544, p1_box_bot), radius=12, fill="#101c30")
+
     bars = data["bars"]
     px = lambda i: left + (i + 0.5) * (right - left) / len(bars)
-    width = max(2, int((right - left) / len(bars) * 0.58))
+    width = max(2, int((right - left) / len(bars) * 0.60))
 
-    # Panel 1: Main price + MA5/20/60/120 + Bollinger + Support/Resistance + Volume Profile
-    p1_top, p1_bot = 262, 654
-    draw.rounded_rectangle((60, 228, 1540, 668), radius=12, fill="#101c30")
     price_vals = [float(b.low) for b in bars] + [float(b.high) for b in bars]
     for s in (bb_info["series"]["upper"], bb_info["series"]["lower"]):
         price_vals.extend(float(v) for v in s if v is not None)
+    for extra in (brk_p, sup_p, stop_p):
+        if extra is not None:
+            price_vals.append(float(extra))
     lo, hi = min(price_vals), max(price_vals)
-    padding = max((hi - lo) * 0.06, hi * 0.015, 1.0)
+    padding = max((hi - lo) * 0.07, hi * 0.018, 1.0)
     lo, hi = lo - padding, hi + padding
     py1 = lambda val: p1_bot - (float(val) - lo) / (hi - lo) * (p1_bot - p1_top)
 
+    # Shaded resistance / support zones (subtle background bands)
+    if brk_p is not None and lo < float(brk_p) < hi:
+        y_brk = py1(float(brk_p))
+        draw.rectangle((left, max(p1_top, y_brk - 18), right, y_brk), fill="#211626")
+    if sup_p is not None and lo < float(sup_p) < hi:
+        y_sup = py1(float(sup_p))
+        draw.rectangle((left, y_sup, right, min(p1_bot, y_sup + 18)), fill="#102926")
+
+    # Box Range shaded channel if detected
+    if primary_pat and primary_pat.get("code") == "BOX_RANGE":
+        bx1, bx2 = px(primary_pat["start_idx"]), px(primary_pat["end_idx"])
+        by_top, by_bot = py1(float(primary_pat["top"])), py1(float(primary_pat["bottom"]))
+        draw.rectangle((bx1, by_top, bx2, by_bot), fill="#172942", outline=pat_c, width=2)
+
+    # Horizontal grid + right price axis
     for i in range(6):
         val = lo + (hi - lo) * i / 5
         y = py1(val)
         draw.line((left, y, right, y), fill=grid, width=1)
         draw.text((vp_right + 10, y - 8), f"{val:,.0f}", font=font(14), fill=muted)
 
-    # Volume Profile horizontal bars on right side of Panel 1
+    # Volume Profile bars + POC line
     vp_bins = vp_info.get("bins") or []
     max_vp = max((float(b["volume"]) for b in vp_bins), default=0.0)
     if max_vp > 0:
@@ -361,32 +413,16 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
             is_poc = vp_info.get("poc_price") is not None and abs(float(b["mid"]) - float(vp_info["poc_price"])) <= (hi - lo) / 30.0
             fill_c = poc_c if is_poc else "#2a3f63"
             draw.rectangle((vp_left, min(y_hi, y_lo) + 1, vp_left + max(2.0, bar_w), max(y_hi, y_lo) - 1), fill=fill_c)
-        if vp_info.get("poc_price") is not None:
+        if vp_info.get("poc_price") is not None and lo <= float(vp_info["poc_price"]) <= hi:
             poc_y = py1(float(vp_info["poc_price"]))
-            _draw_dashed_hline(draw, left, vp_right, poc_y, poc_c, dash=6, gap=6, width=1)
+            _draw_dashed_hline(draw, left, vp_right, poc_y, poc_c, dash=5, gap=6, width=1)
             draw.text((vp_left + 2, max(p1_top, poc_y - 16)), "POC", font=font(13), fill=poc_c)
 
-    # Support & Resistance horizontal lines
-    for level in sr_info.get("resistances") or []:
-        if lo <= float(level) <= hi:
-            y = py1(float(level))
-            _draw_dashed_hline(draw, left, right, y, res_c, dash=8, gap=6, width=1)
-            ly = max(p1_top, y - 18)
-            draw.rectangle((left + 2, ly - 1, left + 96, ly + 16), fill="#101c30")
-            draw.text((left + 5, ly), f"R {float(level):,.0f}", font=font(13), fill=res_c)
-    for level in sr_info.get("supports") or []:
-        if lo <= float(level) <= hi:
-            y = py1(float(level))
-            _draw_dashed_hline(draw, left, right, y, sup_c, dash=8, gap=6, width=1)
-            ly = min(p1_bot - 18, y + 2)
-            draw.rectangle((left + 2, ly - 1, left + 96, ly + 16), fill="#101c30")
-            draw.text((left + 5, ly), f"S {float(level):,.0f}", font=font(13), fill=sup_c)
-
-    # Bollinger Bands (20, 2std)
+    # Bollinger Bands (subtle)
     _draw_series_line(draw, bb_info["series"]["upper"], px, py1, bb_c, width=1)
     _draw_series_line(draw, bb_info["series"]["lower"], px, py1, bb_c, width=1)
 
-    # Candles
+    # Candlesticks
     for i, b in enumerate(bars):
         x = px(i)
         color = up if b.close > b.open else down if b.close < b.open else muted
@@ -394,23 +430,106 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
         y1, y2 = sorted((py1(b.open), py1(b.close)))
         draw.rectangle((x - width / 2, y1, x + width / 2, max(y1 + 2, y2)), fill=color)
 
-    # Moving averages: SMA 5 / 20 / 60 / 120
+    # Multi moving averages (5 / 20 / 60 / 120)
     for period, color, lw in ((5, ma5_c, 1), (20, ma20_c, 2), (60, ma60_c, 2), (120, ma120_c, 2)):
         _draw_series_line(draw, ma_info["series"][period], px, py1, color, width=lw)
 
-    # Panel 1 Legend
-    draw.text((84, 234), "MA5", font=font(14), fill=ma5_c)
-    draw.text((135, 234), "MA20", font=font(14), fill=ma20_c)
-    draw.text((198, 234), "MA60", font=font(14), fill=ma60_c)
-    draw.text((260, 234), "MA120", font=font(14), fill=ma120_c)
-    draw.text((332, 234), "BB(20,2)", font=font(14), fill=bb_c)
-    draw.text((422, 234), words("지지(S)", "SUP"), font=font(14), fill=sup_c)
-    draw.text((490, 234), words("저항(R)", "RES"), font=font(14), fill=res_c)
-    draw.text((558, 234), words("매물대(VP/POC)", "VOL PROFILE"), font=font(14), fill=poc_c)
+    # Diagonal Trendlines (Support / Resistance)
+    sup_line = trendlines.get("support_line")
+    if sup_line and lo <= float(sup_line["y1"]) <= hi and lo <= float(sup_line["y2"]) <= hi:
+        draw.line(
+            (px(sup_line["x1"]), py1(sup_line["y1"]), px(sup_line["x2"]), py1(sup_line["y2"])),
+            fill=sup_c, width=3,
+        )
+    res_line = trendlines.get("resistance_line")
+    if res_line and lo <= float(res_line["y1"]) <= hi and lo <= float(res_line["y2"]) <= hi:
+        draw.line(
+            (px(res_line["x1"]), py1(res_line["y1"]), px(res_line["x2"]), py1(res_line["y2"])),
+            fill=stop_c, width=3,
+        )
 
-    # Panel 2: Volume
-    p2_top, p2_bot = 702, 770
-    draw.rounded_rectangle((60, 676, 1540, 778), radius=10, fill="#101c30")
+    # Direct Geometric Pattern Drawings (6 classic patterns)
+    if primary_pat:
+        pcode = primary_pat.get("code")
+        if pcode in {"DOUBLE_BOTTOM", "DOUBLE_TOP", "INVERSE_HEAD_AND_SHOULDERS"}:
+            pts = [(px(idx), py1(float(val))) for idx, val in primary_pat.get("points", [])]
+            pcol = res_c if pcode == "DOUBLE_TOP" else pat_c
+            if len(pts) >= 2:
+                draw.line(pts, fill=pcol, width=3)
+            for cx, cy in pts:
+                draw.ellipse((cx - 5, cy - 5, cx + 5, cy + 5), fill=tri_c, outline=pcol, width=2)
+            nk = primary_pat.get("neckline")
+            if nk is not None and lo <= float(nk) <= hi:
+                ny = py1(float(nk))
+                draw.line((pts[0][0], ny, right, ny), fill=tri_c, width=2)
+                draw.rectangle((pts[0][0] + 4, max(p1_top, ny - 19), pts[0][0] + 150, max(p1_top, ny - 19) + 17), fill="#101c30")
+                draw.text((pts[0][0] + 7, max(p1_top, ny - 18)),
+                          words(f"{primary_pat['name_ko']} 넥라인", f"{pcode} NECK"), font=font(13), fill=tri_c)
+        elif pcode == "CUP_AND_HANDLE":
+            c_start = primary_pat["cup_start_idx"]
+            c_low = primary_pat["cup_low_idx"]
+            h_start = primary_pat["handle_start_idx"]
+            c_end = primary_pat["end_idx"]
+            rim_y = py1(float(primary_pat["rim_price"]))
+            cup_pts = [
+                (px(c_start), rim_y),
+                (px((c_start + c_low) // 2), py1((float(primary_pat["rim_price"]) + float(primary_pat["cup_low"])) / 2.0)),
+                (px(c_low), py1(float(primary_pat["cup_low"]))),
+                (px((c_low + h_start) // 2), py1((float(primary_pat["rim_price"]) + float(primary_pat["cup_low"])) / 2.0)),
+                (px(h_start), rim_y),
+            ]
+            draw.line(cup_pts, fill=pat_c, width=3)
+            draw.rectangle((px(h_start), rim_y, px(c_end), py1(float(primary_pat["handle_low"]))), outline=tri_c, width=2)
+            draw.line((px(c_start), rim_y, right, rim_y), fill=tri_c, width=2)
+        elif pcode == "TRIANGLE":
+            u = primary_pat["upper_line"]
+            l = primary_pat["lower_line"]
+            draw.line((px(u[0]), py1(float(u[1])), px(u[2]), py1(float(u[3]))), fill=tri_c, width=3)
+            draw.line((px(l[0]), py1(float(l[1])), px(l[2]), py1(float(l[3]))), fill=sup_c, width=3)
+
+    # Clear Horizontal Price Lines (Breakout / Support / Stop-Loss) with non-overlapping labels
+    used_label_y: list[float] = []
+    key_lines = []
+    if brk_p is not None and lo <= float(brk_p) <= hi:
+        key_lines.append((float(brk_p), res_c, words(f"돌파선 {brk_p:,.0f} ({brk_pct:+.1f}%)", f"BRK {brk_p:,.0f} ({brk_pct:+.1f}%)")))
+    if stop_p is not None and lo <= float(stop_p) <= hi:
+        key_lines.append((float(stop_p), stop_c, words(f"손절(20일선) {stop_p:,.0f} ({stop_pct:+.1f}%)", f"STOP {stop_p:,.0f} ({stop_pct:+.1f}%)")))
+    if sup_p is not None and (stop_p is None or abs(float(sup_p) - float(stop_p)) / max(float(sup_p), 1.0) > 0.01) and lo <= float(sup_p) <= hi:
+        sup_pct = trade_plan.get("support_pct") or 0.0
+        key_lines.append((float(sup_p), sup_c, words(f"지지선 {sup_p:,.0f} ({sup_pct:+.1f}%)", f"SUP {sup_p:,.0f} ({sup_pct:+.1f}%)")))
+    for level_val, lcol, ltxt in key_lines:
+        y = py1(level_val)
+        _draw_dashed_hline(draw, left, right, y, lcol, dash=9, gap=6, width=2)
+        ly = _place_non_overlapping_y(y - 18, used_label_y, p1_top + 4, p1_bot - 22, min_gap=22.0)
+        lw_box = max(145, len(ltxt) * (10 if korean else 8) + 14)
+        draw.rectangle((left + 4, ly, left + 4 + lw_box, ly + 19), fill="#0d182b", outline=lcol, width=1)
+        draw.text((left + 9, ly + 2), ltxt, font=font(13), fill=lcol)
+
+    # Panel 1 Legend (top-left) + Key Annotation Chips (top-right inside main chart)
+    draw.text((80, 194), "MA5", font=font(14), fill=ma5_c)
+    draw.text((126, 194), "MA20", font=font(14), fill=ma20_c)
+    draw.text((184, 194), "MA60", font=font(14), fill=ma60_c)
+    draw.text((242, 194), "MA120", font=font(14), fill=ma120_c)
+    draw.text((310, 194), "BB", font=font(14), fill=bb_c)
+    draw.text((346, 194), words("추세·지지", "TREND/SUP"), font=font(14), fill=sup_c)
+    draw.text((436, 194), words("돌파·저항", "BRK/RES"), font=font(14), fill=res_c)
+    draw.text((524, 194), words("매물대(POC)", "VP/POC"), font=font(14), fill=poc_c)
+
+    if korean and trade_plan.get("annotations"):
+        ax = right - 4
+        for note in reversed(trade_plan["annotations"][:3]):
+            nw = max(90, len(note) * 11 + 18)
+            ax -= nw
+            if ax < 640:
+                break
+            n_col = res_c if ("과열" in note or "매물벽" in note or "약세" in note or "이탈" in note) else pat_c
+            draw.rounded_rectangle((ax, 193, ax + nw, 215), radius=6, fill="#16243d", outline=n_col, width=1)
+            draw.text((ax + 8, 196), note, font=font(13), fill=n_col)
+            ax -= 8
+
+    # Compact Panel 2 (Volume + OBV): 768..878
+    p2_top, p2_bot = 796, 868
+    draw.rounded_rectangle((56, 768, 1544, 878), radius=10, fill="#101c30")
     max_volume = max((b.volume for b in bars), default=0)
     for i, b in enumerate(bars):
         x = px(i)
@@ -418,24 +537,33 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
         h = (b.volume / max(1, max_volume)) * (p2_bot - p2_top)
         draw.rectangle((x - width / 2, p2_bot - h, x + width / 2, p2_bot), fill=color)
     obv_kr = {"ACCUMULATION": "매집(상승)", "DISTRIBUTION": "분산(하락)", "FLAT": "중립", "UNAVAILABLE": "-"}
-    draw.text((84, 681), words("거래량", "VOLUME") + f" max {max_volume:,}   |   OBV(20d): "
+    draw.text((80, 773), words("거래량", "VOLUME") + f" max {max_volume:,}   |   OBV(20d): "
               + words(obv_kr.get(obv_info["trend_20d"], "-"), obv_info["trend_20d"]), font=font(14), fill=muted)
 
-    # Panel 3: RSI(14)
-    p3_top, p3_bot = 808, 886
-    draw.rounded_rectangle((60, 786, 1540, 896), radius=10, fill="#101c30")
-    py3 = lambda val: p3_bot - (max(0.0, min(100.0, float(val))) / 100.0) * (p3_bot - p3_top)
+    # Compact Panel 3 (Split Left: RSI14 | Right: MACD 12/26/9): 886..1054
+    p3_box_top, p3_box_bot = 886, 1054
+    p3_top, p3_bot = 918, 1024
+    # Left half: RSI(14)
+    rsi_left, rsi_right = 82, 738
+    draw.rounded_rectangle((56, p3_box_top, 790, p3_box_bot), radius=10, fill="#101c30")
+    px_rsi = lambda i: rsi_left + (i + 0.5) * (rsi_right - rsi_left) / len(bars)
+    py_rsi = lambda val: p3_bot - (max(0.0, min(100.0, float(val))) / 100.0) * (p3_bot - p3_top)
     for lvl, col in ((70, res_c), (50, grid), (30, sup_c)):
-        y = py3(lvl)
-        _draw_dashed_hline(draw, left, right, y, col, dash=6, gap=6, width=1)
-        draw.text((right + 12, y - 7), str(lvl), font=font(13), fill=col if lvl != 50 else muted)
-    _draw_series_line(draw, rsi_info["series"], px, py3, rsi_c, width=2)
+        y = py_rsi(lvl)
+        _draw_dashed_hline(draw, rsi_left, rsi_right, y, col, dash=5, gap=5, width=1)
+        draw.text((rsi_right + 8, y - 7), str(lvl), font=font(13), fill=col if lvl != 50 else muted)
+    _draw_series_line(draw, rsi_info["series"], px_rsi, py_rsi, rsi_c, width=2)
+    rsi_val_str = f"{rsi_info['value']:.1f}" if rsi_info["value"] is not None else "N/A"
     div_tag = f"  [{rsi_info['divergence']}]" if rsi_info["divergence"] != "NONE" else ""
-    draw.text((84, 790), f"RSI(14): {rsi_str} ({rsi_info['zone']}){div_tag}", font=font(14), fill=rsi_c)
+    draw.text((80, 892), f"RSI(14): {rsi_val_str} ({rsi_info['zone']}){div_tag}", font=font(14), fill=rsi_c)
+    for i in (0, len(bars) // 2, len(bars) - 1):
+        draw.text((max(rsi_left, min(rsi_right - 50, px_rsi(i) - 22)), 1030), bars[i].trade_date.isoformat()[5:], font=font(13), fill=muted)
 
-    # Panel 4: MACD(12, 26, 9)
-    p4_top, p4_bot = 928, 1018
-    draw.rounded_rectangle((60, 904, 1540, 1046), radius=10, fill="#101c30")
+    # Right half: MACD(12, 26, 9)
+    macd_left, macd_right = 830, 1510
+    draw.rounded_rectangle((806, p3_box_top, 1544, p3_box_bot), radius=10, fill="#101c30")
+    px_macd = lambda i: macd_left + (i + 0.5) * (macd_right - macd_left) / len(bars)
+    mw = max(2, int((macd_right - macd_left) / len(bars) * 0.55))
     macd_vals = [
         float(v) for s in (macd_info["series"]["macd"], macd_info["series"]["signal"], macd_info["series"]["histogram"])
         for v in s if v is not None
@@ -444,37 +572,45 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
     if m_abs < 1e-6:
         m_abs = 1.0
     m_abs *= 1.15
-    py4 = lambda val: p4_bot - ((float(val) + m_abs) / (2.0 * m_abs)) * (p4_bot - p4_top)
-    zero_y = py4(0.0)
-    draw.line((left, zero_y, right, zero_y), fill=grid, width=1)
+    py_macd = lambda val: p3_bot - ((float(val) + m_abs) / (2.0 * m_abs)) * (p3_bot - p3_top)
+    zero_y = py_macd(0.0)
+    draw.line((macd_left, zero_y, macd_right, zero_y), fill=grid, width=1)
     for i, hv in enumerate(macd_info["series"]["histogram"]):
         if hv is None:
             continue
-        x = px(i)
-        hy = py4(hv)
+        x = px_macd(i)
+        hy = py_macd(hv)
         col = "#4fd18b" if hv >= 0 else "#f87171"
-        draw.rectangle((x - width / 2, min(zero_y, hy), x + width / 2, max(zero_y, hy)), fill=col)
-    _draw_series_line(draw, macd_info["series"]["macd"], px, py4, macd_c, width=2)
-    _draw_series_line(draw, macd_info["series"]["signal"], px, py4, sig_c, width=2)
+        draw.rectangle((x - mw / 2, min(zero_y, hy), x + mw / 2, max(zero_y, hy)), fill=col)
+    _draw_series_line(draw, macd_info["series"]["macd"], px_macd, py_macd, macd_c, width=2)
+    _draw_series_line(draw, macd_info["series"]["signal"], px_macd, py_macd, sig_c, width=2)
     m_txt = f"{macd_info['macd']:+.1f}" if macd_info["macd"] is not None else "N/A"
     s_txt = f"{macd_info['signal']:+.1f}" if macd_info["signal"] is not None else "N/A"
-    draw.text((84, 908), f"MACD(12,26,9): {m_txt}  /  Signal: {s_txt}  ({macd_info['state']})", font=font(14), fill=macd_c)
-
-    # Shared date ticks along bottom of Panel 4
-    for i in sorted({0, len(bars) // 4, len(bars) // 2, len(bars) * 3 // 4, len(bars) - 1}):
-        x = max(left, min(right - 85, px(i) - 32))
-        draw.text((x, 1022), bars[i].trade_date.isoformat()[5:], font=font(14), fill=muted)
+    macd_short = {
+        "BULLISH_CROSS": "골든크로스", "BEARISH_CROSS": "데드크로스",
+        "ABOVE_SIGNAL_EXPANDING": "상승확대", "ABOVE_SIGNAL_CONTRACTING": "상승둔화",
+        "BELOW_SIGNAL_IMPROVING": "반등시도", "BELOW_SIGNAL_WEAKENING": "하락우위",
+    }
+    macd_short_en = {
+        "BULLISH_CROSS": "BULL CROSS", "BEARISH_CROSS": "BEAR CROSS",
+        "ABOVE_SIGNAL_EXPANDING": "EXPANDING", "ABOVE_SIGNAL_CONTRACTING": "SLOWING",
+        "BELOW_SIGNAL_IMPROVING": "REBOUND", "BELOW_SIGNAL_WEAKENING": "WEAKENING",
+    }
+    draw.text((830, 892), f"MACD(12,26,9): {m_txt} / {s_txt} ({words(macd_short.get(macd_info['state'], '-'), macd_short_en.get(macd_info['state'], '-'))})",
+              font=font(14), fill=macd_c)
+    for i in (0, len(bars) // 2, len(bars) - 1):
+        draw.text((max(macd_left, min(macd_right - 50, px_macd(i) - 22)), 1030), bars[i].trade_date.isoformat()[5:], font=font(13), fill=muted)
 
     # Footer
-    sup_txt = f"{sr_info['nearest_support']:,.0f}({sr_info['nearest_support_pct']:+.1f}%)" if sr_info["nearest_support"] else "-"
-    res_txt = f"{sr_info['nearest_resistance']:,.0f}({sr_info['nearest_resistance_pct']:+.1f}%)" if sr_info["nearest_resistance"] else "-"
-    draw.text((64, 1054), f"ATR14 {Decimal(m['atr14']):,.0f} ({Decimal(m['atr14'])/Decimal(m['close'])*100:.1f}%)   |   "
-              + words("지지 ", "S ") + sup_txt + "  /  " + words("저항 ", "R ") + res_txt
-              + f"   |   {words('캔들', 'CANDLE')}: {candle_info['pattern']}   |   {words('일봉', 'BARS')} {len(bars)}",
-              font=font(16), fill=muted)
-    draw.text((64, 1082), data["report_id"] + "   |   " + _label(", ".join(data["sources"]))
-              + "   |   " + words("저장 자료 기반 기술 분석 · 자동 주문 없음", "SAVED DATA TECHNICAL ANALYSIS / NO AUTO ORDERS"),
-              font=font(15), fill=ma20_c)
+    cloud_kr = {"ABOVE_CLOUD": "구름 위", "IN_CLOUD": "구름 안", "BELOW_CLOUD": "구름 아래", "UNAVAILABLE": "-"}
+    draw.text((60, 1064), f"ATR14 {Decimal(m['atr14']):,.0f} ({Decimal(m['atr14'])/Decimal(m['close'])*100:.1f}%)   |   "
+              + words("일목: ", "CLOUD: ") + words(cloud_kr.get(ichi_info["cloud_position"], "-"), ichi_info["cloud_position"])
+              + f"   |   {words('캔들', 'CANDLE')}: {candle_info['pattern']}   |   {words('일봉', 'BARS')} {len(bars)}   |   {data['report_id']}",
+              font=font(15), fill=muted)
+    draw.text((60, 1090), _label(", ".join(data["sources"]))
+              + "   |   " + words("저장 자료 기반 자동 작도 분석 · 실제 매매 전 최신 시세 확인 필수 · 자동 주문 없음",
+                                  "SAVED DATA AUTO-ANNOTATED ANALYSIS / NO AUTO ORDERS"),
+              font=font(14), fill=ma20_c)
 
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if target.is_symlink():
@@ -563,6 +699,20 @@ def _compact_chart_caption(item: dict) -> list[str]:
     lines = [header, " · ".join(parts)]
     summary = item.get("chart_summary")
     if isinstance(summary, dict):
+        tp = summary.get("trade_plan") or {}
+        pat = summary.get("primary_pattern")
+        if tp.get("grade_label"):
+            tp_parts = [tp["grade_label"]]
+            if isinstance(pat, dict) and pat.get("name_ko"):
+                st_ko = "돌파" if pat.get("status") == "BREAKOUT" else "이탈" if pat.get("status") == "BREAKDOWN" else "형성"
+                tp_parts.append(f"{pat['name_ko']}({st_ko})")
+            if tp.get("breakout_price") is not None:
+                tp_parts.append(f"돌파 {tp['breakout_price']:,.0f}")
+            if tp.get("support_price") is not None:
+                tp_parts.append(f"지지 {tp['support_price']:,.0f}")
+            if tp.get("stop_loss") is not None:
+                tp_parts.append(f"손절 {tp['stop_loss']:,.0f}")
+            lines.append(" · ".join(tp_parts))
         rsi = summary.get("rsi14") or {}
         macd = summary.get("macd_12_26_9") or {}
         bb = summary.get("bollinger_20_2") or {}

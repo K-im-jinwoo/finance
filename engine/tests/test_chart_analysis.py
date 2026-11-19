@@ -80,6 +80,73 @@ class ChartAnalysisTests(unittest.TestCase):
         bars[-1] = replace(bars[-1], open=Decimal(20000), high=Decimal(20150), low=Decimal(19000), close=Decimal(20100))
         self.assertEqual(compute_full_chart_analysis(bars)["candle"]["pattern"], "HAMMER")
 
+    def test_double_bottom_box_breakout_and_trade_plan_grades(self):
+        # 1. Double Bottom (W-pattern) with breakout above neckline
+        base = make_bars(symbol="000100", count=100, start_price=10000, step=0)
+        prices = [10000] * 100
+        # Build clear W: drop to 8000 at idx 55, rally to 9600 at idx 70, retest 8100 at idx 82, rally to 9800 at 99
+        for i in range(45, 56):
+            prices[i] = int(10000 - (i - 45) * 200)
+        for i in range(56, 71):
+            prices[i] = int(8000 + (i - 55) * 106)
+        for i in range(71, 83):
+            prices[i] = int(9600 - (i - 70) * 125)
+        for i in range(83, 100):
+            prices[i] = int(8100 + (i - 82) * 100)
+        w_bars = [
+            replace(b, open=Decimal(p - 50), high=Decimal(p + 120), low=Decimal(p - 120), close=Decimal(p), volume=150000)
+            for b, p in zip(base, prices)
+        ]
+        w_res = compute_full_chart_analysis(w_bars)
+        w_codes = [p["code"] for p in w_res["patterns"]["detected"]]
+        self.assertIn("DOUBLE_BOTTOM", w_codes)
+        self.assertIsNotNone(w_res["trade_plan"]["breakout_price"])
+        self.assertIsNotNone(w_res["trade_plan"]["stop_loss"])
+
+        # 2. Box Range Breakout
+        box_prices = [10000 + (450 if (i % 6 < 3) else -450) for i in range(97)] + [10700, 10850, 11000]
+        box_bars = [
+            replace(b, open=Decimal(p - 40), high=Decimal(p + 80), low=Decimal(p - 80), close=Decimal(p), volume=200000)
+            for b, p in zip(base, box_prices)
+        ]
+        box_res = compute_full_chart_analysis(box_bars)
+        box_codes = [p["code"] for p in box_res["patterns"]["detected"]]
+        self.assertIn("BOX_RANGE", box_codes)
+
+        # 3. Overbought uptrend classifies as WAIT_PULLBACK
+        hot_bars = make_bars(symbol="000200", count=120, start_price=50000, step=500)
+        hot_res = compute_full_chart_analysis(hot_bars)
+        self.assertEqual(hot_res["trade_plan"]["grade"], "WAIT_PULLBACK")
+        self.assertLess(hot_res["trade_plan"]["scoring_bonus"], 0)
+
+        # 4. Downtrend classifies as CHART_CAUTION
+        down_bars = make_bars(symbol="000300", count=120, start_price=100000, step=-400)
+        down_res = compute_full_chart_analysis(down_bars)
+        self.assertEqual(down_res["trade_plan"]["grade"], "CHART_CAUTION")
+
+    def test_cup_and_handle_and_triangle_detection(self):
+        base = make_bars(symbol="000400", count=110, start_price=20000, step=0)
+        # Cup & Handle: left rim ~20000 at idx 22, smooth U bottom ~15500 at idx 58, right rim ~19900 at idx 95, shallow handle 18900..19700
+        cup_prices = [19000] * 110
+        for i in range(15, 25):
+            cup_prices[i] = 19000 + (i - 15) * 110
+        for i in range(25, 60):
+            t = (i - 25) / 35.0
+            cup_prices[i] = int(20000 - 4500 * t)
+        for i in range(60, 96):
+            t = (i - 60) / 35.0
+            cup_prices[i] = int(15500 + 4400 * t)
+        for i in range(96, 105):
+            cup_prices[i] = int(19800 - (i - 95) * 90)
+        for i in range(105, 110):
+            cup_prices[i] = int(19000 + (i - 104) * 180)
+        cup_bars = [
+            replace(b, open=Decimal(p - 60), high=Decimal(p + 120), low=Decimal(p - 120), close=Decimal(p), volume=180000)
+            for b, p in zip(base, cup_prices)
+        ]
+        cup_res = compute_full_chart_analysis(cup_bars)
+        self.assertIn("CUP_AND_HANDLE", [p["code"] for p in cup_res["patterns"]["detected"]])
+
     def test_compact_actionable_caption_includes_extended_indicators(self):
         bars = make_bars(symbol="053800", count=120, start_price=50000, step=350)
         as_of = bars[-1].observed_at + timedelta(hours=10)

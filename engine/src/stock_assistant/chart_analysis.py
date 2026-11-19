@@ -475,8 +475,512 @@ def _candle_pattern(bars: list[OHLCV]) -> dict[str, Any]:
     }
 
 
+def _extract_pivots(highs: list[float], lows: list[float], window: int = 3) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+    n = len(highs)
+    swing_highs: list[tuple[int, float]] = []
+    swing_lows: list[tuple[int, float]] = []
+    for i in range(window, n - window):
+        if highs[i] == max(highs[i - window:i + window + 1]):
+            if not swing_highs or i - swing_highs[-1][0] >= window:
+                swing_highs.append((i, highs[i]))
+            elif highs[i] > swing_highs[-1][1]:
+                swing_highs[-1] = (i, highs[i])
+        if lows[i] == min(lows[i - window:i + window + 1]):
+            if not swing_lows or i - swing_lows[-1][0] >= window:
+                swing_lows.append((i, lows[i]))
+            elif lows[i] < swing_lows[-1][1]:
+                swing_lows[-1] = (i, lows[i])
+    return swing_highs, swing_lows
+
+
+def _line_y(x1: int, y1: float, x2: int, y2: float, x: int) -> float:
+    if x2 == x1:
+        return y2
+    return y1 + (y2 - y1) * (x - x1) / (x2 - x1)
+
+
+def _detect_trendlines(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    swing_highs: list[tuple[int, float]],
+    swing_lows: list[tuple[int, float]],
+) -> dict[str, Any]:
+    n = len(closes)
+    start_bound = max(0, n - 90)
+    recent_lows = [p for p in swing_lows if p[0] >= start_bound]
+    recent_highs = [p for p in swing_highs if p[0] >= start_bound]
+
+    support_line = None
+    best_sup_score = -1.0
+    for i in range(len(recent_lows)):
+        for j in range(i + 1, len(recent_lows)):
+            x1, y1 = recent_lows[i]
+            x2, y2 = recent_lows[j]
+            if x2 - x1 < 8 or y2 < y1 * 0.995:
+                continue
+            # Reject lines heavily violated by intermediate closes.
+            violations = 0
+            for k in range(x1 + 1, n):
+                ly = _line_y(x1, y1, x2, y2, k)
+                if closes[k] < ly * 0.975:
+                    violations += 1
+            if violations > 2:
+                continue
+            cur_y = _line_y(x1, y1, x2, y2, n - 1)
+            if cur_y <= 0 or cur_y > closes[-1] * 1.04:
+                continue
+            score = (x2 - x1) - violations * 10
+            if score > best_sup_score:
+                best_sup_score = score
+                slope_pct = ((y2 / y1) - 1.0) * 100.0 / (x2 - x1) if y1 > 0 else 0.0
+                support_line = {
+                    "kind": "UPTREND_SUPPORT",
+                    "x1": x1, "y1": _r(y1, 0),
+                    "x2": n - 1, "y2": _r(cur_y, 0),
+                    "anchor_x2": x2, "anchor_y2": _r(y2, 0),
+                    "current_y": _r(cur_y, 0),
+                    "slope_pct_per_day": _r(slope_pct, 3),
+                }
+
+    resistance_line = None
+    best_res_score = -1.0
+    for i in range(len(recent_highs)):
+        for j in range(i + 1, len(recent_highs)):
+            x1, y1 = recent_highs[i]
+            x2, y2 = recent_highs[j]
+            if x2 - x1 < 8 or y2 > y1 * 1.005:
+                continue
+            violations = 0
+            for k in range(x1 + 1, n - 1):
+                ly = _line_y(x1, y1, x2, y2, k)
+                if closes[k] > ly * 1.025:
+                    violations += 1
+            if violations > 2:
+                continue
+            cur_y = _line_y(x1, y1, x2, y2, n - 1)
+            if cur_y <= 0 or cur_y < closes[-1] * 0.85:
+                continue
+            score = (x2 - x1) - violations * 10
+            if score > best_res_score:
+                best_res_score = score
+                slope_pct = ((y2 / y1) - 1.0) * 100.0 / (x2 - x1) if y1 > 0 else 0.0
+                resistance_line = {
+                    "kind": "DOWNTREND_RESISTANCE",
+                    "x1": x1, "y1": _r(y1, 0),
+                    "x2": n - 1, "y2": _r(cur_y, 0),
+                    "anchor_x2": x2, "anchor_y2": _r(y2, 0),
+                    "current_y": _r(cur_y, 0),
+                    "slope_pct_per_day": _r(slope_pct, 3),
+                    "broken_up": closes[-1] > cur_y * 1.005,
+                }
+
+    return {"support_line": support_line, "resistance_line": resistance_line}
+
+
+def _detect_patterns(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    swing_highs: list[tuple[int, float]],
+    swing_lows: list[tuple[int, float]],
+) -> dict[str, Any]:
+    n = len(closes)
+    close = closes[-1]
+    detected: list[dict[str, Any]] = []
+
+    # 1. Double Bottom (W-pattern)
+    recent_lows = [p for p in swing_lows if p[0] >= n - 85]
+    best_db = None
+    for i in range(len(recent_lows)):
+        for j in range(i + 1, len(recent_lows)):
+            x1, y1 = recent_lows[i]
+            x2, y2 = recent_lows[j]
+            if not (10 <= x2 - x1 <= 55) or x2 < n - 30:
+                continue
+            if abs(y1 - y2) / max(y1, y2, 1e-9) > 0.038:
+                continue
+            mid_slice = highs[x1 + 1:x2]
+            if not mid_slice:
+                continue
+            neck_val = max(mid_slice)
+            neck_idx = x1 + 1 + mid_slice.index(neck_val)
+            min_low = min(y1, y2)
+            if (neck_val - min_low) / max(min_low, 1e-9) < 0.05:
+                continue
+            if close < min_low * 0.99:
+                continue
+            status = "BREAKOUT" if close >= neck_val * 0.995 else "FORMING"
+            best_db = {
+                "code": "DOUBLE_BOTTOM",
+                "name_ko": "쌍바닥(W형)",
+                "bias": "BULLISH",
+                "status": status,
+                "priority": 100 if status == "BREAKOUT" else 82,
+                "neckline": _r(neck_val, 0),
+                "breakout_price": _r(neck_val, 0),
+                "support_price": _r(min_low, 0),
+                "points": [[x1, _r(y1, 0)], [neck_idx, _r(neck_val, 0)], [x2, _r(y2, 0)]],
+            }
+    if best_db:
+        detected.append(best_db)
+
+    # 2. Double Top (M-pattern)
+    recent_highs = [p for p in swing_highs if p[0] >= n - 85]
+    best_dt = None
+    for i in range(len(recent_highs)):
+        for j in range(i + 1, len(recent_highs)):
+            x1, y1 = recent_highs[i]
+            x2, y2 = recent_highs[j]
+            if not (10 <= x2 - x1 <= 55) or x2 < n - 25:
+                continue
+            if abs(y1 - y2) / max(y1, y2, 1e-9) > 0.038:
+                continue
+            mid_slice = lows[x1 + 1:x2]
+            if not mid_slice:
+                continue
+            neck_val = min(mid_slice)
+            neck_idx = x1 + 1 + mid_slice.index(neck_val)
+            max_high = max(y1, y2)
+            if (max_high - neck_val) / max(max_high, 1e-9) < 0.05:
+                continue
+            if close > max_high * 1.01:
+                continue
+            status = "BREAKDOWN" if close <= neck_val * 1.005 else "FORMING"
+            best_dt = {
+                "code": "DOUBLE_TOP",
+                "name_ko": "쌍봉(M형)",
+                "bias": "BEARISH",
+                "status": status,
+                "priority": 95 if status == "BREAKDOWN" else 76,
+                "neckline": _r(neck_val, 0),
+                "breakout_price": _r(max_high, 0),
+                "support_price": _r(neck_val, 0),
+                "points": [[x1, _r(y1, 0)], [neck_idx, _r(neck_val, 0)], [x2, _r(y2, 0)]],
+            }
+    if best_dt:
+        detected.append(best_dt)
+
+    # 3. Inverse Head & Shoulders
+    if len(recent_lows) >= 3:
+        best_ihs = None
+        for i in range(len(recent_lows) - 2):
+            ls_x, ls_y = recent_lows[i]
+            h_x, h_y = recent_lows[i + 1]
+            rs_x, rs_y = recent_lows[i + 2]
+            if rs_x < n - 25 or rs_x - ls_x > 80:
+                continue
+            if not (h_y < ls_y * 0.96 and h_y < rs_y * 0.96):
+                continue
+            if abs(ls_y - rs_y) / max(ls_y, rs_y, 1e-9) > 0.055:
+                continue
+            p1_slice = highs[ls_x + 1:h_x]
+            p2_slice = highs[h_x + 1:rs_x]
+            if not p1_slice or not p2_slice:
+                continue
+            p1_val = max(p1_slice)
+            p1_idx = ls_x + 1 + p1_slice.index(p1_val)
+            p2_val = max(p2_slice)
+            p2_idx = h_x + 1 + p2_slice.index(p2_val)
+            neck = (p1_val + p2_val) / 2.0
+            if (neck - h_y) / max(h_y, 1e-9) < 0.06:
+                continue
+            status = "BREAKOUT" if close >= neck * 0.995 else "FORMING"
+            best_ihs = {
+                "code": "INVERSE_HEAD_AND_SHOULDERS",
+                "name_ko": "역헤드앤숄더",
+                "bias": "BULLISH",
+                "status": status,
+                "priority": 105 if status == "BREAKOUT" else 85,
+                "neckline": _r(neck, 0),
+                "breakout_price": _r(neck, 0),
+                "support_price": _r(rs_y, 0),
+                "points": [
+                    [ls_x, _r(ls_y, 0)], [p1_idx, _r(p1_val, 0)],
+                    [h_x, _r(h_y, 0)], [p2_idx, _r(p2_val, 0)], [rs_x, _r(rs_y, 0)],
+                ],
+            }
+        if best_ihs:
+            detected.append(best_ihs)
+
+    # 4. Cup & Handle (U-shaped cup + shallow right handle)
+    if n >= 55:
+        best_cup = None
+        for cup_len in (90, 70, 50):
+            if n < cup_len + 8:
+                continue
+            start = n - cup_len - 10
+            # Left rim in first 25% of window
+            l_end = start + max(8, cup_len // 4)
+            left_rim = max(highs[start:l_end])
+            left_idx = start + highs[start:l_end].index(left_rim)
+            # Right rim before handle (last 5..18 bars are handle)
+            r_start = n - 20
+            r_end = n - 4
+            if r_start <= left_idx + 15:
+                continue
+            right_rim = max(highs[r_start:r_end])
+            right_idx = r_start + highs[r_start:r_end].index(right_rim)
+            if abs(left_rim - right_rim) / max(left_rim, right_rim, 1e-9) > 0.06:
+                continue
+            cup_slice = lows[left_idx + 3:right_idx - 2]
+            if len(cup_slice) < 12:
+                continue
+            cup_low = min(cup_slice)
+            cup_low_idx = left_idx + 3 + cup_slice.index(cup_low)
+            rim = max(left_rim, right_rim)
+            depth = (rim - cup_low) / max(rim, 1e-9)
+            if not (0.12 <= depth <= 0.45):
+                continue
+            # Check U-shape: low sits in central 60% of cup
+            rel_pos = (cup_low_idx - left_idx) / max(1, right_idx - left_idx)
+            if not (0.20 <= rel_pos <= 0.80):
+                continue
+            handle_low = min(lows[right_idx:n])
+            handle_depth = (rim - handle_low) / max(rim, 1e-9)
+            if handle_depth > depth * 0.50 or handle_depth < 0.01:
+                continue
+            status = "BREAKOUT" if close >= rim * 0.995 else "FORMING"
+            best_cup = {
+                "code": "CUP_AND_HANDLE",
+                "name_ko": "컵앤핸들",
+                "bias": "BULLISH",
+                "status": status,
+                "priority": 108 if status == "BREAKOUT" else 88,
+                "rim_price": _r(rim, 0),
+                "breakout_price": _r(rim, 0),
+                "cup_low": _r(cup_low, 0),
+                "handle_low": _r(handle_low, 0),
+                "support_price": _r(handle_low, 0),
+                "cup_start_idx": left_idx,
+                "cup_low_idx": cup_low_idx,
+                "handle_start_idx": right_idx,
+                "end_idx": n - 1,
+            }
+            break
+        if best_cup:
+            detected.append(best_cup)
+
+    # 5. Triangle / Ascending Triangle (converging highs & lows over last 25..60 bars)
+    tri_highs = [p for p in swing_highs if p[0] >= n - 60]
+    tri_lows = [p for p in swing_lows if p[0] >= n - 60]
+    if len(tri_highs) >= 2 and len(tri_lows) >= 2:
+        h1, h2 = tri_highs[0], tri_highs[-1]
+        l1, l2 = tri_lows[0], tri_lows[-1]
+        if h2[0] - h1[0] >= 12 and l2[0] - l1[0] >= 12:
+            hi_slope = (h2[1] - h1[1]) / max(h1[1], 1e-9)
+            lo_slope = (l2[1] - l1[1]) / max(l1[1], 1e-9)
+            if lo_slope >= 0.025 and hi_slope <= 0.015:
+                x_start = min(h1[0], l1[0])
+                u_start = _line_y(h1[0], h1[1], h2[0], h2[1], x_start)
+                l_start = _line_y(l1[0], l1[1], l2[0], l2[1], x_start)
+                u_end = _line_y(h1[0], h1[1], h2[0], h2[1], n - 1)
+                l_end = _line_y(l1[0], l1[1], l2[0], l2[1], n - 1)
+                span_start = u_start - l_start
+                span_end = u_end - l_end
+                if span_start > 0 and 0 < span_end < span_start * 0.68:
+                    is_asc = abs(hi_slope) <= 0.018
+                    status = "BREAKOUT" if close > u_end * 1.005 else "FORMING"
+                    detected.append({
+                        "code": "TRIANGLE",
+                        "subtype": "ASCENDING" if is_asc else "SYMMETRICAL",
+                        "name_ko": "상승삼각형" if is_asc else "삼각수렴",
+                        "bias": "BULLISH" if (is_asc or status == "BREAKOUT") else "NEUTRAL",
+                        "status": status,
+                        "priority": 96 if status == "BREAKOUT" else 78,
+                        "breakout_price": _r(u_end, 0),
+                        "support_price": _r(l_end, 0),
+                        "upper_line": [x_start, _r(u_start, 0), n - 1, _r(u_end, 0)],
+                        "lower_line": [x_start, _r(l_start, 0), n - 1, _r(l_end, 0)],
+                    })
+
+    # 6. Box Range / Breakout (tight horizontal channel over 25..45 bars prior to latest 3 bars)
+    if n >= 35:
+        for box_len in (40, 28):
+            b_start = n - box_len - 3
+            b_end = n - 3
+            if b_start < 0:
+                continue
+            box_hi = max(highs[b_start:b_end])
+            box_lo = min(lows[b_start:b_end])
+            if box_lo <= 0:
+                continue
+            width_pct = (box_hi - box_lo) / box_lo
+            if not (0.04 <= width_pct <= 0.17):
+                continue
+            top_touches = sum(1 for h in highs[b_start:b_end] if h >= box_hi * 0.985)
+            bot_touches = sum(1 for l in lows[b_start:b_end] if l <= box_lo * 1.015)
+            if top_touches >= 2 and bot_touches >= 2:
+                if close > box_hi * 1.005:
+                    status, bias, prio = "BREAKOUT", "BULLISH", 92
+                elif close >= box_lo * 0.99:
+                    status, bias, prio = "INSIDE", "NEUTRAL", 65
+                else:
+                    continue
+                detected.append({
+                    "code": "BOX_RANGE",
+                    "name_ko": "박스권 돌파" if status == "BREAKOUT" else "박스권 횡보",
+                    "bias": bias,
+                    "status": status,
+                    "priority": prio,
+                    "top": _r(box_hi, 0),
+                    "bottom": _r(box_lo, 0),
+                    "breakout_price": _r(box_hi, 0),
+                    "support_price": _r(box_lo, 0),
+                    "start_idx": b_start,
+                    "end_idx": n - 1,
+                })
+                break
+
+    detected.sort(key=lambda item: item["priority"], reverse=True)
+    primary = detected[0] if detected else None
+    return {"primary": primary, "detected": detected[:3]}
+
+
+GRADE_LABELS_KO = {
+    "ENTRY_READY": "🟢 진입 검토",
+    "WAIT_BREAKOUT": "🟡 돌파 대기",
+    "WAIT_PULLBACK": "🟠 눌림 대기(과열)",
+    "CHART_CAUTION": "🔴 차트 주의",
+}
+
+
+def _build_trade_plan(
+    close: float,
+    ma: dict[str, Any],
+    bb: dict[str, Any],
+    rsi: dict[str, Any],
+    macd: dict[str, Any],
+    ichi: dict[str, Any],
+    sr: dict[str, Any],
+    vp: dict[str, Any],
+    patterns: dict[str, Any],
+    volume_ratio: float | None,
+) -> dict[str, Any]:
+    primary = patterns.get("primary")
+    sma20 = ma.get("sma20")
+    near_sup = sr.get("nearest_support")
+    near_res = sr.get("nearest_resistance")
+
+    # Determine key breakout / support / stop-loss prices deterministically.
+    breakout_price = None
+    if primary and primary.get("bias") != "BEARISH" and primary.get("breakout_price"):
+        breakout_price = float(primary["breakout_price"])
+    elif near_res is not None:
+        breakout_price = float(near_res)
+    elif sr.get("high_60d") is not None:
+        breakout_price = float(sr["high_60d"])
+
+    support_candidates = [float(x) for x in (near_sup, sma20) if x is not None and float(x) < close * 1.005]
+    support_price = max(support_candidates) if support_candidates else (float(near_sup) if near_sup else (float(sma20) if sma20 else None))
+    # Stop-loss / invalidation defaults to SMA20 when below close, else nearest support.
+    if sma20 is not None and float(sma20) < close:
+        stop_loss = float(sma20)
+    elif near_sup is not None and float(near_sup) < close:
+        stop_loss = float(near_sup)
+    else:
+        stop_loss = float(sma20) if sma20 is not None else None
+
+    breakout_pct = ((breakout_price / close) - 1.0) * 100.0 if breakout_price and close > 0 else None
+    support_pct = ((support_price / close) - 1.0) * 100.0 if support_price and close > 0 else None
+    stop_pct = ((stop_loss / close) - 1.0) * 100.0 if stop_loss and close > 0 else None
+
+    rsi_val = rsi.get("value")
+    pct_b = bb.get("percent_b")
+    disp20 = ma.get("disparity20_pct")
+    overhead = vp.get("overhead_supply_pct")
+    caution_pattern = bool(primary and primary.get("bias") == "BEARISH")
+    bullish_breakout = bool(primary and primary.get("bias") == "BULLISH" and primary.get("status") == "BREAKOUT")
+    forming_pattern = bool(primary and primary.get("bias") == "BULLISH" and primary.get("status") == "FORMING")
+
+    reasons: list[str] = []
+    annotations: list[str] = []
+
+    if primary:
+        tag = f"{primary['name_ko']} {'돌파' if primary['status'] == 'BREAKOUT' else '이탈' if primary['status'] == 'BREAKDOWN' else '형성'}"
+        annotations.append(tag)
+    if rsi_val is not None and rsi_val >= 70.0:
+        annotations.append(f"과열 RSI {rsi_val:.1f}")
+    elif rsi.get("divergence") == "BEARISH_DIVERGENCE":
+        annotations.append("RSI 약세 다이버전스")
+    elif rsi.get("divergence") == "BULLISH_DIVERGENCE":
+        annotations.append("RSI 상승 다이버전스")
+    if overhead is not None and overhead >= 60.0:
+        annotations.append(f"상단 매물벽 {overhead:.0f}%")
+    if ma.get("recent_cross", "NONE") != "NONE":
+        cross_ko = {"GOLDEN_20_60": "20/60 골든크로스", "DEAD_20_60": "20/60 데드크로스",
+                    "GOLDEN_5_20": "5/20 골든크로스", "DEAD_5_20": "5/20 데드크로스"}
+        annotations.append(cross_ko.get(ma["recent_cross"], ma["recent_cross"]))
+    elif bb.get("squeeze"):
+        annotations.append("볼린저 스퀴즈")
+
+    # Classify execution grade (strict priority order).
+    if caution_pattern or ma.get("alignment") == "BEARISH_FULL" or (sma20 is not None and close < float(sma20) * 0.995):
+        grade = "CHART_CAUTION"
+        if caution_pattern:
+            reasons.append(f"{primary['name_ko']} 약세 신호")
+        if sma20 is not None and close < float(sma20):
+            reasons.append("20일선 하회")
+        if ma.get("alignment") == "BEARISH_FULL":
+            reasons.append("이평 완전 역배열")
+    elif (rsi_val is not None and rsi_val >= 70.0) or (pct_b is not None and pct_b > 1.0) or (disp20 is not None and disp20 >= 12.0):
+        grade = "WAIT_PULLBACK"
+        if rsi_val is not None and rsi_val >= 70.0:
+            reasons.append(f"RSI {rsi_val:.1f} 과매수")
+        if pct_b is not None and pct_b > 1.0:
+            reasons.append("볼린저 상단 초과")
+        if disp20 is not None and disp20 >= 12.0:
+            reasons.append(f"20일 이격 +{disp20:.1f}%")
+    elif (
+        (overhead is not None and overhead >= 60.0)
+        or (forming_pattern and breakout_pct is not None and breakout_pct > 0.3)
+        or (breakout_pct is not None and 0.3 <= breakout_pct <= 4.5)
+        or (volume_ratio is not None and volume_ratio < 0.55)
+        or ichi.get("cloud_position") == "BELOW_CLOUD"
+    ):
+        grade = "WAIT_BREAKOUT"
+        if overhead is not None and overhead >= 60.0:
+            reasons.append(f"상단 매물 {overhead:.0f}% 저항")
+        if breakout_pct is not None and 0.3 <= breakout_pct <= 4.5 and breakout_price:
+            reasons.append(f"저항 {breakout_price:,.0f}원 직전")
+        if volume_ratio is not None and volume_ratio < 0.55:
+            reasons.append(f"거래량 약세({volume_ratio:.2f}배)")
+        if ichi.get("cloud_position") == "BELOW_CLOUD":
+            reasons.append("일목 구름 아래")
+    else:
+        grade = "ENTRY_READY"
+        if bullish_breakout:
+            reasons.append(f"{primary['name_ko']} 돌파")
+        elif ma.get("alignment") in {"BULLISH_FULL", "BULLISH_MID"}:
+            reasons.append("이평 정배열·비과열")
+        else:
+            reasons.append("20일선 지지·비과열")
+
+    bonus_map = {
+        "ENTRY_READY": 0.25,
+        "WAIT_BREAKOUT": 0.0,
+        "WAIT_PULLBACK": -0.20,
+        "CHART_CAUTION": -0.35,
+    }
+    bonus = bonus_map[grade] + (0.15 if bullish_breakout else 0.05 if forming_pattern else 0.0)
+
+    return {
+        "grade": grade,
+        "grade_label": GRADE_LABELS_KO[grade],
+        "reasons": reasons[:3],
+        "annotations": annotations[:3],
+        "breakout_price": _r(breakout_price, 0),
+        "breakout_pct": _r(breakout_pct, 2),
+        "support_price": _r(support_price, 0),
+        "support_pct": _r(support_pct, 2),
+        "stop_loss": _r(stop_loss, 0),
+        "stop_loss_pct": _r(stop_pct, 2),
+        "scoring_bonus": _r(bonus, 3),
+    }
+
+
 def compute_full_chart_analysis(bars: list[OHLCV]) -> dict[str, Any]:
-    """Compute multi-indicator chart analysis from sorted daily OHLCV bars."""
+    """Compute multi-indicator chart analysis, 6 classic patterns, trendlines, and trade plan."""
     ordered = sorted(bars, key=lambda b: b.trade_date)
     if len(ordered) < 61:
         raise ValueError("full chart analysis requires at least 61 daily bars")
@@ -484,18 +988,39 @@ def compute_full_chart_analysis(bars: list[OHLCV]) -> dict[str, Any]:
     lows = [float(b.low) for b in ordered]
     closes = [float(b.close) for b in ordered]
     volumes = [int(b.volume) for b in ordered]
+    prior20_avg = sum(volumes[-21:-1]) / 20.0
+    volume_ratio = (volumes[-1] / prior20_avg) if prior20_avg > 0 else None
+
+    ma = _moving_averages(closes)
+    bb = _bollinger(closes)
+    rsi = _rsi(closes)
+    macd = _macd(closes)
+    ichi = _ichimoku(highs, lows, closes)
+    sr = _support_resistance(highs, lows, closes)
+    vp = _volume_profile(ordered)
+    obv = _obv(closes, volumes)
+    candle = _candle_pattern(ordered)
+    swing_highs, swing_lows = _extract_pivots(highs, lows)
+    trendlines = _detect_trendlines(highs, lows, closes, swing_highs, swing_lows)
+    patterns = _detect_patterns(highs, lows, closes, swing_highs, swing_lows)
+    trade_plan = _build_trade_plan(
+        closes[-1], ma, bb, rsi, macd, ichi, sr, vp, patterns, volume_ratio,
+    )
     return {
         "bars_count": len(ordered),
         "session": ordered[-1].trade_date.isoformat(),
-        "moving_averages": _moving_averages(closes),
-        "bollinger": _bollinger(closes),
-        "rsi14": _rsi(closes),
-        "macd": _macd(closes),
-        "ichimoku": _ichimoku(highs, lows, closes),
-        "support_resistance": _support_resistance(highs, lows, closes),
-        "volume_profile": _volume_profile(ordered),
-        "obv": _obv(closes, volumes),
-        "candle": _candle_pattern(ordered),
+        "moving_averages": ma,
+        "bollinger": bb,
+        "rsi14": rsi,
+        "macd": macd,
+        "ichimoku": ichi,
+        "support_resistance": sr,
+        "volume_profile": vp,
+        "obv": obv,
+        "candle": candle,
+        "trendlines": trendlines,
+        "patterns": patterns,
+        "trade_plan": trade_plan,
     }
 
 
@@ -508,9 +1033,17 @@ def summarize_for_committee(analysis: dict[str, Any]) -> dict[str, Any]:
     ichi = analysis["ichimoku"]
     sr = analysis["support_resistance"]
     vp = analysis["volume_profile"]
+    patterns = analysis.get("patterns") or {}
     return {
         "bars_count": analysis["bars_count"],
         "session": analysis["session"],
+        "trade_plan": analysis.get("trade_plan"),
+        "primary_pattern": patterns.get("primary"),
+        "detected_patterns": [
+            {k: p[k] for k in ("code", "name_ko", "bias", "status", "breakout_price", "support_price") if k in p}
+            for p in patterns.get("detected", [])
+        ],
+        "trendlines": analysis.get("trendlines"),
         "moving_averages": {k: ma[k] for k in ("sma5", "sma20", "sma60", "sma120", "alignment", "recent_cross", "disparity20_pct")},
         "bollinger_20_2": {k: bb[k] for k in ("upper", "middle", "lower", "percent_b", "bandwidth_pct", "squeeze", "state")},
         "rsi14": {k: rsi[k] for k in ("value", "zone", "divergence")},

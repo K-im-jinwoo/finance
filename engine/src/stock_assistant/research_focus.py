@@ -123,6 +123,30 @@ def choose_actionable_focus(
             continue
         avg_val = Decimal(str(price["metrics"]["average_value20"]))
         tie = _tie_breaker_score(financial, price)
+        chart_signal = None
+        if len(bars) >= 61:
+            try:
+                from .chart_analysis import compute_full_chart_analysis
+                ca = compute_full_chart_analysis(bars)
+                tp = ca["trade_plan"]
+                bonus = Decimal(str(tp.get("scoring_bonus") or 0))
+                tie = max(Decimal("0.00"), (tie + bonus).quantize(Decimal("0.01")))
+                primary = (ca.get("patterns") or {}).get("primary")
+                chart_signal = {
+                    "grade": tp["grade"],
+                    "grade_label": tp["grade_label"],
+                    "reasons": tp["reasons"],
+                    "annotations": tp["annotations"],
+                    "breakout_price": tp["breakout_price"],
+                    "support_price": tp["support_price"],
+                    "stop_loss": tp["stop_loss"],
+                    "primary_pattern": (
+                        {"code": primary["code"], "name_ko": primary["name_ko"], "status": primary["status"]}
+                        if primary else None
+                    ),
+                }
+            except ValueError:
+                pass
         ready.append({
             "symbol": security.symbol,
             "name": security.name,
@@ -132,6 +156,7 @@ def choose_actionable_focus(
             "average_value20": avg_val,
             "in_cooldown": security.symbol in cooldown,
             "price": price,
+            "chart_signal": chart_signal,
         })
     ready.sort(key=lambda item: (
         item["in_cooldown"],

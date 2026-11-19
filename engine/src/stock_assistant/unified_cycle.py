@@ -229,4 +229,11 @@ def shared_calendar(client_id, client_secret):
     if '/opt/stock-shared-auth' not in sys.path:
         sys.path.insert(0, '/opt/stock-shared-auth')
     from shared_toss_auth import SharedTossMarketDataClient
-    return SharedTossMarketDataClient(client_id, client_secret)
+    from .daily_requests import DailyRefreshRequests
+    requests = DailyRefreshRequests()
+    return SharedTossMarketDataClient(
+        client_id,
+        client_secret,
+        fetch_json=requests.get_json,
+        post_form=requests.post_form_json,
+    )

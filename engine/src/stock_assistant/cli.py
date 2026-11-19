@@ -155,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.client_id_file.read_text(encoding="utf-8").strip(),
                 args.client_secret_file.read_text(encoding="utf-8").strip(),
                 fetch_json=requests.get_json,
+                post_form=requests.post_form_json,
             )
             ingestor = KrxHistoryIngestor(repository, KrxClient(
                 args.key_file.read_text(encoding="utf-8").strip(), fetch_json=requests.get_json,

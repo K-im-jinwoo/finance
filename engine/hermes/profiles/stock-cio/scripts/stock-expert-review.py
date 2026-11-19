@@ -32,6 +32,7 @@ INPUT_LIMIT = 200_000
 MEMO_LIMIT = 16_000
 CHILD_BUDGET = 70
 CHILD_TIMEOUT = 85
+REASONING_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 SECRET_KEYS = {"api_key", "token", "access_token", "refresh_token", "client_secret",
                "password", "authorization", "account_number", "account_id", "credentials"}
 ROLES = {
@@ -253,15 +254,28 @@ def stop_process(process):
         pass
 
 
-def run_specialist(profile, prompt, directory, *, executable=HERMES):
+def run_specialist(
+    profile,
+    prompt,
+    directory,
+    *,
+    executable=HERMES,
+    reasoning=None,
+    budget=CHILD_BUDGET,
+    timeout=CHILD_TIMEOUT,
+):
     started = time.monotonic()
     result = {"profile": profile, "status": "UNAVAILABLE", "memo": None}
+    if reasoning is not None and reasoning not in REASONING_LEVELS:
+        raise ValueError("INVALID_REASONING_LEVEL")
     query = directory / (profile + ".query")
     output = directory / (profile + ".out")
     errors = directory / (profile + ".err")
     command = [executable, "-p", profile, "chat", "-Q", "--oneshot", "--source", "tool",
-               "--toolsets", "none", "--max-turns", "1", "--run-budget", str(CHILD_BUDGET),
-               "--query-file", str(query)]
+               "--toolsets", "none", "--max-turns", "1", "--run-budget", str(budget)]
+    if reasoning is not None:
+        command.extend(["--reasoning", reasoning])
+    command.extend(["--query-file", str(query)])
     process = None
     try:
         query.write_text(prompt, encoding="utf-8")
@@ -270,7 +284,7 @@ def run_specialist(profile, prompt, directory, *, executable=HERMES):
             process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
                                        env=child_environment(), start_new_session=(os.name == "posix"))
             try:
-                code = process.wait(timeout=CHILD_TIMEOUT)
+                code = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 stop_process(process)
                 result["error_code"] = "EXPERT_TIMEOUT"

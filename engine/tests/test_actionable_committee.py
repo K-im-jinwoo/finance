@@ -290,6 +290,26 @@ class CommitteeBriefTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "UNAVAILABLE")
 
+    def test_default_committee_runner_passes_medium_reasoning_and_extended_budget(self):
+        captured = []
+
+        class FakeBridge:
+            def run_specialist(self, profile, prompt, directory, **kwargs):
+                captured.append((profile, kwargs))
+                return {"profile": profile, "status": "COMPLETE", "memo": f"{profile} ok"}
+
+            def review(self, request, *, runner, now=None):
+                specs = [runner(p, "prompt", Path(".")) for p in ("stock-market", "stock-fundamentals", "stock-risk")]
+                return {"status": "COMPLETE", "specialists": specs}
+
+        result = committee.generate_committee_brief(self._sample_report(), bridge=FakeBridge(), now=AS_OF)
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertEqual(len(captured), 4)
+        for _profile, kwargs in captured:
+            self.assertEqual(kwargs["reasoning"], "medium")
+            self.assertEqual(kwargs["budget"], 120)
+            self.assertEqual(kwargs["timeout"], 140)
+
 
 @unittest.skipUnless(SHELL, "POSIX shell is unavailable")
 class ActionableCycleShellTests(unittest.TestCase):
@@ -354,6 +374,17 @@ printf '투자위원회 요약\\n- [1] 현대모비스 Bull/Bear\\n'
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn(self.report, res.stdout)
         self.assertIn("투자위원회 요약 실패", res.stdout)
+
+    def test_daily_refresh_mode_only_refreshes_prices_silently(self):
+        res = subprocess.run([SHELL, SCRIPT.as_posix(), "daily-refresh"], env=self.env,
+                             capture_output=True, text=True, encoding="utf-8", timeout=15)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout.strip(), "")
+        docker_calls = self.docker_args.read_text(encoding="utf-8")
+        self.assertIn("refresh-daily", docker_calls)
+        self.assertNotIn("refresh-unified", docker_calls)
+        self.assertFalse(self.brief_args.exists())
+        self.assertIn("STOCK_CYCLE status=READY mode=daily-refresh stage=DAILY_REFRESH", res.stderr)
 
 
 if __name__ == "__main__":

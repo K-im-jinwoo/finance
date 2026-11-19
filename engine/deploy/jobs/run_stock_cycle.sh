@@ -6,8 +6,8 @@ trap 'code=$?; if [ "$code" -ne 0 ]; then printf "STOCK_CYCLE status=FAILED stag
 
 mode="${1:-}"
 case "$mode" in
-  morning|evening|weekly) ;;
-  *) echo "usage: run_stock_cycle.sh morning|evening|weekly" >&2; exit 2 ;;
+  morning|evening|weekly|daily-refresh) ;;
+  *) echo "usage: run_stock_cycle.sh morning|evening|weekly|daily-refresh" >&2; exit 2 ;;
 esac
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -88,6 +88,11 @@ fi
 compose exec -T stock-assistant python -m stock_assistant refresh-daily \
   --database "$database" --key-file /run/secrets/krx-auth-key \
   --client-id-file /run/secrets/toss-client-id --client-secret-file /run/secrets/toss-client-secret $daily_args >&2
+
+if [ "$mode" = daily-refresh ]; then
+  printf 'STOCK_CYCLE status=READY mode=%s stage=DAILY_REFRESH\n' "$mode" >&2
+  exit 0
+fi
 
 if [ "${STOCK_UNIFIED_ENABLED:-false}" = true ]; then
   stage=UNIFIED_RESEARCH

@@ -75,9 +75,9 @@ class DailyRefreshCliTests(unittest.TestCase):
         clients = []
 
         def client_factory(client_id, client_secret, **kwargs):
-            clients.append(kwargs)
-            return TossMarketDataClient(client_id, client_secret, **kwargs,
-                                        post_form=lambda *a, **k: JsonResponse(200, {'access_token': 'synthetic-token'}))
+            clients.append(dict(kwargs))
+            kwargs["post_form"] = lambda *a, **k: JsonResponse(200, {'access_token': 'synthetic-token'})
+            return TossMarketDataClient(client_id, client_secret, **kwargs)
 
         adapter = ModuleType('shared_toss_auth')
         adapter.SharedTossMarketDataClient = client_factory
@@ -138,6 +138,7 @@ class DailyRefreshCliTests(unittest.TestCase):
         self.assertEqual(code, 0, errors)
         self.assertEqual(json.loads(output)['status'], 'READY')
         self.assertIsInstance(clients[0]['fetch_json'].__self__, DailyRefreshRequests)
+        self.assertIsInstance(clients[0]['post_form'].__self__, DailyRefreshRequests)
         self.sleep.assert_called_once_with(2)
 
     def test_actual_cli_continues_only_verified_latest_empty_data_as_pending(self):

@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 from stock_assistant.daily_requests import DailyRefreshRequests
 from stock_assistant.providers.http import (
-    AuthenticationError, NetworkError, RateLimitError, UpstreamSchemaError, get_json,
+    AuthenticationError, NetworkError, RateLimitError, UpstreamSchemaError, get_json, post_form_json,
 )
 from stock_assistant.providers.krx import KRX_DAILY_ENDPOINTS
 from stock_assistant.providers.toss import TOSS_BASE_URL
@@ -16,6 +16,8 @@ from stock_assistant.providers.toss import TOSS_BASE_URL
 
 URL = KRX_DAILY_ENDPOINTS['KOSDAQ']
 QUERY = {'basDd': '20261006'}
+TOKEN_URL = TOSS_BASE_URL + '/oauth2/token'
+TOKEN_FORM = {'grant_type': 'client_credentials', 'client_id': 'synthetic-id', 'client_secret': 'synthetic-secret'}
 
 
 class Response:
@@ -43,6 +45,7 @@ class DailyRequestsTests(unittest.TestCase):
 
     def requests(self, opener):
         return DailyRefreshRequests(fetch_json=partial(get_json, opener=opener),
+                                    post_form=partial(post_form_json, opener=opener),
                                     sleeper=self.sleep, diagnostic=self.events.append)
 
     def test_normal_request_has_no_retry_or_diagnostic(self):
@@ -155,6 +158,41 @@ class DailyRequestsTests(unittest.TestCase):
         with self.assertRaisesRegex(NetworkError, '^provider request failed: TimeoutError$'):
             get_json(URL, query=QUERY, opener=opener)
         opener.assert_called_once()
+
+    def test_token_post_wrapped_timeout_retries_and_redacts_credentials(self):
+        opener = Mock(side_effect=[
+            urllib.error.URLError(TimeoutError('synthetic-secret')),
+            Response(b'{"access_token": "tok", "expires_in": 3600}'),
+        ])
+        result = self.requests(opener).post_form_json(TOKEN_URL, form=TOKEN_FORM)
+        self.assertEqual(result.payload['access_token'], 'tok')
+        self.assertEqual(opener.call_count, 2)
+        self.sleep.assert_called_once_with(2)
+        self.assertEqual(self.events[0]['status'], 'RETRYING')
+        self.assertEqual(self.events[0]['request']['provider'], 'TOSS_SECURITIES_OPEN_API')
+        self.assertEqual(self.events[0]['request']['cause_class'], 'TimeoutError')
+        serialized = json.dumps(self.events)
+        self.assertNotIn('synthetic-secret', serialized)
+        self.assertNotIn('synthetic-id', serialized)
+
+    def test_token_post_non_timeout_errors_and_other_urls_fail_immediately(self):
+        for exc_obj, expected in (
+            (urllib.error.HTTPError(TOKEN_URL, 401, 'fixture', {}, None), AuthenticationError),
+            (urllib.error.HTTPError(TOKEN_URL, 429, 'fixture', {}, None), RateLimitError),
+            (urllib.error.URLError('dns failed'), NetworkError),
+        ):
+            with self.subTest(expected=expected.__name__):
+                self.sleep.reset_mock()
+                opener = Mock(side_effect=exc_obj)
+                with self.assertRaises(expected) as raised:
+                    self.requests(opener).post_form_json(TOKEN_URL, form=TOKEN_FORM)
+                opener.assert_called_once()
+                self.sleep.assert_not_called()
+                self.assertEqual(raised.exception.request_context['endpoint'], TOKEN_URL)
+        opener = Mock()
+        with self.assertRaises(ValueError):
+            self.requests(opener).post_form_json(URL, form=TOKEN_FORM)
+        opener.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -46,6 +46,12 @@ class BinaryResponse:
 OpenFunction = Callable[..., Any]
 
 
+def _transport_cause_class(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.URLError) and exc.reason is not None:
+        return type(exc.reason).__name__
+    return type(exc).__name__
+
+
 def post_form_json(
     url: str,
     *,
@@ -66,31 +72,52 @@ def post_form_json(
             **(headers or {}),
         },
     )
+    started = time.monotonic()
+    phase = "CONNECTION_OR_HEADERS"
+    status = None
+    cause_class = None
     try:
-        with opener(request, timeout=timeout_seconds) as response:
-            status = int(response.status)
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        if exc.code in {401, 403}:
-            raise AuthenticationError(f"provider returned HTTP {exc.code}") from exc
-        if exc.code == 429:
-            raise RateLimitError("provider returned HTTP 429") from exc
-        raise NetworkError(f"provider returned HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
-        raise NetworkError(f"provider request failed: {type(exc).__name__}") from exc
-    if status in {401, 403}:
-        raise AuthenticationError(f"provider returned HTTP {status}")
-    if status == 429:
-        raise RateLimitError("provider returned HTTP 429")
-    if status < 200 or status >= 300:
-        raise NetworkError(f"provider returned HTTP {status}")
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise UpstreamSchemaError("provider response is not UTF-8 JSON") from exc
-    if not isinstance(payload, dict):
-        raise UpstreamSchemaError("provider JSON root must be an object")
-    return JsonResponse(status, payload)
+        try:
+            with opener(request, timeout=timeout_seconds) as response:
+                status = int(response.status)
+                phase = "RESPONSE_BODY"
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            phase = "RESPONSE_STATUS"
+            if exc.code in {401, 403}:
+                raise AuthenticationError(f"provider returned HTTP {exc.code}") from exc
+            if exc.code == 429:
+                raise RateLimitError("provider returned HTTP 429") from exc
+            raise NetworkError(f"provider returned HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+            cause_class = _transport_cause_class(exc)
+            raise NetworkError(f"provider request failed: {type(exc).__name__}") from exc
+        phase = "RESPONSE_STATUS"
+        if status in {401, 403}:
+            raise AuthenticationError(f"provider returned HTTP {status}")
+        if status == 429:
+            raise RateLimitError("provider returned HTTP 429")
+        if status < 200 or status >= 300:
+            raise NetworkError(f"provider returned HTTP {status}")
+        phase = "JSON_DECODE"
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise UpstreamSchemaError("provider response is not UTF-8 JSON") from exc
+        if not isinstance(payload, dict):
+            raise UpstreamSchemaError("provider JSON root must be an object")
+        return JsonResponse(status, payload)
+    except ProviderError as exc:
+        # Keep credentials, URLs, form bodies and response bodies out of transport metadata.
+        context = {
+            "phase": phase, "elapsed_seconds": round(time.monotonic() - started, 3),
+            "timeout_seconds": timeout_seconds, "http_status": status,
+        }
+        if cause_class is not None:
+            context["cause_class"] = cause_class
+        exc.request_context = context
+        raise
 
 
 def get_json(
@@ -110,6 +137,7 @@ def get_json(
     started = time.monotonic()
     phase = "CONNECTION_OR_HEADERS"
     status = None
+    cause_class = None
     try:
         try:
             with opener(request, timeout=timeout_seconds) as response:
@@ -125,6 +153,7 @@ def get_json(
                 raise RateLimitError("provider returned HTTP 429") from exc
             raise NetworkError(f"provider returned HTTP {exc.code}") from exc
         except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+            cause_class = _transport_cause_class(exc)
             raise NetworkError(f"provider request failed: {type(exc).__name__}") from exc
         phase = "RESPONSE_STATUS"
         if status in {401, 403}:
@@ -143,10 +172,13 @@ def get_json(
         return JsonResponse(status, payload)
     except ProviderError as exc:
         # Keep credentials, URLs, queries and response bodies out of transport metadata.
-        exc.request_context = {
+        context = {
             "phase": phase, "elapsed_seconds": round(time.monotonic() - started, 3),
             "timeout_seconds": timeout_seconds, "http_status": status,
         }
+        if cause_class is not None:
+            context["cause_class"] = cause_class
+        exc.request_context = context
         raise
 
 

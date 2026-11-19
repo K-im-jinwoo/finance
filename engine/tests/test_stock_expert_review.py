@@ -271,6 +271,27 @@ class ProcessTests(unittest.TestCase):
         self.assertTrue(stop.called)
         self.assertEqual(len(commands), 1)
 
+    def test_optional_reasoning_and_budget_flags_are_validated_and_passed(self):
+        commands = []
+        process = Mock()
+        process.wait.return_value = 0
+
+        def spawn(command, **kwargs):
+            commands.append(command)
+            kwargs["stdout"].write("담당 결론: 확인 대기".encode())
+            return process
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(bridge.subprocess, "Popen", side_effect=spawn), \
+                patch.object(bridge, "stop_process"):
+            result = bridge.run_specialist(
+                "stock-market", "prompt", Path(temporary), reasoning="medium", budget=120, timeout=140,
+            )
+            with self.assertRaises(ValueError):
+                bridge.run_specialist("stock-market", "prompt", Path(temporary), reasoning="ultra")
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertEqual(commands[0][commands[0].index("--reasoning") + 1], "medium")
+        self.assertEqual(commands[0][commands[0].index("--run-budget") + 1], "120")
+
     def test_only_known_empty_toolset_cli_line_is_removed(self):
         result, _, _ = self._run("Warning: Unknown toolsets: none\n담당 결론: 확인 대기".encode())
         self.assertEqual(result["memo"], "담당 결론: 확인 대기")

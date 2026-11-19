@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from contextlib import closing
 from datetime import datetime, timezone
+from functools import partial
 import importlib.util
 import json
 from pathlib import Path
@@ -25,6 +26,9 @@ REPORT_ID = re.compile(r"UR-[a-f0-9]{24}")
 FINAL_DECISIONS = {"BUY_RECOMMENDATION", "WATCH"}
 CIO_PROFILE = "stock-cio"
 CIO_MEMO_LIMIT = 4000
+COMMITTEE_REASONING = "medium"
+COMMITTEE_BUDGET = 120
+COMMITTEE_TIMEOUT = 140
 APPLICATION_ID = 0x52534431
 STATUS_KR = {"COMPLETE": "완료", "UNAVAILABLE": "미완료"}
 
@@ -204,7 +208,13 @@ def generate_committee_brief(
             "orders_enabled": False,
         }
     bridge = bridge or _load_expert_bridge()
-    run_fn = specialist_runner or bridge.run_specialist
+    default_runner = partial(
+        bridge.run_specialist,
+        reasoning=COMMITTEE_REASONING,
+        budget=COMMITTEE_BUDGET,
+        timeout=COMMITTEE_TIMEOUT,
+    )
+    run_fn = specialist_runner or default_runner
     expert_result = bridge.review(request, runner=run_fn, now=now or datetime.now(timezone.utc))
     if expert_result.get("status") == "UNAVAILABLE":
         return {
@@ -256,7 +266,13 @@ def main(argv=None) -> int:
         if result["status"] == "NO_CANDIDATES":
             return 0
         if result["status"] == "UNAVAILABLE":
-            print("STOCK_COMMITTEE_BRIEF status=UNAVAILABLE", file=sys.stderr)
+            specialists = (result.get("expert_review") or {}).get("specialists") or []
+            details = ",".join(
+                f"{item.get('profile', 'unknown')}:{item.get('error_code', 'UNAVAILABLE')}"
+                for item in specialists
+            )
+            suffix = f" details={details}" if details else ""
+            print(f"STOCK_COMMITTEE_BRIEF status=UNAVAILABLE{suffix}", file=sys.stderr)
             return 2
         print(result["brief"])
         return 0

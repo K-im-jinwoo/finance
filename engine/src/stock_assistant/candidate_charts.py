@@ -18,6 +18,7 @@ import sqlite3
 import sys
 import tempfile
 
+from .chart_analysis import compute_full_chart_analysis, summarize_for_committee
 from .indicators import price_features, simple_average
 from .models import to_json_value
 from .research_data import APPLICATION_ID
@@ -26,7 +27,7 @@ from .validation import validate_analysis_time
 
 
 VERSION = "CANDIDATE_CHARTS_V1"
-RENDER_VERSION = "2026-10-20.2"
+RENDER_VERSION = "2026-11-19.1"
 KST = timezone(timedelta(hours=9))
 FINAL_DECISIONS = {"BUY_RECOMMENDATION", "WATCH"}
 REPORT_ID = re.compile(r"UR-[a-f0-9]{24}")
@@ -176,6 +177,7 @@ def prepare_chart(report, candidate, repository):
             "stored_strategy": price.get("strategy"),
             "price_input_fingerprint": fingerprint, "sources": sorted({b.source for b in bars})}
     data["technical_analysis"] = technical_analysis(data)
+    data["extended_analysis"] = compute_full_chart_analysis(bars)
     return data
 
 
@@ -191,8 +193,66 @@ def _font_file(explicit=None):
     return None, False
 
 
+def _draw_dashed_hline(draw, x0: float, x1: float, y: float, fill: str, *, dash: int = 8, gap: int = 6, width: int = 1):
+    x = x0
+    while x < x1:
+        draw.line((x, y, min(x1, x + dash), y), fill=fill, width=width)
+        x += dash + gap
+
+
+def _draw_series_line(draw, values, px_fn, py_fn, fill: str, width: int = 2):
+    segment = []
+    for idx, val in enumerate(values):
+        if val is None:
+            if len(segment) > 1:
+                draw.line(segment, fill=fill, width=width)
+            segment = []
+        else:
+            segment.append((px_fn(idx), py_fn(float(val))))
+    if len(segment) > 1:
+        draw.line(segment, fill=fill, width=width)
+
+
+def build_committee_chart_sheet(chart_paths: list[Path], target: Path) -> Path:
+    """Combine up to 5 candidate PNGs into one contact sheet for single-image vision review."""
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise ChartUnavailable("PNG_LIBRARY_UNAVAILABLE") from exc
+    valid = [p for p in chart_paths if p.is_file() and not p.is_symlink()][:5]
+    if not valid:
+        raise ChartUnavailable("NO_CHART_IMAGES")
+    if len(valid) == 1:
+        tile_w, tile_h, cols = 1400, 980, 1
+    else:
+        tile_w, tile_h, cols = 1000, 700, 2
+    rows = (len(valid) + cols - 1) // cols
+    pad = 16
+    sheet = Image.new("RGB", (cols * tile_w + (cols + 1) * pad, rows * tile_h + (rows + 1) * pad), "#080f1d")
+    resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
+    for idx, path in enumerate(valid):
+        with Image.open(path) as img:
+            tile = img.convert("RGB").resize((tile_w, tile_h), resample)
+        r, c = divmod(idx, cols)
+        sheet.paste(tile, (pad + c * (tile_w + pad), pad + r * (tile_h + pad)))
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if target.is_symlink():
+        raise ChartUnavailable("UNSAFE_OUTPUT_PATH")
+    fd, temporary = tempfile.mkstemp(prefix=".sheet-", suffix=".png", dir=target.parent)
+    try:
+        os.close(fd)
+        sheet.save(temporary, format="PNG")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+    finally:
+        sheet.close()
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return target
+
+
 def render_chart(data, target: Path, *, font_file=None, demo=False):
-    """Draw actual OHLC candles; every plotted value comes from prepare_chart."""
+    """Draw multi-panel technical chart (OHLC+MA5/20/60/120+BB+S/R+VP / Volume / RSI / MACD)."""
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError as exc:
@@ -201,73 +261,212 @@ def render_chart(data, target: Path, *, font_file=None, demo=False):
     font = lambda size: ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default(size=size)
     image = Image.new("RGB", (1600, 1120), "#0b1324")
     draw = ImageDraw.Draw(image)
-    ink, muted, grid = "#e9eff8", "#9cadc7", "#28364c"
-    up, down, ma20, ma60 = "#ef6874", "#64aaff", "#ffcc72", "#68dbc8"
+    ink, muted, grid = "#e9eff8", "#9cadc7", "#233148"
+    up, down = "#ef6874", "#64aaff"
+    ma5_c, ma20_c, ma60_c, ma120_c = "#f7a8b8", "#ffcc72", "#68dbc8", "#b794f6"
+    bb_c, sup_c, res_c, poc_c = "#4e6a94", "#4fd18b", "#f87171", "#f6c453"
+    rsi_c, macd_c, sig_c = "#90cdf4", "#63b3ed", "#f6ad55"
     words = (lambda ko, en: ko if korean else en)
+
+    ext = data.get("extended_analysis") or compute_full_chart_analysis(data["bars"])
+    ma_info = ext["moving_averages"]
+    bb_info = ext["bollinger"]
+    rsi_info = ext["rsi14"]
+    macd_info = ext["macd"]
+    ichi_info = ext["ichimoku"]
+    sr_info = ext["support_resistance"]
+    vp_info = ext["volume_profile"]
+    obv_info = ext["obv"]
+    candle_info = ext["candle"]
+
+    # Header
     title = f"{data['name']}  {data['symbol']}" if korean else data["symbol"]
-    draw.text((70, 35), title, font=font(38), fill=ink)
+    draw.text((60, 22), title, font=font(34), fill=ink)
     status = LABELS[data["decision"]] if korean else ("WATCH" if data["decision"] == "WATCH" else "NEXT SESSION: CONDITIONAL")
-    draw.text((70, 91), status, font=font(23), fill=ma20)
+    draw.text((60, 68), status, font=font(20), fill=ma20_c)
     if demo:
-        draw.text((750, 48), words("표시 예시 · 가상 데이터 · 추천 아님", "DEMO / SYNTHETIC / NOT A RECOMMENDATION"),
-                  font=font(24), fill=up)
-    draw.text((70, 132), words("일봉 기준일", "DAILY CLOSE") + f" {data['session']}   |   "
+        draw.text((760, 32), words("표시 예시 · 가상 데이터 · 추천 아님", "DEMO / SYNTHETIC / NOT A RECOMMENDATION"),
+                  font=font(22), fill=up)
+    draw.text((60, 98), words("일봉 기준일", "DAILY CLOSE") + f" {data['session']}   |   "
               + words("보고서 시각", "REPORT AS OF") + " " + data["as_of"].astimezone(KST).strftime("%Y-%m-%d %H:%M KST"),
-              font=font(20), fill=muted)
+              font=font(17), fill=muted)
+
+    # Summary cards (4 compact cards)
     m = data["metrics"]
-    analysis = data.get("technical_analysis") or technical_analysis(data)
-    volume_method = next(method for method in analysis["methods"] if method["code"] == "VOLUME_RATIO20")
-    volume_multiple = volume_method["values"]["multiple"]
-    cards = [(words("종가", "CLOSE"), f"{Decimal(m['close']):,.0f}"),
-             (words("20일 이동평균", "SMA 20"), f"{Decimal(m['sma20']):,.2f}"),
-             (words("60일 이동평균", "SMA 60"), f"{Decimal(m['sma60']):,.2f}"),
-             (words("직전 20일 대비 거래량", "VOL / PRIOR 20 AVG"),
-              f"{Decimal(volume_multiple):.2f}x" if volume_multiple is not None else words("확인 불가", "N/A"))]
+    align_kr = {"BULLISH_FULL": "완전 정배열", "BULLISH_MID": "중기 정배열",
+                "BEARISH_FULL": "완전 역배열", "BEARISH_MID": "중기 역배열", "MIXED": "혼조"}
+    cloud_kr = {"ABOVE_CLOUD": "구름 위", "IN_CLOUD": "구름 안", "BELOW_CLOUD": "구름 아래", "UNAVAILABLE": "-"}
+    macd_short = {
+        "BULLISH_CROSS": "골든크로스", "BEARISH_CROSS": "데드크로스",
+        "ABOVE_SIGNAL_EXPANDING": "상승확대", "ABOVE_SIGNAL_CONTRACTING": "상승둔화",
+        "BELOW_SIGNAL_IMPROVING": "반등시도", "BELOW_SIGNAL_WEAKENING": "하락우위",
+    }
+    rsi_str = f"{rsi_info['value']:.1f}" if rsi_info["value"] is not None else "N/A"
+    bb_str = f"%B {bb_info['percent_b']:.2f}" if bb_info["percent_b"] is not None else "%B N/A"
+    poc_str = f"{vp_info['poc_price']:,.0f}" if vp_info.get("poc_price") is not None else "N/A"
+    ov_str = f"{vp_info['overhead_supply_pct']:.0f}%" if vp_info.get("overhead_supply_pct") is not None else "N/A"
+    cards = [
+        (words("종가 · 이평배열", "CLOSE / MA ALIGN"),
+         f"{Decimal(m['close']):,.0f}  {words(align_kr.get(ma_info['alignment'], '혼조'), ma_info['alignment'])}"),
+        (words("RSI(14) · MACD", "RSI14 / MACD"),
+         f"RSI {rsi_str}  |  {words(macd_short.get(macd_info['state'], '-'), macd_info['state'][:10])}"),
+        (words("볼린저(20,2σ) · 일목", "BOLLINGER / CLOUD"),
+         f"{bb_str}  |  {words(cloud_kr.get(ichi_info['cloud_position'], '-'), ichi_info['cloud_position'])}"),
+        (words("매물대 POC · 상단매물", "POC / OVERHEAD"),
+         f"{poc_str}  |  {words('위 ', 'UP ')}{ov_str}"),
+    ]
     for i, (label, value) in enumerate(cards):
-        x = 70 + i * 375
-        draw.rounded_rectangle((x, 184, x + 345, 282), radius=12, fill="#14213a")
-        draw.text((x + 18, 199), label, font=font(18), fill=muted)
-        draw.text((x + 18, 230), value, font=font(28), fill=ink)
-    left, right, top, bottom = 100, 1440, 336, 772
-    draw.rounded_rectangle((70, 310, 1530, 995), radius=16, fill="#101c30")
+        x = 60 + i * 374
+        draw.rounded_rectangle((x, 132, x + 358, 214), radius=10, fill="#14213a")
+        draw.text((x + 14, 142), label, font=font(15), fill=muted)
+        draw.text((x + 14, 170), value, font=font(22), fill=ink)
+
+    # Common horizontal coordinate system for all 4 aligned panels
+    left, right = 82, 1310
+    vp_left, vp_right = 1322, 1456
     bars = data["bars"]
-    lo, hi = float(min(b.low for b in bars)), float(max(b.high for b in bars))
-    padding = max((hi - lo) * .08, hi * .015)
+    px = lambda i: left + (i + 0.5) * (right - left) / len(bars)
+    width = max(2, int((right - left) / len(bars) * 0.58))
+
+    # Panel 1: Main price + MA5/20/60/120 + Bollinger + Support/Resistance + Volume Profile
+    p1_top, p1_bot = 262, 654
+    draw.rounded_rectangle((60, 228, 1540, 668), radius=12, fill="#101c30")
+    price_vals = [float(b.low) for b in bars] + [float(b.high) for b in bars]
+    for s in (bb_info["series"]["upper"], bb_info["series"]["lower"]):
+        price_vals.extend(float(v) for v in s if v is not None)
+    lo, hi = min(price_vals), max(price_vals)
+    padding = max((hi - lo) * 0.06, hi * 0.015, 1.0)
     lo, hi = lo - padding, hi + padding
-    px = lambda i: left + (i + .5) * (right - left) / len(bars)
-    py = lambda value: bottom - (float(value) - lo) / (hi - lo) * (bottom - top)
+    py1 = lambda val: p1_bot - (float(val) - lo) / (hi - lo) * (p1_bot - p1_top)
+
     for i in range(6):
-        value = lo + (hi - lo) * i / 5
-        y = py(value)
-        draw.line((left, y, right, y), fill=grid)
-        draw.text((right + 15, y - 10), f"{value:,.0f}", font=font(16), fill=muted)
-    width = max(2, int((right - left) / len(bars) * .6))
-    max_volume = max(b.volume for b in bars)
+        val = lo + (hi - lo) * i / 5
+        y = py1(val)
+        draw.line((left, y, right, y), fill=grid, width=1)
+        draw.text((vp_right + 10, y - 8), f"{val:,.0f}", font=font(14), fill=muted)
+
+    # Volume Profile horizontal bars on right side of Panel 1
+    vp_bins = vp_info.get("bins") or []
+    max_vp = max((float(b["volume"]) for b in vp_bins), default=0.0)
+    if max_vp > 0:
+        for b in vp_bins:
+            y_hi = py1(float(b["high"]))
+            y_lo = py1(float(b["low"]))
+            bar_w = (float(b["volume"]) / max_vp) * (vp_right - vp_left)
+            is_poc = vp_info.get("poc_price") is not None and abs(float(b["mid"]) - float(vp_info["poc_price"])) <= (hi - lo) / 30.0
+            fill_c = poc_c if is_poc else "#2a3f63"
+            draw.rectangle((vp_left, min(y_hi, y_lo) + 1, vp_left + max(2.0, bar_w), max(y_hi, y_lo) - 1), fill=fill_c)
+        if vp_info.get("poc_price") is not None:
+            poc_y = py1(float(vp_info["poc_price"]))
+            _draw_dashed_hline(draw, left, vp_right, poc_y, poc_c, dash=6, gap=6, width=1)
+            draw.text((vp_left + 2, max(p1_top, poc_y - 16)), "POC", font=font(13), fill=poc_c)
+
+    # Support & Resistance horizontal lines
+    for level in sr_info.get("resistances") or []:
+        if lo <= float(level) <= hi:
+            y = py1(float(level))
+            _draw_dashed_hline(draw, left, right, y, res_c, dash=8, gap=6, width=1)
+            draw.text((left + 4, max(p1_top, y - 16)), f"R {float(level):,.0f}", font=font(13), fill=res_c)
+    for level in sr_info.get("supports") or []:
+        if lo <= float(level) <= hi:
+            y = py1(float(level))
+            _draw_dashed_hline(draw, left, right, y, sup_c, dash=8, gap=6, width=1)
+            draw.text((left + 4, min(p1_bot - 16, y + 2)), f"S {float(level):,.0f}", font=font(13), fill=sup_c)
+
+    # Bollinger Bands (20, 2std)
+    _draw_series_line(draw, bb_info["series"]["upper"], px, py1, bb_c, width=1)
+    _draw_series_line(draw, bb_info["series"]["lower"], px, py1, bb_c, width=1)
+
+    # Candles
     for i, b in enumerate(bars):
         x = px(i)
         color = up if b.close > b.open else down if b.close < b.open else muted
-        draw.line((x, py(b.high), x, py(b.low)), fill=color, width=2)
-        y1, y2 = sorted((py(b.open), py(b.close)))
+        draw.line((x, py1(b.high), x, py1(b.low)), fill=color, width=2)
+        y1, y2 = sorted((py1(b.open), py1(b.close)))
         draw.rectangle((x - width / 2, y1, x + width / 2, max(y1 + 2, y2)), fill=color)
-        y = 947 - b.volume / max(1, max_volume) * 115
-        draw.rectangle((x - width / 2, y, x + width / 2, 947), fill=color)
-    for period, color in ((20, ma20), (60, ma60)):
-        points = [(px(i), py(value)) for i, value in enumerate(data["averages"][period]) if value is not None]
-        if len(points) > 1:
-            draw.line(points, fill=color, width=3)
-    draw.text((110, 316), "SMA 20", font=font(17), fill=ma20)
-    draw.text((230, 316), "SMA 60", font=font(17), fill=ma60)
-    draw.text((380, 316), words("사용 기법: 일봉 캔들 · 단순이동평균 · 거래량 비교 · Wilder ATR14",
-                               "METHODS: OHLC / SMA20+60 / VOLUME RATIO / WILDER ATR14"), font=font(16), fill=muted)
-    draw.text((110, 800), words("거래량 (주)", "VOLUME (SHARES)") + f"   max {max_volume:,}", font=font(17), fill=muted)
+
+    # Moving averages: SMA 5 / 20 / 60 / 120
+    for period, color, lw in ((5, ma5_c, 1), (20, ma20_c, 2), (60, ma60_c, 2), (120, ma120_c, 2)):
+        _draw_series_line(draw, ma_info["series"][period], px, py1, color, width=lw)
+
+    # Panel 1 Legend
+    draw.text((84, 234), "MA5", font=font(14), fill=ma5_c)
+    draw.text((135, 234), "MA20", font=font(14), fill=ma20_c)
+    draw.text((198, 234), "MA60", font=font(14), fill=ma60_c)
+    draw.text((260, 234), "MA120", font=font(14), fill=ma120_c)
+    draw.text((332, 234), "BB(20,2)", font=font(14), fill=bb_c)
+    draw.text((422, 234), words("지지(S)", "SUP"), font=font(14), fill=sup_c)
+    draw.text((490, 234), words("저항(R)", "RES"), font=font(14), fill=res_c)
+    draw.text((558, 234), words("매물대(VP/POC)", "VOL PROFILE"), font=font(14), fill=poc_c)
+
+    # Panel 2: Volume
+    p2_top, p2_bot = 702, 770
+    draw.rounded_rectangle((60, 676, 1540, 778), radius=10, fill="#101c30")
+    max_volume = max((b.volume for b in bars), default=0)
+    for i, b in enumerate(bars):
+        x = px(i)
+        color = up if b.close > b.open else down if b.close < b.open else muted
+        h = (b.volume / max(1, max_volume)) * (p2_bot - p2_top)
+        draw.rectangle((x - width / 2, p2_bot - h, x + width / 2, p2_bot), fill=color)
+    obv_kr = {"ACCUMULATION": "매집(상승)", "DISTRIBUTION": "분산(하락)", "FLAT": "중립", "UNAVAILABLE": "-"}
+    draw.text((84, 681), words("거래량", "VOLUME") + f" max {max_volume:,}   |   OBV(20d): "
+              + words(obv_kr.get(obv_info["trend_20d"], "-"), obv_info["trend_20d"]), font=font(14), fill=muted)
+
+    # Panel 3: RSI(14)
+    p3_top, p3_bot = 808, 886
+    draw.rounded_rectangle((60, 786, 1540, 896), radius=10, fill="#101c30")
+    py3 = lambda val: p3_bot - (max(0.0, min(100.0, float(val))) / 100.0) * (p3_bot - p3_top)
+    for lvl, col in ((70, res_c), (50, grid), (30, sup_c)):
+        y = py3(lvl)
+        _draw_dashed_hline(draw, left, right, y, col, dash=6, gap=6, width=1)
+        draw.text((right + 12, y - 7), str(lvl), font=font(13), fill=col if lvl != 50 else muted)
+    _draw_series_line(draw, rsi_info["series"], px, py3, rsi_c, width=2)
+    div_tag = f"  [{rsi_info['divergence']}]" if rsi_info["divergence"] != "NONE" else ""
+    draw.text((84, 790), f"RSI(14): {rsi_str} ({rsi_info['zone']}){div_tag}", font=font(14), fill=rsi_c)
+
+    # Panel 4: MACD(12, 26, 9)
+    p4_top, p4_bot = 928, 1018
+    draw.rounded_rectangle((60, 904, 1540, 1046), radius=10, fill="#101c30")
+    macd_vals = [
+        float(v) for s in (macd_info["series"]["macd"], macd_info["series"]["signal"], macd_info["series"]["histogram"])
+        for v in s if v is not None
+    ]
+    m_abs = max((abs(v) for v in macd_vals), default=1.0)
+    if m_abs < 1e-6:
+        m_abs = 1.0
+    m_abs *= 1.15
+    py4 = lambda val: p4_bot - ((float(val) + m_abs) / (2.0 * m_abs)) * (p4_bot - p4_top)
+    zero_y = py4(0.0)
+    draw.line((left, zero_y, right, zero_y), fill=grid, width=1)
+    for i, hv in enumerate(macd_info["series"]["histogram"]):
+        if hv is None:
+            continue
+        x = px(i)
+        hy = py4(hv)
+        col = "#4fd18b" if hv >= 0 else "#f87171"
+        draw.rectangle((x - width / 2, min(zero_y, hy), x + width / 2, max(zero_y, hy)), fill=col)
+    _draw_series_line(draw, macd_info["series"]["macd"], px, py4, macd_c, width=2)
+    _draw_series_line(draw, macd_info["series"]["signal"], px, py4, sig_c, width=2)
+    m_txt = f"{macd_info['macd']:+.1f}" if macd_info["macd"] is not None else "N/A"
+    s_txt = f"{macd_info['signal']:+.1f}" if macd_info["signal"] is not None else "N/A"
+    draw.text((84, 908), f"MACD(12,26,9): {m_txt}  /  Signal: {s_txt}  ({macd_info['state']})", font=font(14), fill=macd_c)
+
+    # Shared date ticks along bottom of Panel 4
     for i in sorted({0, len(bars) // 4, len(bars) // 2, len(bars) * 3 // 4, len(bars) - 1}):
-        x = max(left, min(right - 95, px(i) - 42))
-        draw.text((x, 958), bars[i].trade_date.isoformat()[5:], font=font(17), fill=muted)
-    draw.text((80, 1014), f"ATR14  {Decimal(m['atr14']):,.2f} KRW   |   "
-              + words("일봉", "BARS") + f" {len(bars)}   |   " + words("출처", "SOURCE") + " "
-              + _label(", ".join(data["sources"])), font=font(18), fill=muted)
-    draw.text((80, 1050), data["report_id"] + "   |   " + words("저장 자료 참고 · 현재 진입 신호 아님", "SAVED DATA / NOT A CURRENT ENTRY SIGNAL"),
-              font=font(18), fill=ma20)
+        x = max(left, min(right - 85, px(i) - 32))
+        draw.text((x, 1022), bars[i].trade_date.isoformat()[5:], font=font(14), fill=muted)
+
+    # Footer
+    sup_txt = f"{sr_info['nearest_support']:,.0f}({sr_info['nearest_support_pct']:+.1f}%)" if sr_info["nearest_support"] else "-"
+    res_txt = f"{sr_info['nearest_resistance']:,.0f}({sr_info['nearest_resistance_pct']:+.1f}%)" if sr_info["nearest_resistance"] else "-"
+    draw.text((64, 1054), f"ATR14 {Decimal(m['atr14']):,.0f} ({Decimal(m['atr14'])/Decimal(m['close'])*100:.1f}%)   |   "
+              + words("지지 ", "S ") + sup_txt + "  /  " + words("저항 ", "R ") + res_txt
+              + f"   |   {words('캔들', 'CANDLE')}: {candle_info['pattern']}   |   {words('일봉', 'BARS')} {len(bars)}",
+              font=font(16), fill=muted)
+    draw.text((64, 1082), data["report_id"] + "   |   " + _label(", ".join(data["sources"]))
+              + "   |   " + words("저장 자료 기반 기술 분석 · 자동 주문 없음", "SAVED DATA TECHNICAL ANALYSIS / NO AUTO ORDERS"),
+              font=font(15), fill=ma20_c)
+
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if target.is_symlink():
         raise ChartUnavailable("UNSAFE_OUTPUT_PATH")
@@ -311,7 +510,8 @@ def candidate_charts(report, repository, output_dir: Path, *, renderer=render_ch
             renderer(data, target)
             item.update(status="READY", path=str(target), session=data["session"].isoformat(),
                         price_input_fingerprint=data["price_input_fingerprint"], metrics=data["metrics"],
-                        technical_analysis=data["technical_analysis"])
+                        technical_analysis=data["technical_analysis"],
+                        chart_summary=summarize_for_committee(data["extended_analysis"]))
         except ChartUnavailable as exc:
             item.update(status="UNAVAILABLE", reason=str(exc))
         except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
@@ -350,7 +550,41 @@ def _compact_chart_caption(item: dict) -> list[str]:
         parts.append("거래량 배율 확인 불가")
     if atr.get("atr_pct_of_close") is not None:
         parts.append(f"ATR {Decimal(str(atr['atr_pct_of_close'])):.1f}%")
-    return [header, " · ".join(parts), "MEDIA:" + item["path"]]
+
+    lines = [header, " · ".join(parts)]
+    summary = item.get("chart_summary")
+    if isinstance(summary, dict):
+        rsi = summary.get("rsi14") or {}
+        macd = summary.get("macd_12_26_9") or {}
+        bb = summary.get("bollinger_20_2") or {}
+        ichi = summary.get("ichimoku") or {}
+        sr = summary.get("support_resistance") or {}
+        vp = summary.get("volume_profile") or {}
+        rsi_kr = {"OVERBOUGHT": "과매수", "BULLISH": "강세", "NEUTRAL": "중립", "WEAK": "약세", "OVERSOLD": "과매도"}
+        macd_kr = {"BULLISH_CROSS": "골든크로스", "BEARISH_CROSS": "데드크로스",
+                   "ABOVE_SIGNAL_EXPANDING": "상승확대", "ABOVE_SIGNAL_CONTRACTING": "상승둔화",
+                   "BELOW_SIGNAL_IMPROVING": "반등시도", "BELOW_SIGNAL_WEAKENING": "하락우위"}
+        cloud_kr = {"ABOVE_CLOUD": "구름 위", "IN_CLOUD": "구름 안", "BELOW_CLOUD": "구름 아래"}
+        ext_parts = []
+        if rsi.get("value") is not None:
+            div_txt = "↑다이버전스" if rsi.get("divergence") == "BULLISH_DIVERGENCE" else "↓다이버전스" if rsi.get("divergence") == "BEARISH_DIVERGENCE" else ""
+            ext_parts.append(f"RSI {rsi['value']:.1f}({rsi_kr.get(rsi.get('zone'), '-')}{div_txt})")
+        if macd.get("state") in macd_kr:
+            ext_parts.append(f"MACD {macd_kr[macd['state']]}")
+        if bb.get("percent_b") is not None:
+            sq = "/스퀴즈" if bb.get("squeeze") else ""
+            ext_parts.append(f"볼린저 %B {bb['percent_b']:.2f}{sq}")
+        if ichi.get("cloud_position") in cloud_kr:
+            ext_parts.append(cloud_kr[ichi["cloud_position"]])
+        if sr.get("nearest_support") and sr.get("nearest_resistance"):
+            ext_parts.append(f"지지 {sr['nearest_support']:,.0f} / 저항 {sr['nearest_resistance']:,.0f}")
+        if vp.get("poc_price") is not None:
+            ov = f"(상단매물 {vp['overhead_supply_pct']:.0f}%)" if vp.get("overhead_supply_pct") is not None else ""
+            ext_parts.append(f"매물대 POC {vp['poc_price']:,.0f}{ov}")
+        if ext_parts:
+            lines.append(" · ".join(ext_parts))
+    lines.append("MEDIA:" + item["path"])
+    return lines
 
 
 def telegram_attachments(result, *, compact: bool | None = None):

@@ -213,7 +213,8 @@ def specialist_prompt(profile, bundle, fingerprint):
         "기존 스크리닝 기준을 만들거나 바꾸지 말고 근거가 없는 단계는 확인 대기로 남긴다. "
         "테마의 이름만으로 사이클을 추정하지 않는다. 최신 가격만으로 진입 조건 충족을 단정하지 않는다. "
         "손실 만회·평단 회복·충동은 진입 근거가 아니다.\n"
-        "시장 담당은 실제 제공된 계산 지표/차트의 시간 순서와 유동성, 테마 국면 근거, 진입·청산·무효화 조건을 검토한다. "
+        "시장 담당은 실제 제공된 계산 지표(이평 5/20/60/120·볼린저·RSI·MACD·일목구름·스윙 지지/저항·매물대 POC·OBV·캔들)와 "
+        "첨부 차트 이미지(있는 경우)의 시간 순서·시각 구조(박스권·돌파·이탈·매물벽)·유동성·진입·청산·무효화 조건을 교차 검토한다. "
         "계산된 값이 없으면 지지·저항·목표가·손절가·지표 숫자를 만들지 않는다. "
         "재무 담당은 뉴스의 사실성·지속성, 공식 공시와 현금흐름·자금 부담을 대조한다. "
         "리스크 담당은 두 판단에 반대되는 근거와 미해소 위험을 찾는다.\n"
@@ -263,11 +264,18 @@ def run_specialist(
     reasoning=None,
     budget=CHILD_BUDGET,
     timeout=CHILD_TIMEOUT,
+    image=None,
 ):
     started = time.monotonic()
     result = {"profile": profile, "status": "UNAVAILABLE", "memo": None}
     if reasoning is not None and reasoning not in REASONING_LEVELS:
         raise ValueError("INVALID_REASONING_LEVEL")
+    image_path = None
+    if image is not None:
+        candidate = Path(image)
+        if candidate.is_symlink() or not candidate.is_file() or candidate.suffix.lower() != ".png":
+            raise ValueError("INVALID_IMAGE_ATTACHMENT")
+        image_path = candidate.resolve()
     query = directory / (profile + ".query")
     output = directory / (profile + ".out")
     errors = directory / (profile + ".err")
@@ -275,6 +283,8 @@ def run_specialist(
                "--toolsets", "none", "--max-turns", "1", "--run-budget", str(budget)]
     if reasoning is not None:
         command.extend(["--reasoning", reasoning])
+    if image_path is not None:
+        command.extend(["--image", str(image_path)])
     command.extend(["--query-file", str(query)])
     process = None
     try:

@@ -74,10 +74,18 @@ emit_committee_brief() {
   brief_state=${STOCK_STATE_HOST_DIR:-/srv/stock-assistant/state}
   brief_home=${HERMES_HOME:-/home/ubuntu/.hermes/profiles/stock-cio}
   brief_script=${STOCK_COMMITTEE_SCRIPT:-$brief_home/scripts/stock-committee-brief.py}
-  "$brief_python" "$brief_script" \
-    --database "$brief_state/stock-assistant.sqlite3" \
-    --research-database "$brief_state/unified-research-inputs.sqlite3" \
-    --report-id "$brief_report_id" --format telegram
+  brief_chart_dir=${2:-}
+  if [ -n "$brief_chart_dir" ] && [ -d "$brief_chart_dir" ]; then
+    "$brief_python" "$brief_script" \
+      --database "$brief_state/stock-assistant.sqlite3" \
+      --research-database "$brief_state/unified-research-inputs.sqlite3" \
+      --report-id "$brief_report_id" --chart-dir "$brief_chart_dir" --format telegram
+  else
+    "$brief_python" "$brief_script" \
+      --database "$brief_state/stock-assistant.sqlite3" \
+      --research-database "$brief_state/unified-research-inputs.sqlite3" \
+      --report-id "$brief_report_id" --format telegram
+  fi
 }
 
 stage=DAILY_REFRESH
@@ -108,16 +116,31 @@ if [ "${STOCK_UNIFIED_ENABLED:-false}" = true ]; then
     --toss-client-id-file /run/secrets/toss-client-id --toss-client-secret-file /run/secrets/toss-client-secret \
     $actionable_args --format text)
   printf '%s\n' "$unified_output"
+  chart_output=""
+  chart_failed=false
+  rendered_chart_dir=""
+  if [ "${STOCK_CANDIDATE_CHARTS:-false}" = true ]; then
+    stage=CANDIDATE_CHARTS
+    chart_report_id=$(printf '%s\n' "$unified_output" | sed -n 's/^보고서: //p')
+    chart_home=${HERMES_HOME:-/home/ubuntu/.hermes/profiles/stock-cio}
+    chart_base_dir=${STOCK_CHART_OUTPUT_DIR:-$chart_home/cache/candidate-charts}
+    if chart_output=$(emit_candidate_charts "$unified_output"); then
+      rendered_chart_dir="$chart_base_dir/$chart_report_id"
+    else
+      chart_failed=true
+    fi
+  fi
   if [ "${STOCK_COMMITTEE_BRIEF:-false}" = true ]; then
     stage=COMMITTEE_BRIEF
-    if ! emit_committee_brief "$unified_output"; then
+    if ! emit_committee_brief "$unified_output" "$rendered_chart_dir"; then
       printf '투자위원회 요약 실패 · 후보 보고서와 판정은 유지합니다.\n'
     fi
   fi
   if [ "${STOCK_CANDIDATE_CHARTS:-false}" = true ]; then
-    stage=CANDIDATE_CHARTS
-    if ! emit_candidate_charts "$unified_output"; then
+    if [ "$chart_failed" = true ]; then
       printf '기술적 차트 첨부 실패 · 후보 보고서와 판정은 유지합니다.\n'
+    elif [ -n "$chart_output" ]; then
+      printf '%s\n' "$chart_output"
     fi
   fi
   printf 'STOCK_CYCLE status=READY mode=%s stage=UNIFIED_RESEARCH\n' "$mode" >&2

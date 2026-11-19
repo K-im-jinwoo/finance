@@ -21,6 +21,7 @@ import sys
 import tempfile
 
 
+ENGINE_SOURCE = Path("/srv/stock-assistant/current/src")
 CONTRACT = "STOCK_COMMITTEE_BRIEF_V1"
 REPORT_ID = re.compile(r"UR-[a-f0-9]{24}")
 FINAL_DECISIONS = {"BUY_RECOMMENDATION", "WATCH"}
@@ -31,6 +32,62 @@ COMMITTEE_BUDGET = 120
 COMMITTEE_TIMEOUT = 140
 APPLICATION_ID = 0x52534431
 STATUS_KR = {"COMPLETE": "완료", "UNAVAILABLE": "미완료"}
+
+
+def _ensure_engine_path() -> None:
+    local_src = Path(__file__).resolve().parents[4] / "src"
+    for candidate in (ENGINE_SOURCE, local_src):
+        if candidate.is_dir() and str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+
+
+def load_chart_analyses(report: dict, source_database: Path | None) -> dict[str, dict]:
+    """Compute read-only multi-indicator chart summaries for final candidates."""
+    if source_database is None or not source_database.is_file():
+        return {}
+    _ensure_engine_path()
+    try:
+        from stock_assistant.chart_analysis import compute_full_chart_analysis, summarize_for_committee
+        from stock_assistant.research_repository import ReadOnlyResearchRepository
+    except ImportError:
+        return {}
+    as_of = datetime.fromisoformat(report["as_of"])
+    repo = ReadOnlyResearchRepository(source_database)
+    summaries: dict[str, dict] = {}
+    for row in report.get("candidates", []):
+        if not isinstance(row, dict) or row.get("action_decision") not in FINAL_DECISIONS:
+            continue
+        symbol = str(row.get("symbol") or "")
+        if not re.fullmatch(r"[0-9]{6}", symbol):
+            continue
+        try:
+            bars = repo.bars_for(symbol, as_of=as_of, limit=120)
+            if len(bars) >= 61:
+                summaries[symbol] = summarize_for_committee(compute_full_chart_analysis(bars))
+        except (OSError, sqlite3.Error, ValueError, TypeError):
+            continue
+    return summaries
+
+
+def resolve_candidate_chart_paths(report: dict, chart_dir: Path | None) -> list[Path]:
+    """Locate already-rendered candidate PNGs for this report in candidate rank order."""
+    if chart_dir is None or not chart_dir.is_dir() or chart_dir.is_symlink():
+        return []
+    paths: list[Path] = []
+    for row in report.get("candidates", []):
+        if not isinstance(row, dict) or row.get("action_decision") not in FINAL_DECISIONS:
+            continue
+        symbol = str(row.get("symbol") or "")
+        if not re.fullmatch(r"[0-9]{6}", symbol):
+            continue
+        matches = sorted(
+            (p for p in chart_dir.glob(f"{symbol}-*.png") if p.is_file() and not p.is_symlink()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if matches:
+            paths.append(matches[0])
+    return paths[:5]
 
 
 def _load_expert_bridge():
@@ -69,7 +126,12 @@ def load_saved_report(research_database: Path, report_id: str, *, source_databas
     return report
 
 
-def build_committee_request(report: dict) -> dict | None:
+def build_committee_request(
+    report: dict,
+    *,
+    chart_analyses: dict[str, dict] | None = None,
+    has_chart_vision: bool = False,
+) -> dict | None:
     """Extract a bounded, secret-free evidence payload for the top final candidates."""
     candidates = [
         row for row in report.get("candidates", [])
@@ -78,11 +140,13 @@ def build_committee_request(report: dict) -> dict | None:
     if not candidates:
         return None
     symbols = [str(row["symbol"]) for row in candidates]
+    analyses = chart_analyses or {}
     sources = []
     for row in candidates:
+        symbol = str(row["symbol"])
         compact = {
             "rank": row.get("rank"),
-            "symbol": row.get("symbol"),
+            "symbol": symbol,
             "name": row.get("name"),
             "action_decision": row.get("action_decision"),
             "label": row.get("label"),
@@ -93,6 +157,7 @@ def build_committee_request(report: dict) -> dict | None:
             "liquidity_tier": row.get("liquidity_tier"),
             "financial_breakdown": row.get("financial_breakdown"),
             "price": row.get("price"),
+            "chart_analysis": analyses.get(symbol),
             "warnings": row.get("warnings", []),
             "advisories": row.get("advisories", []),
             "recent_headlines": (row.get("recent_headlines") or [])[:8],
@@ -101,12 +166,19 @@ def build_committee_request(report: dict) -> dict | None:
             "financial_source_url": row.get("financial_source_url"),
         }
         sources.append({"kind": "UNIFIED_CANDIDATE_PACKET", "data": compact})
+    vision_note = (
+        " 시장 담당은 첨부된 다중 패널 차트 시트 이미지(이평 5/20/60/120·볼린저·지지/저항·매물대 POC·거래량·RSI·MACD)를 "
+        "수치 JSON과 교차 판독하여 추세·과열·매물벽·지지/저항 가격대를 구체적으로 평가하라."
+        if has_chart_vision
+        else " 시장 담당은 chart_analysis의 다중 지표(이평 5/20/60/120·볼린저·RSI·MACD·일목구름·지지/저항·매물대 POC·OBV·캔들)를 교차 검토하라."
+    )
     return {
         "mode": "research",
         "question": (
             "정기 통합 리서치에서 선별된 후보 종목들에 대해 담당별 핵심 근거(Bull), 반대 논리 및 경고된 위험 키워드 기사의 "
-            "실제 악재 여부(Bear/Risk), 그리고 기술적 진입·무효화 조건을 간결하게 검토하라. "
-            "결정론적 점수와 판정은 변경하지 않는다."
+            "실제 악재 여부(Bear/Risk), 그리고 다중 차트 분석 기반 진입·저항·손절(무효화) 조건을 간결하게 검토하라."
+            + vision_note
+            + " 결정론적 점수와 판정은 변경하지 않는다."
         ),
         "symbols": symbols,
         "evidence": {
@@ -157,11 +229,11 @@ def cio_synthesis_prompt(report: dict, expert_result: dict) -> str:
         "투자위원회 요약 (Bull / Bear · 위험 검토)\n"
         "종목마다:\n"
         "- [순위] 종목명 (코드) · 판정\n"
-        "  • Bull(찬성): 재무·추세·재료 핵심 1~2줄\n"
-        "  • Bear/위험: 반대 논리 및 경고된 위험 키워드 기사의 실제 악재 여부 판정 1~2줄\n"
-        "  • 핵심 조건: 진입·무효화 조건 1줄\n"
+        "  • Bull(찬성): 재무·추세(이평/볼린저/구름/MACD/OBV)·재료 핵심 1~2줄\n"
+        "  • Bear/위험: 반대 논리, 과열/매물벽(RSI·상단매물)·경고 기사 실제 악재 여부 1~2줄\n"
+        "  • 차트·진입 조건: 구체적 지지/저항·POC·20일선 무효화 기준 1줄\n"
         "마지막 줄: 전문 검토: 시장(완료/미완료) · 재무(완료/미완료) · 리스크(완료/미완료)\n"
-        "전체 2400자 이내로 간결하게 작성하라.\n"
+        "전체 2600자 이내로 간결하게 작성하라.\n"
         "<committee_json>\n" + json.dumps(payload, ensure_ascii=False) + "\n</committee_json>"
     )
 
@@ -197,69 +269,118 @@ def generate_committee_brief(
     specialist_runner=None,
     cio_runner=None,
     now: datetime | None = None,
+    source_database: Path | None = None,
+    chart_dir: Path | None = None,
 ) -> dict:
-    request = build_committee_request(report)
-    if request is None:
-        return {
-            "contract": CONTRACT,
-            "report_id": report.get("report_id"),
-            "status": "NO_CANDIDATES",
-            "brief": "",
-            "orders_enabled": False,
-        }
-    bridge = bridge or _load_expert_bridge()
-    default_runner = partial(
-        bridge.run_specialist,
-        reasoning=COMMITTEE_REASONING,
-        budget=COMMITTEE_BUDGET,
-        timeout=COMMITTEE_TIMEOUT,
-    )
-    run_fn = specialist_runner or default_runner
-    expert_result = bridge.review(request, runner=run_fn, now=now or datetime.now(timezone.utc))
-    if expert_result.get("status") == "UNAVAILABLE":
+    chart_analyses = load_chart_analyses(report, source_database)
+    chart_paths = resolve_candidate_chart_paths(report, chart_dir)
+    vision_sheet_dir = None
+    vision_sheet_path = None
+    if chart_paths and specialist_runner is None:
+        _ensure_engine_path()
+        try:
+            from stock_assistant.candidate_charts import build_committee_chart_sheet
+            vision_sheet_dir = tempfile.TemporaryDirectory(prefix="stock-committee-vision-")
+            sheet_dir = Path(vision_sheet_dir.name)
+            sheet_dir.chmod(0o700)
+            vision_sheet_path = build_committee_chart_sheet(chart_paths, sheet_dir / "committee-charts.png")
+        except Exception:
+            vision_sheet_path = None
+
+    try:
+        request = build_committee_request(
+            report,
+            chart_analyses=chart_analyses,
+            has_chart_vision=vision_sheet_path is not None,
+        )
+        if request is None:
+            return {
+                "contract": CONTRACT,
+                "report_id": report.get("report_id"),
+                "status": "NO_CANDIDATES",
+                "brief": "",
+                "orders_enabled": False,
+            }
+        bridge = bridge or _load_expert_bridge()
+        default_runner = partial(
+            bridge.run_specialist,
+            reasoning=COMMITTEE_REASONING,
+            budget=COMMITTEE_BUDGET,
+            timeout=COMMITTEE_TIMEOUT,
+        )
+        if specialist_runner is not None:
+            run_fn = specialist_runner
+        elif vision_sheet_path is not None:
+            def run_fn(profile, prompt, directory):
+                if profile == "stock-market":
+                    res = default_runner(profile, prompt, directory, image=vision_sheet_path)
+                    if res.get("status") == "COMPLETE":
+                        res["chart_vision"] = True
+                        return res
+                    # Safe fallback to text-only quantitative chart JSON if vision call fails.
+                    fallback = default_runner(profile, prompt, directory)
+                    fallback["chart_vision"] = False
+                    return fallback
+                return default_runner(profile, prompt, directory)
+        else:
+            run_fn = default_runner
+
+        expert_result = bridge.review(request, runner=run_fn, now=now or datetime.now(timezone.utc))
+        if expert_result.get("status") == "UNAVAILABLE":
+            return {
+                "contract": CONTRACT,
+                "report_id": report["report_id"],
+                "status": "UNAVAILABLE",
+                "error_code": "ALL_SPECIALISTS_UNAVAILABLE",
+                "expert_review": expert_result,
+                "brief": "",
+                "orders_enabled": False,
+            }
+        synth_runner = cio_runner or (specialist_runner if specialist_runner is not None else default_runner)
+        with tempfile.TemporaryDirectory(prefix="stock-committee-cio-") as temporary:
+            directory = Path(temporary)
+            directory.chmod(0o700)
+            cio_result = synth_runner(CIO_PROFILE, cio_synthesis_prompt(report, expert_result), directory)
+        if cio_result.get("status") == "COMPLETE" and cio_result.get("memo"):
+            brief = str(cio_result["memo"]).strip()[:CIO_MEMO_LIMIT]
+            if "전문 검토:" not in brief:
+                brief = brief + "\n" + format_status_line(expert_result)
+            status = "COMPLETE" if expert_result["status"] == "COMPLETE" else "PARTIAL"
+        else:
+            brief = fallback_brief(expert_result)
+            status = "PARTIAL"
+        market_spec = next((s for s in expert_result.get("specialists", []) if s.get("profile") == "stock-market"), {})
         return {
             "contract": CONTRACT,
             "report_id": report["report_id"],
-            "status": "UNAVAILABLE",
-            "error_code": "ALL_SPECIALISTS_UNAVAILABLE",
-            "expert_review": expert_result,
-            "brief": "",
+            "status": status,
+            "expert_status": expert_result["status"],
+            "cio_status": cio_result.get("status", "UNAVAILABLE"),
+            "chart_vision_used": bool(market_spec.get("chart_vision")),
+            "chart_analyses_count": len(chart_analyses),
+            "brief": brief,
             "orders_enabled": False,
         }
-    synth_runner = cio_runner or run_fn
-    with tempfile.TemporaryDirectory(prefix="stock-committee-cio-") as temporary:
-        directory = Path(temporary)
-        directory.chmod(0o700)
-        cio_result = synth_runner(CIO_PROFILE, cio_synthesis_prompt(report, expert_result), directory)
-    if cio_result.get("status") == "COMPLETE" and cio_result.get("memo"):
-        brief = str(cio_result["memo"]).strip()[:CIO_MEMO_LIMIT]
-        if "전문 검토:" not in brief:
-            brief = brief + "\n" + format_status_line(expert_result)
-        status = "COMPLETE" if expert_result["status"] == "COMPLETE" else "PARTIAL"
-    else:
-        brief = fallback_brief(expert_result)
-        status = "PARTIAL"
-    return {
-        "contract": CONTRACT,
-        "report_id": report["report_id"],
-        "status": status,
-        "expert_status": expert_result["status"],
-        "cio_status": cio_result.get("status", "UNAVAILABLE"),
-        "brief": brief,
-        "orders_enabled": False,
-    }
+    finally:
+        if vision_sheet_dir is not None:
+            vision_sheet_dir.cleanup()
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database", type=Path, help="Optional source DB path to guard against conflation")
+    parser.add_argument("--database", type=Path, help="Optional source DB path for read-only chart analysis and conflation guard")
     parser.add_argument("--research-database", type=Path, required=True)
     parser.add_argument("--report-id", required=True)
+    parser.add_argument("--chart-dir", type=Path, help="Optional directory containing rendered PNG charts for vision review")
     parser.add_argument("--format", choices=("telegram", "json"), default="telegram")
     args = parser.parse_args(argv)
     try:
         report = load_saved_report(args.research_database, args.report_id, source_database=args.database)
-        result = generate_committee_brief(report)
+        result = generate_committee_brief(
+            report,
+            source_database=args.database,
+            chart_dir=args.chart_dir,
+        )
         if args.format == "json":
             print(json.dumps(result, ensure_ascii=False))
             return 0 if result["status"] != "UNAVAILABLE" else 2

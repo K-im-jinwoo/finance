@@ -534,7 +534,10 @@ class LiveFrameBuffer:
         received = instant(at)
         monotonic_value(monotonic)
         frames = []
-        for key, (frame, stamp) in list(self.latest.items()):
+        ordered = sorted(self.latest.items(),
+            key=lambda item: (0 if item[0][1] in pending_symbols and item[0][0] == "orderbook"
+                              else 1 if item[0][1] in pending_symbols else 2))
+        for key, (frame, stamp) in ordered:
             kind, code = key
             age = (received - stamp).total_seconds()
             if age < 0 or age > self.max_age:

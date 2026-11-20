@@ -189,6 +189,13 @@ class _PaperSession:
                 if minimum is not None and metrics['bid']*metrics['bid_volume'] < minimum:
                     self.decision(at,book.symbol,'SKIPPED','BUY_FILL_QUOTE_DEPTH',intent_id=key)
                     continue
+                max_ratio=self.config.strategy_config.max_ask_bid_volume_ratio
+                if max_ratio is not None:
+                    bid_total=sum((number(v['volume']) for v in book.data['bids']),Decimal(0))
+                    ask_total=sum((number(v['volume']) for v in book.data['asks']),Decimal(0))
+                    if not bid_total or ask_total/bid_total > max_ratio:
+                        self.decision(at,book.symbol,'SKIPPED','BUY_FILL_QUOTE_DEPTH',intent_id=key)
+                        continue
             earliest = instant(intent["at"]) + timedelta(milliseconds=self.config.fixture_costs.latency_ms)
             if (book.issues or book.source_timestamp is None or instant(book.source_timestamp) < earliest
                     or instant(book.received_at_utc) < earliest):

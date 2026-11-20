@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -23,10 +24,12 @@ class CandidateChartCycleTests(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.calls = self.root / "chart-calls.txt"
+        self.cycle_calls = self.root / "cycle-calls.txt"
         self.envfile = self.root / "candidate.env"
         self.envfile.write_text("# offline fixture\n", encoding="utf-8")
         docker = self.bin / "docker"
         docker.write_text("""#!/bin/sh
+printf '%s\\n' "$*" >> "$CYCLE_TEST_CALLS"
 case "$*" in
   *refresh-daily*) exit "${FAKE_DAILY_EXIT:-0}" ;;
   *refresh-unified*) printf '%s\\n' "$FAKE_REPORT" ;;
@@ -45,10 +48,11 @@ printf 'MEDIA:/fixture/candidate.png\\n'
                     "STOCK_CANDIDATE_ENV_FILE": self.envfile.as_posix(), "STOCK_UNIFIED_ENABLED": "true",
                     "STOCK_NEWS_ENABLED": "false", "STOCK_CHART_PYTHON": renderer.as_posix(),
                     "CHART_TEST_CALLS": self.calls.as_posix(), "FAKE_REPORT": REPORT,
+                    "CYCLE_TEST_CALLS": self.cycle_calls.as_posix(),
                     "STOCK_CANDIDATE_CHARTS": "false"}
 
-    def run_cycle(self, **env):
-        return subprocess.run([SHELL, SCRIPT.as_posix(), "morning"], env={**self.env, **env},
+    def run_cycle(self, *args, **env):
+        return subprocess.run([SHELL, SCRIPT.as_posix(), *(args or ("morning",))], env={**self.env, **env},
                               capture_output=True, text=True, encoding="utf-8", timeout=15)
 
     def test_opt_in_off_preserves_the_existing_report_and_does_not_call_renderer(self):
@@ -77,6 +81,25 @@ printf 'MEDIA:/fixture/candidate.png\\n'
         self.assertNotIn("MEDIA:", result.stdout)
         self.assertIn("stage=DAILY_REFRESH", result.stderr)
         self.assertFalse(self.calls.exists())
+
+
+    def test_morning_window_bounds_refresh_and_requires_all_daily_data(self):
+        deadline = str(int(time.time()) + 120)
+        result = self.run_cycle("morning-window", deadline)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), REPORT)
+        refresh, report = self.cycle_calls.read_text(encoding="utf-8").splitlines()
+        self.assertIn("timeout -k 1s ", refresh)
+        self.assertIn("refresh-daily", refresh)
+        self.assertIn("--include-completed-today", refresh)
+        self.assertNotIn("--allow-unpublished-latest", refresh)
+        self.assertIn("refresh-unified", report)
+
+    def test_closed_morning_window_does_not_refresh_or_report(self):
+        result = self.run_cycle("morning-window", "1")
+        self.assertEqual(result.returncode, 124)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse(self.cycle_calls.exists())
 
 
 if __name__ == "__main__":

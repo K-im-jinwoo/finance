@@ -42,7 +42,11 @@ def main():
         with tarfile.open(package,'w:gz') as tar:
             for p in sorted((ROOT/'engine/src').rglob('*.py')):
                 if '__pycache__' not in p.parts:tar.add(p,arcname=str(p.relative_to(ROOT/'engine')).replace('\\','/'))
-            for relative in ['deploy/Dockerfile','deploy/jobs/run_stock_cycle.sh','hermes/profiles/stock-cio/SOUL.md','hermes/skills/stock-research/SKILL.md']:
+            for relative in (
+                'deploy/Dockerfile', 'deploy/jobs/run_stock_cycle.sh',
+                'deploy/jobs/run_stock_morning.py', 'deploy/jobs/stock-morning.sh',
+                'hermes/profiles/stock-cio/SOUL.md', 'hermes/skills/stock-research/SKILL.md',
+            ):
                 tar.add(ROOT/'engine'/relative,arcname=relative)
             tar.add(ROOT/'scripts/oracle_unified_rollout_host.py',arcname='deploy/unified_rollout_host.py')
         remote='/tmp/'+package.name

@@ -50,6 +50,20 @@ three stock report jobs with Hermes `no_agent=true`, preserving their schedule
 and Telegram destination, so script failure determines the job failure status.
 The deterministic stored report is the delivered output.
 
+The morning job uses `10 8 * * 1-5` in the CIO profile's KST schedule. The
+host wrapper retries only a daily provider timeout or unavailable KRX data
+at 08:25 and 08:45. The daily refresh must finish successfully for all three
+markets before 08:50 KST. A failed refresh at the cutoff produces one error
+notification. Authentication and other terminal errors fail immediately.
+Hermes runs the report once in the same execution after the refresh succeeds.
+Keep the Hermes script timeout long enough for the collection window and
+report generation. The former 07:00 prefetch timer can be disabled once this
+job is active.
+
+Run `sh /home/ubuntu/.hermes/profiles/stock-cio/scripts/stock-morning.sh --once`
+for an operator-initiated refresh and report outside the window. The script
+writes the report to stdout. Hermes handles Telegram delivery for its jobs.
+
 ## Verification and rollout
 
 1. Run the repository's full `scripts/verify.ps1` with Python 3.12+.

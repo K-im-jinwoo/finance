@@ -74,7 +74,10 @@ class DeployAssetTests(unittest.TestCase):
         ):
             script = (jobs / name).read_text(encoding="utf-8")
             self.assertIn("/srv/stock-assistant/schedule.env", script)
-            self.assertIn(f"exec sh /srv/stock-assistant/current/deploy/jobs/run_stock_cycle.sh {mode}", script)
+            if mode == "morning":
+                self.assertIn("exec python3 /srv/stock-assistant/current/deploy/jobs/run_stock_morning.py", script)
+            else:
+                self.assertIn(f"exec sh /srv/stock-assistant/current/deploy/jobs/run_stock_cycle.sh {mode}", script)
             self.assertNotIn("TELEGRAM_BOT_TOKEN", script)
             self.assertNotIn("/v1/orders", script)
 

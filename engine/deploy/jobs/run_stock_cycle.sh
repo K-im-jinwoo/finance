@@ -5,9 +5,17 @@ stage=SETUP
 trap 'code=$?; if [ "$code" -ne 0 ]; then printf "STOCK_CYCLE status=FAILED stage=%s exit=%s\n" "$stage" "$code" >&2; fi' 0
 
 mode="${1:-}"
+morning_cutoff=""
 case "$mode" in
+  morning-window)
+    mode=morning
+    morning_cutoff="${2:-}"
+    case "$morning_cutoff" in
+      ''|*[!0-9]*) echo "Invalid morning daily cutoff" >&2; exit 2 ;;
+    esac
+    ;;
   morning|evening|weekly|daily-refresh) ;;
-  *) echo "usage: run_stock_cycle.sh morning|evening|weekly|daily-refresh" >&2; exit 2 ;;
+  *) echo "usage: run_stock_cycle.sh morning|evening|weekly|daily-refresh|morning-window CUTOFF_EPOCH" >&2; exit 2 ;;
 esac
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -91,11 +99,26 @@ emit_committee_brief() {
 stage=DAILY_REFRESH
 daily_args=""
 if [ "${STOCK_UNIFIED_ENABLED:-false}" = true ]; then
-  daily_args="--include-completed-today --allow-unpublished-latest"
+  daily_args="--include-completed-today"
+  if [ -z "$morning_cutoff" ]; then
+    daily_args="$daily_args --allow-unpublished-latest"
+  fi
 fi
-compose exec -T stock-assistant python -m stock_assistant refresh-daily \
-  --database "$database" --key-file /run/secrets/krx-auth-key \
-  --client-id-file /run/secrets/toss-client-id --client-secret-file /run/secrets/toss-client-secret $daily_args >&2
+
+refresh_daily() {
+  compose exec -T stock-assistant "$@" python -m stock_assistant refresh-daily \
+    --database "$database" --key-file /run/secrets/krx-auth-key \
+    --client-id-file /run/secrets/toss-client-id --client-secret-file /run/secrets/toss-client-secret $daily_args
+}
+
+if [ -n "$morning_cutoff" ]; then
+  remaining_seconds=$((morning_cutoff - $(date +%s)))
+  [ "$remaining_seconds" -gt 0 ] || exit 124
+  refresh_daily timeout -k 1s "${remaining_seconds}s" >&2
+  [ "$(date +%s)" -lt "$morning_cutoff" ] || exit 124
+else
+  refresh_daily >&2
+fi
 
 if [ "$mode" = daily-refresh ]; then
   printf 'STOCK_CYCLE status=READY mode=%s stage=DAILY_REFRESH\n' "$mode" >&2

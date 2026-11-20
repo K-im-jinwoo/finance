@@ -11,4 +11,4 @@ set -a
 . "$schedule_env"
 set +a
 
-exec sh /srv/stock-assistant/current/deploy/jobs/run_stock_cycle.sh morning
+exec python3 /srv/stock-assistant/current/deploy/jobs/run_stock_morning.py "$@"

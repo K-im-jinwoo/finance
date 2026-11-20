@@ -21,7 +21,11 @@ def command(*args):
 def inventory():
     containers = {}
     for name in PROTECTED:
-        obj = json.loads(command('docker', 'inspect', name))[0]
+        probe = subprocess.run(('docker', 'inspect', name), capture_output=True, text=True)
+        if probe.returncode != 0:
+            containers[name] = None
+            continue
+        obj = json.loads(probe.stdout)[0]
         containers[name] = {'id': obj['Id'], 'pid': obj['State']['Pid'], 'started_at': obj['State']['StartedAt'],
                             'restart_count': obj['RestartCount'], 'running': obj['State']['Running']}
     files = [Path('/srv/stock-dashboard/shared-auth-cache/toss-token.json'),

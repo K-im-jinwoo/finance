@@ -19,7 +19,7 @@ DAILY_SUMMARY_KEY = "telegram_daily_summary_v1"
 REASONS = {"VWAP_BREAKOUT":"분봉 근사 VWAP 돌파", "RISING_CLOSE":"완료 분봉 상승",
     "VOLUME_SPIKE":"완료 분봉 거래량 급증", "BID_DEPTH":"매수호가 잔량 충족",
     "TIME_EXIT":"시간 청산", "LOSS_EXIT":"일손실 한도 청산", "TAKE_PROFIT":"익절",
-    "STOP_LOSS":"손절", "MOMENTUM_WEAK":"모멘텀 약화"}
+    "TRAILING_STOP":"트레일링 익절", "STOP_LOSS":"손절", "MOMENTUM_WEAK":"모멘텀 약화"}
 
 
 def _amount(value):

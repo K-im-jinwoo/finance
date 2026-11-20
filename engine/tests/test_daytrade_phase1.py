@@ -14,7 +14,7 @@ from stock_assistant.daytrade.scanner import scan_rankings
 from stock_assistant.daytrade.stream import LivePaperSession, LiveCandleBuilder
 from stock_assistant.daytrade.strategy import StrategyEngine
 from test_daytrade_scanner_strategy import (NOW, CODE, ranking, scanner_config,
-    strategy_config, ready_engine, quote, candle_event, risk)
+    strategy_config, ready_engine, quote, candle_event, risk, observation)
 
 
 def stock(**updates):
@@ -117,6 +117,40 @@ class StrategyTests(unittest.TestCase):
         self.assertEqual(engine.evaluate(CODE,NOW,risk(),p).exit_reason,'MOMENTUM_WEAK')
         p[CODE]['average_price']='100'
         self.assertEqual(engine.evaluate(CODE,NOW,risk(),p).exit_reason,'TAKE_PROFIT')
+
+    def test_orderbook_ratio_confirmed_breakout_weak_gap_and_trailing_profit(self):
+        for bad in ({'max_ask_bid_volume_ratio':'0'},{'breakout_lookback_bars':0},
+                {'weak_exit_min_vwap_gap_bps':'-1'},{'trailing_stop_activation_bps':'100'},
+                {'trailing_stop_activation_bps':'50','trailing_stop_retrace_bps':'50'}):
+            with self.assertRaises(ValueError):strategy_config(**bad)
+        heavy_ask=observation('orderbook',{'currency':'KRW','timestamp':NOW,
+            'bids':[{'price':'109','volume':'1000'}],'asks':[{'price':'110','volume':'2000'}]})
+        cfg=strategy_config(max_ask_bid_volume_ratio='1.5',breakout_lookback_bars=3,
+            weak_exit_min_vwap_gap_bps='50',trailing_stop_activation_bps='90',trailing_stop_retrace_bps='40')
+        self.assertIn('MISSING_BID_DEPTH',ready_engine(config=cfg,book=heavy_ask).evaluate(CODE,NOW,risk(),{}).reasons)
+        bullish_bars=observation('candles',{'candles':[
+            {'currency':'KRW','timestamp':'2026-11-13T10:01:00+09:00','openPrice':'100','highPrice':'101','lowPrice':'99','closePrice':'100','volume':'100'},
+            {'currency':'KRW','timestamp':'2026-11-13T10:02:00+09:00','openPrice':'100','highPrice':'101','lowPrice':'99','closePrice':'100','volume':'100'},
+            {'currency':'KRW','timestamp':'2026-11-13T10:03:00+09:00','openPrice':'100','highPrice':'101','lowPrice':'99','closePrice':'100','volume':'100'},
+            {'currency':'KRW','timestamp':'2026-11-13T10:04:00+09:00','openPrice':'100','highPrice':'111','lowPrice':'100','closePrice':'110','volume':'400'}]})
+        engine=ready_engine(config=cfg,candles=bullish_bars,book=quote(bid='109',ask='110',volume='1000'))
+        self.assertEqual(engine.evaluate(CODE,NOW,risk(),{}).action,'BUY')
+        # Tiny 1-tick dip below VWAP is held when weak_exit_min_vwap_gap_bps=50.
+        dip_bars=candle_event(closes=('110','110','110','109.8'))
+        dip_engine=ready_engine(config=cfg,candles=dip_bars,book=quote(bid='109.8',ask='110'))
+        pos={CODE:{'quantity':1,'average_price':'110','entry_at':(instant(NOW)-timedelta(seconds=200)).isoformat()}}
+        self.assertEqual(dip_engine.evaluate(CODE,NOW,risk(),pos).action,'HOLD')
+        # Post-entry bar high (+200bps) followed by retrace to +100bps triggers trailing TAKE_PROFIT.
+        trail_bars=observation('candles',{'candles':[
+            {'currency':'KRW','timestamp':'2026-11-13T10:01:00+09:00','openPrice':'100','highPrice':'100','lowPrice':'100','closePrice':'100','volume':'100'},
+            {'currency':'KRW','timestamp':'2026-11-13T10:02:00+09:00','openPrice':'100','highPrice':'100','lowPrice':'100','closePrice':'100','volume':'100'},
+            {'currency':'KRW','timestamp':'2026-11-13T10:03:00+09:00','openPrice':'100','highPrice':'100','lowPrice':'100','closePrice':'100','volume':'100'},
+            {'currency':'KRW','timestamp':'2026-11-13T10:04:00+09:00','openPrice':'100','highPrice':'102','lowPrice':'100','closePrice':'101','volume':'200'}]})
+        trail_engine=ready_engine(config=cfg,candles=trail_bars,book=quote(bid='101',ask='101.5'))
+        trail_pos={CODE:{'quantity':1,'average_price':'100','entry_at':'2026-11-13T10:03:10+09:00'}}
+        sold=trail_engine.evaluate(CODE,NOW,risk(),trail_pos)
+        self.assertEqual((sold.action,sold.exit_reason),('SELL','TAKE_PROFIT'))
+        self.assertIn('TRAILING_STOP',sold.reasons)
 
 
 class LifecycleTests(unittest.TestCase):

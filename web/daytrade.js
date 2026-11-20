@@ -7,7 +7,7 @@ const labels = {
   ENTRY_CLOSED: '신규 진입 마감', TIME_EXITING: '시간 청산 중',
   LOSS_LOCKED: '일손실 한도 잠금', DATA_DEGRADED: '데이터 품질 잠금',
   RATE_LIMIT_DEGRADED: '호출 제한 잠금', PRIOR_DAY_UNFLATTENED: '전일 미청산 잠금',
-  TIME_EXIT: '시간 청산', LOSS_EXIT: '일손실 한도 청산', TAKE_PROFIT: '익절',
+  TIME_EXIT: '시간 청산', LOSS_EXIT: '일손실 한도 청산', TAKE_PROFIT: '익절', TRAILING_STOP: '트레일링 익절',
   STOP_LOSS: '손절', MOMENTUM_WEAK: '모멘텀 약화', VWAP_BREAKOUT: '분봉 근사 VWAP 돌파',
   RISING_CLOSE: '완료 분봉 상승', VOLUME_SPIKE: '완료 분봉 거래량 급증', BID_DEPTH: '매수호가 잔량 충족',
   HALTED: '거래정지', DELISTING: '상장폐지 위험', WARNING_OR_CAUTION: '경고·주의',

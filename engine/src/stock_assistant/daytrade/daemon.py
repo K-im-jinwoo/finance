@@ -526,8 +526,14 @@ class Collector:
                             start=since.replace(second=0,microsecond=0)
                             if since!=start:start+=timedelta(minutes=1)
                             candidate['warmup_until']=(start+timedelta(minutes=session._runner.config.strategy_config.min_candles)).isoformat()
-                for value in buffer.drain(at=self.clock(), monotonic=mono()):
-                    session.on_frame(value, at=self.clock(), received_monotonic=mono())
+                pending_codes = {v['symbol'] for v in session._runner.pending().values()}
+                for value in buffer.drain(at=self.clock(), monotonic=mono(), pending_symbols=pending_codes):
+                    frame_now = instant(self.clock())
+                    stamp = instant(value['data']['timestamp'])
+                    if not 0 <= (frame_now - stamp).total_seconds() <= buffer.max_age:
+                        buffer.counts['STALE_OR_FUTURE_FRAME'] += 1
+                        continue
+                    session.on_frame(value, at=frame_now, received_monotonic=mono())
                 for code, bars in builder.advance(at=self.clock()).items():
                     session.add({'kind': 'candles', 'symbol': code, 'source': 'TOSS_WS_COMPLETED_1M',
                         'payload': {'result': {'candles': bars}}, 'at': self.clock().isoformat(), 'received_monotonic': mono()})

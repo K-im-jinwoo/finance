@@ -33,6 +33,11 @@ class StrategyConfig:
     min_bid_notional: str | Decimal | None = None
     entry_start_hhmm: str | None = None
     min_hold_seconds_for_weak_exit: int | None = None
+    max_ask_bid_volume_ratio: str | Decimal | None = None
+    breakout_lookback_bars: int | None = None
+    weak_exit_min_vwap_gap_bps: str | Decimal | None = None
+    trailing_stop_activation_bps: str | Decimal | None = None
+    trailing_stop_retrace_bps: str | Decimal | None = None
 
     def __post_init__(self):
         if self.profile != "SYNTHETIC_PAPER_V1":
@@ -47,8 +52,19 @@ class StrategyConfig:
         for value in (self.quote_max_age_seconds, self.candle_max_age_seconds):
             if type(value) is not int or value < 0:
                 raise ValueError("explicit non-negative freshness seconds required")
-        if self.min_bid_notional is not None:
-            object.__setattr__(self,'min_bid_notional',number(self.min_bid_notional,positive=True))
+        for key in ("min_bid_notional", "max_ask_bid_volume_ratio", "weak_exit_min_vwap_gap_bps"):
+            if getattr(self, key) is not None:
+                object.__setattr__(self, key, number(getattr(self, key), positive=True))
+        if self.breakout_lookback_bars is not None and (
+                type(self.breakout_lookback_bars) is not int or not 1 <= self.breakout_lookback_bars <= 200):
+            raise ValueError("breakout_lookback_bars must be between 1 and 200")
+        if (self.trailing_stop_activation_bps is None) != (self.trailing_stop_retrace_bps is None):
+            raise ValueError("trailing stop activation and retrace bps must be configured together")
+        if self.trailing_stop_activation_bps is not None:
+            for key in ("trailing_stop_activation_bps", "trailing_stop_retrace_bps"):
+                object.__setattr__(self, key, number(getattr(self, key), positive=True))
+            if self.trailing_stop_retrace_bps >= self.trailing_stop_activation_bps:
+                raise ValueError("trailing stop retrace must be smaller than activation bps")
         if self.entry_start_hhmm is not None:
             if not isinstance(self.entry_start_hhmm,str) or re.fullmatch(r'\d{2}:\d{2}',self.entry_start_hhmm) is None:
                 raise ValueError('HH:MM entry start required')
@@ -192,6 +208,17 @@ class StrategyEngine:
                     return signal("SELL", ("STOP_LOSS", *quote_issues), "STOP_LOSS", 100)
                 if pnl >= config.take_profit_bps:
                     return signal("SELL", ("TAKE_PROFIT", *quote_issues), "TAKE_PROFIT", 100)
+                if config.trailing_stop_activation_bps is not None and state is not None:
+                    entry = positions.get(symbol, {})
+                    entered = entry.get("entry_at") if isinstance(entry, dict) else None
+                    post_highs = [number(b["high"]) for b in state.bars.values()
+                                  if entered is not None and instant(b["timestamp"]) > instant(entered)]
+                    peak_price = max([book["bid"], *post_highs])
+                    peak_pnl = (peak_price - basis) * 10000 / basis
+                    indicators["peak_pnl_bps_gross"] = peak_pnl
+                    if (peak_pnl >= config.trailing_stop_activation_bps
+                            and pnl <= peak_pnl - config.trailing_stop_retrace_bps):
+                        return signal("SELL", ("TAKE_PROFIT", "TRAILING_STOP", *quote_issues), "TAKE_PROFIT", 100)
 
         reasons = list(quote_issues)
         if state is None:
@@ -241,7 +268,9 @@ class StrategyEngine:
         baseline = median(number(bar["volume"]) for bar in bars[:-1])
         if approximate["value"] is None or previous_approximate["value"] is None or baseline == 0:
             return signal(reasons=("VOLUME_BASELINE_UNAVAILABLE",))
-        price = number(trade.data["price"]) if trade is not None else number(bars[-1]["close"])
+        last_close = number(bars[-1]["close"])
+        prior_close = number(bars[-2]["close"])
+        price = number(trade.data["price"]) if trade is not None else last_close
         vwap = approximate["value"]
         volume_ratio = number(bars[-1]["volume"]) / baseline
         indicators.update(bar_typical_vwap_approx=vwap, volume_spike_ratio=volume_ratio,
@@ -249,9 +278,12 @@ class StrategyEngine:
                           vwap_basis="RETAINED_COMPLETED_BARS_MAX_200",
                           price_vs_vwap_bps=(price - vwap) * 10000 / vwap,
                           volume_baseline_median=baseline)
-        rising = number(bars[-1]["close"]) > number(bars[-2]["close"])
+        rising = last_close > prior_close
         if quantity:
-            if price < vwap and number(bars[-1]["close"]) < number(bars[-2]["close"]):
+            vwap_gap_bps = (vwap - price) * 10000 / vwap
+            weak_vwap = (vwap_gap_bps >= config.weak_exit_min_vwap_gap_bps and last_close < vwap
+                         if config.weak_exit_min_vwap_gap_bps is not None else price < vwap)
+            if weak_vwap and last_close < prior_close:
                 entry=positions.get(symbol,{})
                 entered=entry.get('entry_at') if isinstance(entry,dict) else None
                 if config.min_hold_seconds_for_weak_exit and (entered is None or
@@ -259,10 +291,23 @@ class StrategyEngine:
                     return signal(reasons=('MOMENTUM_WEAK_GRACE',))
                 return signal("SELL", ("MOMENTUM_WEAK",), "MOMENTUM_WEAK", 100)
             return signal(reasons=("POSITION_HELD",) if basis is not None else ("COST_BASIS_UNAVAILABLE",))
-        checks = {"VWAP_BREAKOUT": price > vwap and number(bars[-2]["close"]) <= previous_approximate["value"],
+        vwap_breakout = price > vwap and prior_close <= previous_approximate["value"]
+        if vwap_breakout and config.breakout_lookback_bars is not None:
+            recent_window = bars[-min(len(bars), config.breakout_lookback_bars + 1):-1]
+            recent_high = max(number(b["close"]) for b in recent_window)
+            last_open = number(bars[-1].get("open", bars[-1]["close"]))
+            first_open = number(bars[0].get("open", bars[0]["close"]))
+            vwap_breakout = (last_close > vwap and vwap > previous_approximate["value"]
+                and last_close > last_open and last_close >= first_open
+                and last_close > recent_high
+                and (last_close - price) * 10000 / last_close <= Decimal("50"))
+        bid_depth = (book["bid_volume"] >= config.min_bid_volume
+            and (config.min_bid_notional is None or notional is not None and notional >= config.min_bid_notional)
+            and (config.max_ask_bid_volume_ratio is None or indicators["ask_bid_volume_ratio"] is not None
+                 and indicators["ask_bid_volume_ratio"] <= config.max_ask_bid_volume_ratio))
+        checks = {"VWAP_BREAKOUT": vwap_breakout,
                   "RISING_CLOSE": rising, "VOLUME_SPIKE": volume_ratio >= config.volume_spike_ratio,
-                  "BID_DEPTH": book["bid_volume"] >= config.min_bid_volume and
-                    (config.min_bid_notional is None or notional is not None and notional >= config.min_bid_notional)}
+                  "BID_DEPTH": bid_depth}
         score = 25 * sum(checks.values())
         if all(checks.values()):
             return signal("BUY", tuple(checks), score=score)

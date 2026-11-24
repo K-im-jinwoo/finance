@@ -1,8 +1,8 @@
 """Explicit live transports. Secrets remain in memory and never enter diagnostics."""
+from contextlib import closing
 import json
 import os
 from pathlib import Path
-import re
 import sqlite3
 import time
 import urllib.error
@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 
 from .http import HttpResult
-from ..telegram_routing import BotChannel, resolve_telegram_route, with_channel_header
+from ..telegram_routing import BotChannel, resolve_telegram_route, telegram_bot_id, with_channel_header
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -103,13 +103,14 @@ def telegram_sender():
     from dotenv import dotenv_values
     profile = Path(os.environ['DAYTRADE_TELEGRAM_PROFILE'])
     env = dotenv_values(profile/'.env')
-    token, recipient = env.get('TELEGRAM_BOT_TOKEN'), env.get('TELEGRAM_HOME_CHANNEL')
-    if not isinstance(token, str) or not re.fullmatch(r'[0-9]{5,}:[A-Za-z0-9_-]{20,}', token):
+    route_env = {**env, **os.environ, 'TELEGRAM_HOME_CHANNEL': env.get('TELEGRAM_HOME_CHANNEL')}
+    dedicated_token = (route_env.get('TELEGRAM_DAYTRADE_BOT_TOKEN') or '').strip()
+    token = dedicated_token or (env.get('TELEGRAM_BOT_TOKEN') or '').strip()
+    if telegram_bot_id(token) is None:
         raise ValueError('EXISTING_BOT_TOKEN_REQUIRED')
-    route_env = {**env, **os.environ, 'TELEGRAM_HOME_CHANNEL': recipient}
     sender = TelegramSender(token, bot_channel=BotChannel.DAYTRADE, env=route_env)
     if not sender.route.dedicated_chat:
-        with sqlite3.connect((profile/'state.db').as_uri() + '?mode=ro', uri=True) as connection:
+        with closing(sqlite3.connect((profile/'state.db').as_uri() + '?mode=ro', uri=True)) as connection:
             row = connection.execute("SELECT 1 FROM sessions WHERE source='telegram' AND CAST(chat_id AS TEXT)=? "
                                      "AND thread_id IS NULL LIMIT 1", (sender.route.chat_id,)).fetchone()
         if row is None:

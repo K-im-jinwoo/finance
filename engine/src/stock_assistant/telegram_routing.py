@@ -28,6 +28,12 @@ def with_channel_header(text, bot_channel):
     return f'{header}\n{body}'
 
 
+def telegram_bot_id(token):
+    """Extract the stable bot identity without retaining the secret suffix."""
+    match = re.fullmatch(r'([1-9][0-9]{4,}):[A-Za-z0-9_-]{20,}', (token or '').strip())
+    return match.group(1) if match else None
+
+
 @dataclass(frozen=True)
 class TelegramRoute:
     bot_channel: BotChannel

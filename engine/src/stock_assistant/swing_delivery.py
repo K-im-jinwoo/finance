@@ -14,7 +14,7 @@ import tempfile
 from .backtest import SWING_POLICY
 from .daytrade.service_runtime import TelegramSender
 from .swing_theme import KST
-from .telegram_routing import BotChannel, resolve_telegram_route, with_channel_header
+from .telegram_routing import BotChannel, resolve_telegram_route, telegram_bot_id, with_channel_header
 
 THEMES = {'CONTRACT': '수주·계약', 'EARNINGS': '실적', 'POLICY': '정책',
           'APPROVAL': '인허가', 'THEME': '사업·테마'}
@@ -26,9 +26,16 @@ DURATIONS = {'ONE_OFF': '단발성 가능 · 후속 재료 확인',
 def swing_route(env):
     swing = resolve_telegram_route(BotChannel.SWING, env)
     longterm = resolve_telegram_route(BotChannel.LONGTERM, env)
-    if (swing.chat_id, swing.message_thread_id or 1) == (longterm.chat_id, longterm.message_thread_id or 1):
-        raise ValueError('SWING_TELEGRAM_ROUTE_NOT_DISTINCT')
-    return swing
+    if (swing.chat_id, swing.message_thread_id or 1) != (longterm.chat_id, longterm.message_thread_id or 1):
+        return swing
+    # Each bot has its own conversation with a private user. Groups and topics are shared across bots.
+    swing_bot = telegram_bot_id(env.get('TELEGRAM_SWING_BOT_TOKEN'))
+    longterm_bot = telegram_bot_id(env.get('TELEGRAM_BOT_TOKEN'))
+    if (swing.dedicated_chat and not swing.chat_id.startswith('-')
+            and swing.message_thread_id is None and longterm.message_thread_id is None
+            and swing_bot and longterm_bot and swing_bot != longterm_bot):
+        return swing
+    raise ValueError('SWING_TELEGRAM_ROUTE_NOT_DISTINCT')
 
 
 def summarize_with_hermes(report, runner):
@@ -137,8 +144,8 @@ def main(argv=None):
     try:
         env = {**dotenv_values(args.profile / '.env'), **os.environ}
         swing_route(env)
-        token = env.get('TELEGRAM_SWING_BOT_TOKEN') or env.get('TELEGRAM_BOT_TOKEN') or ''
-        if not re.fullmatch(r'[0-9]{5,}:[A-Za-z0-9_-]{20,}', token):
+        token = (env.get('TELEGRAM_SWING_BOT_TOKEN') or '').strip() or (env.get('TELEGRAM_BOT_TOKEN') or '').strip()
+        if telegram_bot_id(token) is None:
             raise ValueError('SWING_TELEGRAM_TOKEN_REQUIRED')
         if args.mode == 'check':
             return 0

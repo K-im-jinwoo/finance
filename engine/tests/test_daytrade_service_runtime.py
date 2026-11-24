@@ -1,13 +1,17 @@
 """Service scope and shutdown checks using injected transports only."""
+from contextlib import closing
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
+import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-from stock_assistant.daytrade.service_runtime import ReadOnlyTransport, TelegramSender
+from stock_assistant.daytrade.service_runtime import ReadOnlyTransport, TelegramSender, telegram_sender
 from stock_assistant.daytrade.daemon import StickyAdapter
 
 
@@ -49,6 +53,27 @@ class RuntimeTests(unittest.TestCase):
                     self.assertEqual(bodies[-1]['text'], header + '\n본문')
                     self.assertEqual(bodies[-1]['chat_id'], expected_chat)
                     self.assertEqual(bodies[-1].get('message_thread_id'), expected_thread)
+
+    def test_daytrade_sender_uses_configured_bot_for_existing_private_recipient(self):
+        default_token = '10001:' + 'a' * 24
+        daytrade_token = '10002:' + 'b' * 24
+        settings = {'TELEGRAM_HOME_CHANNEL': '123', 'TELEGRAM_BOT_TOKEN': default_token,
+                    'TELEGRAM_DAYTRADE_BOT_TOKEN': daytrade_token}
+        fake_dotenv = SimpleNamespace(dotenv_values=lambda _: settings)
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            with closing(sqlite3.connect(profile/'state.db')) as db, db:
+                db.execute('CREATE TABLE sessions (source TEXT, chat_id TEXT, thread_id TEXT)')
+                db.execute("INSERT INTO sessions VALUES ('telegram', '123', NULL)")
+            with (patch.dict(sys.modules, {'dotenv': fake_dotenv}),
+                  patch.dict(os.environ, {'DAYTRADE_TELEGRAM_PROFILE': directory}, clear=True)):
+                sender = telegram_sender()
+                self.assertEqual((sender.token, sender.route.chat_id), (daytrade_token, '123'))
+                settings['TELEGRAM_DAYTRADE_BOT_TOKEN'] = 'malformed'
+                with self.assertRaisesRegex(ValueError, 'EXISTING_BOT_TOKEN_REQUIRED'):
+                    telegram_sender()
+                del settings['TELEGRAM_DAYTRADE_BOT_TOKEN']
+                self.assertEqual(telegram_sender().token, default_token)
 
     def test_longterm_cron_target_keeps_native_delivery_and_topic(self):
         from stock_assistant.telegram_routing import longterm_cron_target

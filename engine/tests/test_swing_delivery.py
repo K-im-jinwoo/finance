@@ -28,6 +28,20 @@ class SwingDeliveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'SWING_TELEGRAM_ROUTE_NOT_DISTINCT'):
             swing_route({**env, 'TELEGRAM_SWING_MESSAGE_THREAD_ID': '1'})
 
+    def test_distinct_bots_can_use_the_same_explicit_private_chat(self):
+        env = {'TELEGRAM_HOME_CHANNEL': '123456789', 'TELEGRAM_SWING_CHAT_ID': '123456789',
+               'TELEGRAM_BOT_TOKEN': '10001:' + 'a' * 24, 'TELEGRAM_SWING_BOT_TOKEN': '10002:' + 'b' * 24}
+        self.assertEqual(swing_route(env).chat_id, '123456789')
+        for changes in (
+            {'TELEGRAM_SWING_BOT_TOKEN': ''},
+            {'TELEGRAM_SWING_BOT_TOKEN': '10001:' + 'b' * 24},
+            {'TELEGRAM_SWING_CHAT_ID': ''},
+            {'TELEGRAM_SWING_MESSAGE_THREAD_ID': '1'},
+            {'TELEGRAM_HOME_CHANNEL': '-100123', 'TELEGRAM_SWING_CHAT_ID': '-100123'},
+        ):
+            with self.subTest(fields=tuple(changes)), self.assertRaisesRegex(ValueError, 'SWING_TELEGRAM_ROUTE_NOT_DISTINCT'):
+                swing_route({**env, **changes})
+
     def test_hermes_returns_only_evidence_selection_and_duration(self):
         row = {'symbol':'005930', 'name':'삼성전자', 'turnover_multiple':'2.5',
                'news_reference_date':'2026-11-24', 'news_evidence':[

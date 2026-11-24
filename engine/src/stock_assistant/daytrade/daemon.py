@@ -19,6 +19,7 @@ import time
 from traceback import walk_tb
 from urllib.error import HTTPError, URLError
 
+from ..telegram_routing import BotChannel
 from .bot import BotConfig, _PaperSession
 from .contracts import KST, canonical, digest, instant, number
 from .ledger import DaytradeLedger
@@ -26,7 +27,7 @@ from .market import MarketEvent
 from .report import APPROVED_COST_STATUS, render_markdown_report
 from .stream import (LiveSessionBridge, LivePaperSession, LiveCandleBuilder, LiveFrameBuffer,
                      _configuration)
-from .telegram import notify_daily_summary, notify_new_fills
+from .telegram import DELIVERY_POLICY, notify_daily_summary, notify_new_fills
 from .websocket import WebSocketAdapter, runtime_socket_factory
 from .live_config import merge_live_settings, live_settings as approved_live_settings
 from .metadata import StockMetadataCache
@@ -40,6 +41,7 @@ AUTH_ERRORS = frozenset({
     'SHARED_TOKEN_EXPIRING_NO_RENEWAL', 'SHARED_AUTH_REJECTED_NO_MUTATION',
     'SHARED_AUTH_REVOKED_NO_MUTATION', 'AUTH_CACHE_SYMLINK_REFUSED',
     'EXISTING_BOT_TOKEN_REQUIRED', 'EXISTING_HOME_CHANNEL_REQUIRED',
+    'TELEGRAM_CHAT_ID_INVALID', 'TELEGRAM_MESSAGE_THREAD_ID_INVALID',
     'APPROVED_TARGET_AMBIGUOUS', 'DAYTRADE_CLIENT_ID_FILE',
     'DAYTRADE_TOKEN_CACHE', 'DAYTRADE_TELEGRAM_PROFILE',
 })
@@ -148,7 +150,8 @@ class DaemonRestartGuard:
                       'window_failures': count, 'same_error_failures': same}
             if locked:
                 # Reserve the single alert in the same transaction as the restart lock.
-                record['notification_status'] = 'RESERVED'
+                record.update(notification_status='RESERVED', bot_channel=BotChannel.DAYTRADE.value,
+                              delivery_policy=DELIVERY_POLICY)
             failure_id = self.db.execute('INSERT INTO daemon_failures (occurred_at, error_code, payload) VALUES (?,?,?)',
                                          (stamp, details['error_code'], canonical(record))).lastrowid
             if locked:

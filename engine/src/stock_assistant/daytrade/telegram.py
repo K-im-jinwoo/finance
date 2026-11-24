@@ -10,12 +10,14 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 import json
 
+from ..telegram_routing import BotChannel, with_channel_header
 from .contracts import KST, canonical, instant, symbol
 from .report import _symbol_names, trading_inventory
 
 DELIVERIES_KEY = "telegram_fill_deliveries_v1"
 SENT_IDS_KEY = "telegram_notified_fill_ids"
 DAILY_SUMMARY_KEY = "telegram_daily_summary_v1"
+DELIVERY_POLICY = 'AT_MOST_ONCE'
 REASONS = {"VWAP_BREAKOUT":"분봉 근사 VWAP 돌파", "RISING_CLOSE":"완료 분봉 상승",
     "VOLUME_SPIKE":"완료 분봉 거래량 급증", "BID_DEPTH":"매수호가 잔량 충족",
     "TIME_EXIT":"시간 청산", "LOSS_EXIT":"일손실 한도 청산", "TAKE_PROFIT":"익절",
@@ -152,7 +154,7 @@ def format_daily_summary_telegram_message(report, *, session_date=None):
     # Reserve space for both the omission notice and the mandatory footer.
     # UTF-16 units are conservative for stock names containing supplementary text.
     def size(parts):
-        return len('\n'.join(parts).encode('utf-16-le')) // 2
+        return len(with_channel_header('\n'.join(parts), BotChannel.DAYTRADE).encode('utf-16-le')) // 2
     for index, row in enumerate(rows):
         omitted = len(rows) - index - 1
         tail = [f'… 외 {omitted}종목 생략'] if omitted else []
@@ -190,7 +192,8 @@ def _claim(ledger, event_id, *, deliveries_key=DELIVERIES_KEY):
         deliveries, sent = _delivery_state(ledger.connection, deliveries_key)
         if event_id in deliveries or event_id in sent:
             return False
-        deliveries[event_id] = {"status":"RESERVED", "http_status":None}
+        deliveries[event_id] = {"status": "RESERVED", "http_status": None,
+                                "bot_channel": BotChannel.DAYTRADE.value, "delivery_policy": DELIVERY_POLICY}
         _write_meta(ledger, deliveries_key, deliveries)
     return True
 
@@ -199,7 +202,7 @@ def _finish(ledger, event_id, result, *, deliveries_key=DELIVERIES_KEY):
     with ledger.connection:
         ledger.connection.execute("BEGIN IMMEDIATE")
         deliveries, sent = _delivery_state(ledger.connection, deliveries_key)
-        deliveries[event_id] = result
+        deliveries[event_id].update(result)
         _write_meta(ledger, deliveries_key, deliveries)
         if deliveries_key == DELIVERIES_KEY and result["status"] == "SENT" and event_id not in sent:
             _write_meta(ledger, SENT_IDS_KEY, sent + [event_id])
@@ -247,7 +250,7 @@ def notify_new_fills(ledger, send_fn):
         result = {"status":"FAILED", "http_status":None}
         try:
             text = format_fill_telegram_message(fill, symbol_names=names, account=account, positions=positions)
-            response = send_fn(text)
+            response = send_fn(with_channel_header(text, BotChannel.DAYTRADE))
             if isinstance(response, dict):
                 http = response.get("http_status")
                 result["http_status"] = http if type(http) is int and 100 <= http <= 599 else None
@@ -271,7 +274,7 @@ def notify_daily_summary(ledger, report, send_fn, *, session_date=None):
     result = {'status':'FAILED', 'http_status':None}
     try:
         text = format_daily_summary_telegram_message(report, session_date=day)
-        response = send_fn(text)
+        response = send_fn(with_channel_header(text, BotChannel.DAYTRADE))
         if isinstance(response, dict):
             http = response.get('http_status')
             result['http_status'] = http if type(http) is int and 100 <= http <= 599 else None

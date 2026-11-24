@@ -1,0 +1,9 @@
+[Unit]
+Description=Run swing research after the Korean equity session
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 18:30:00 Asia/Seoul
+Unit=stock-swing@daily.service
+
+[Install]
+WantedBy=timers.target

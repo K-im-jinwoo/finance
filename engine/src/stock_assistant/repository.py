@@ -34,7 +34,7 @@ from .models import (
 
 SCHEMA_VERSION = 9
 _REPORT_ID = re.compile(r"^R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8}$")
-_UNIFIED_REPORT_ID = re.compile(r"^UR-[a-f0-9]{24}$")
+_RESEARCH_PERFORMANCE_ID = re.compile(r"^(?:UR|SW)-[a-f0-9]{24}$")
 _DATASET = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
 
@@ -790,7 +790,7 @@ class StockRepository:
         query = "SELECT payload_json FROM performance_records"
         parameters: tuple[str, ...] = ()
         if report_id is not None:
-            if not (_REPORT_ID.fullmatch(report_id) or _UNIFIED_REPORT_ID.fullmatch(report_id)):
+            if not (_REPORT_ID.fullmatch(report_id) or _RESEARCH_PERFORMANCE_ID.fullmatch(report_id)):
                 raise ValueError("report_id has an invalid format")
             query += " WHERE report_id=?"
             parameters = (report_id,)

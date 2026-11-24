@@ -1,10 +1,11 @@
 """Service scope and shutdown checks using injected transports only."""
+import json
 import os
 from pathlib import Path
 import sys
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from stock_assistant.daytrade.service_runtime import ReadOnlyTransport, TelegramSender
 from stock_assistant.daytrade.daemon import StickyAdapter
@@ -22,6 +23,42 @@ class RuntimeTests(unittest.TestCase):
             def open(self, *_args, **_kwargs): raise RuntimeError('secret-token')
         self.assertEqual(TelegramSender('secret-token', '123', opener=Opener())('paper fill'),
                          {'status': 'FAILED', 'http_status': None})
+
+    def test_telegram_routes_each_axis_and_falls_back_with_its_header(self):
+        class Opener:
+            def open(self, request, **_kwargs):
+                body = json.loads(request.data)
+                bodies.append(body)
+                response = MagicMock(status=200)
+                response.__enter__.return_value = response
+                response.read.return_value = json.dumps({
+                    'ok': True, 'result': {'message_id': 123, 'chat': {'id': int(body['chat_id'])}},
+                }).encode()
+                return response
+
+        bodies = []
+        for axis, header in {'DAYTRADE': '[단타]', 'SWING': '[스윙]', 'LONGTERM': '[장기]'}.items():
+            with self.subTest(axis=axis):
+                route = {f'TELEGRAM_{axis}_CHAT_ID': ' -100123 ', f'TELEGRAM_{axis}_MESSAGE_THREAD_ID': '42'}
+                for env, expected_chat, expected_thread, text in (
+                    (route, '-100123', 42, '본문'),
+                    ({f'TELEGRAM_{axis}_CHAT_ID': ' '}, '123', None, header + '\n본문'),
+                ):
+                    sender = TelegramSender('fixture', '123', bot_channel=axis, env=env, opener=Opener())
+                    self.assertEqual(sender(text)['status'], 'SENT')
+                    self.assertEqual(bodies[-1]['text'], header + '\n본문')
+                    self.assertEqual(bodies[-1]['chat_id'], expected_chat)
+                    self.assertEqual(bodies[-1].get('message_thread_id'), expected_thread)
+
+    def test_longterm_cron_target_keeps_native_delivery_and_topic(self):
+        from stock_assistant.telegram_routing import longterm_cron_target
+        self.assertEqual(longterm_cron_target({}), 'telegram')
+        self.assertEqual(longterm_cron_target({'TELEGRAM_LONGTERM_CHAT_ID': '-100123'}), 'telegram:-100123')
+        self.assertEqual(longterm_cron_target({'TELEGRAM_HOME_CHANNEL': '-100456',
+                                              'TELEGRAM_LONGTERM_MESSAGE_THREAD_ID': '42'}), 'telegram:-100456:42')
+        with self.assertRaisesRegex(ValueError, '^TELEGRAM_MESSAGE_THREAD_ID_INVALID$'):
+            longterm_cron_target({'TELEGRAM_LONGTERM_CHAT_ID': '-100123',
+                                  'TELEGRAM_LONGTERM_MESSAGE_THREAD_ID': '42,telegram:456'})
 
     def test_sticky_subscription_pool_caps_eight_and_preserves_held_names(self):
         import random

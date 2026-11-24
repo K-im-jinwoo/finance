@@ -248,6 +248,10 @@ class KrxClient:
         *,
         observed_at: datetime,
     ) -> KrxDailySnapshot:
+        payload = self._daily_payload(market, business_date)
+        return normalize_krx_daily_snapshot(payload, observed_at=observed_at, market=market)
+
+    def _daily_payload(self, market: str, business_date: date) -> dict:
         try:
             endpoint = KRX_DAILY_ENDPOINTS[market]
         except KeyError as exc:
@@ -257,7 +261,31 @@ class KrxClient:
             query={"basDd": business_date.strftime("%Y%m%d")},
             headers={"AUTH_KEY": self.auth_key},
         )
-        return normalize_krx_daily_snapshot(response.payload, observed_at=observed_at, market=market)
+        return response.payload
+
+    def equity_values(self, market: str, business_date: date) -> dict[str, dict]:
+        """Exact exchange turnover and capitalization for the swing screen."""
+        if market not in KRX_SECURITY_ENDPOINTS:
+            raise ValueError("swing requires a KRX equity market")
+        rows = self._daily_payload(market, business_date).get("OutBlock_1")
+        if not isinstance(rows, list):
+            raise UpstreamSchemaError("KRX equity values require OutBlock_1 array")
+        result = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                raise UpstreamSchemaError("invalid KRX equity row")
+            if _is_blank_market_row(row) or _is_non_trading_row(row):
+                continue
+            if _compact_date(row.get("BAS_DD"), "BAS_DD") != business_date:
+                raise UpstreamSchemaError("KRX equity date mismatch")
+            symbol = str(row.get("ISU_CD") or row.get("ISU_SRT_CD") or "").strip()
+            if not symbol or symbol in result:
+                raise UpstreamSchemaError("invalid or duplicate KRX equity symbol")
+            turnover = _optional_decimal(row.get("ACC_TRDVAL"), "ACC_TRDVAL")
+            cap = _optional_decimal(row.get("MKTCAP"), "MKTCAP")
+            if turnover is not None and turnover >= 0 and cap is not None and cap > 0:
+                result[symbol] = {"turnover": str(turnover), "market_cap": str(cap)}
+        return result
 
     def securities(self, market: str, business_date: date) -> list[Security]:
         try:

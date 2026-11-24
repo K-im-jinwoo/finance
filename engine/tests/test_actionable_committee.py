@@ -182,10 +182,40 @@ class ActionableScreeningTests(unittest.TestCase):
         self.assertIn("MEDIA:", caption)
         self.assertNotIn("평균선 배열만으로 골든크로스를", caption)
 
-        # Verify stock-committee-brief.py loads the real saved ResearchData report (matching APPLICATION_ID).
+        # The brief loads the real saved ResearchData report (matching APPLICATION_ID).
         loaded = committee.load_saved_report(self.research_path, report["report_id"], source_database=self.source)
         self.assertEqual(loaded["report_id"], report["report_id"])
         self.assertEqual(loaded["candidates"][0]["symbol"], "005930")
+
+    def test_final_candidates_refresh_before_focus_and_cache_is_reused(self):
+        names = {f"000{index:03d}": f"테스트기업{index}" for index in range(100, 107)}
+        for symbol, name in names.items():
+            self.repo.save_securities([replace(samsung(), symbol=symbol, name=name)])
+        first, *_, final = names
+        cache = list(names)[1]
+        self.store.put("recent_news_snapshot", cache, {"end": "2026-09-19"}, observed_at=AS_OF)
+        news = Mock()
+        news.archive_page.return_value = NewsPage((), 0, 1, 0, AS_OF)
+
+        def build(*_args, **_kwargs):
+            symbol = final if self.store.latest("recent_news_snapshot", first, as_of=AS_OF) else first
+            return {"candidates": [{"symbol": symbol}, {"symbol": cache}]}
+
+        with (patch("stock_assistant.unified_cycle.choose_actionable_focus", return_value={
+                  "selected": [{"symbol": cache}], "ready_pool": list(names)[1:-1]}),
+              patch("stock_assistant.unified_cycle.build_recommendations", side_effect=build),
+              patch("stock_assistant.unified_cycle.review_official_contracts", return_value={})):
+            report = refresh_unified(self.reader, self.store, dart_client=FakeDart(), news_client=news,
+                                     calendar_client=self.calendar, dart_key="fixture-only", seed_symbols=[],
+                                     clock=lambda: AS_OF, actionable=True)
+
+        queries = [call.kwargs["query"] for call in news.archive_page.call_args_list]
+        self.assertEqual(queries[0], names[first])
+        self.assertIn(names[final], queries)
+        self.assertNotIn(names[cache], queries)
+        self.assertGreater(len(queries), 5)
+        self.assertEqual(report["candidates"][0]["symbol"], final)
+        news.archive_batch.assert_called_once_with(25)
 
     def test_actionable_preserves_hard_exclusions(self):
         self._seed_bundle("005930", "삼성전자", volume=1_000_000, rising=True)
@@ -428,6 +458,7 @@ printf '투자위원회 요약\\n- [1] 현대모비스 Bull/Bear\\n'
         res = subprocess.run([SHELL, SCRIPT.as_posix(), "evening"], env=self.env,
                              capture_output=True, text=True, encoding="utf-8", timeout=15)
         self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertTrue(res.stdout.startswith("[장기]\n"), res.stdout)
         self.assertIn("--actionable", self.docker_args.read_text(encoding="utf-8"))
         self.assertIn("--report-id " + self.report_id, self.brief_args.read_text(encoding="utf-8"))
         self.assertIn("투자위원회 요약", res.stdout)

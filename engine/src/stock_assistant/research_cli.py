@@ -62,10 +62,11 @@ def review_universe(repository, *, as_of: datetime, annual_histories: dict | Non
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("audit", "financials", "collect-dart", "collect-news", "collect-archive", "collect-calendar", "import-reviews", "review-queue", "recommend", "refresh-unified"):
+    for name in ("audit", "financials", "collect-dart", "collect-news", "collect-archive", "collect-calendar",
+                 "import-reviews", "review-queue", "recommend", "refresh-unified", "refresh-swing", "evaluate-swing"):
         command = commands.add_parser(name)
         command.add_argument("--database", type=Path, required=True)
-        if name in {"audit", "financials", "review-queue", "recommend"}:
+        if name in {"audit", "financials", "review-queue", "recommend", "evaluate-swing"}:
             command.add_argument("--as-of", type=datetime.fromisoformat)
         if name not in {"audit", "financials"}:
             command.add_argument("--research-database", type=Path, required=True)
@@ -79,7 +80,7 @@ def main(argv=None) -> int:
     dart.add_argument("--symbols", help="optional comma-separated symbols; default rotates the entire ordinary-stock universe")
     dart.add_argument("--force", action="store_true")
     dart.add_argument("--request-limit", type=int, default=2000)
-    for name in ("collect-news", "collect-archive", "refresh-unified"):
+    for name in ("collect-news", "collect-archive", "refresh-unified", "refresh-swing"):
         commands.choices[name].add_argument("--client-id-file", type=Path, required=True)
         commands.choices[name].add_argument("--client-secret-file", type=Path, required=True)
         commands.choices[name].add_argument("--usage-database", type=Path, required=True)
@@ -92,10 +93,13 @@ def main(argv=None) -> int:
     refresh.add_argument("--toss-client-id-file", type=Path, required=True)
     refresh.add_argument("--toss-client-secret-file", type=Path, required=True)
     refresh.add_argument("--batch-size", type=int, default=25)
-    refresh.add_argument("--archive-pages", type=int, default=5)
+    refresh.add_argument("--archive-pages", type=int, help="default: 25 for actionable research, 5 otherwise")
     refresh.add_argument("--symbols")
     refresh.add_argument("--actionable", action="store_true")
     refresh.add_argument("--format", choices=("json", "text"), default="text")
+    swing = commands.choices["refresh-swing"]
+    for option in ("--krx-auth-key-file", "--toss-client-id-file", "--toss-client-secret-file"):
+        swing.add_argument(option, type=Path, required=True)
     commands.choices["collect-news"].add_argument("--limit", type=int, default=5)
     commands.choices["import-reviews"].add_argument("--review-file", type=Path, required=True)
     commands.choices["recommend"].add_argument("--format", choices=("json", "text"), default="json")
@@ -130,6 +134,11 @@ def main(argv=None) -> int:
                           if "COMPANY_KIND_UNAVAILABLE" in review.blocking_reasons]}
             if args.state_database:
                 result["state"] = FinancialResearchState(args.state_database, source_database=args.database).sync(reviews, as_of=as_of)
+        elif args.command == "evaluate-swing":
+            from .performance import evaluate_swing_performance
+            from .repository import StockRepository
+            result = evaluate_swing_performance(StockRepository(repository.database_path), evaluated_at=as_of,
+                                                research_database=args.research_database)
         else:
             store = ResearchData(args.research_database, source_database=args.database)
             if args.command == "collect-dart":
@@ -138,7 +147,7 @@ def main(argv=None) -> int:
                 result = DartResearchCollector(repository, store, DartClient(_credential(args.api_key_file)),
                                                request_limit=args.request_limit).run(
                     symbols=symbols, batch_size=args.batch_size, force=args.force)
-            elif args.command in {"collect-news", "collect-archive", "refresh-unified"}:
+            elif args.command in {"collect-news", "collect-archive", "refresh-unified", "refresh-swing"}:
                 from .news_cost import NewsApiBudget
                 from .providers.news import NaverNewsClient
                 protected = (repository.database_path, store.path)
@@ -152,6 +161,15 @@ def main(argv=None) -> int:
                 elif args.command == "collect-archive":
                     from .news_archive import collect_archive
                     result = collect_archive(repository, store, client, pages=args.pages, symbols=args.symbols.split(',') if args.symbols else None)
+                elif args.command == "refresh-swing":
+                    from .providers.http import get_json
+                    from .providers.krx import KrxClient
+                    from .swing_theme import refresh_swing
+                    from .unified_cycle import shared_calendar
+                    market = shared_calendar(_credential(args.toss_client_id_file),
+                                             _credential(args.toss_client_secret_file), fetch_json=get_json)
+                    result = refresh_swing(repository, store, krx_client=KrxClient(_credential(args.krx_auth_key_file)),
+                                           market_client=market, news_client=client)
                 else:
                     from .unified_cycle import refresh_unified, shared_calendar
                     from .providers.dart import DartClient

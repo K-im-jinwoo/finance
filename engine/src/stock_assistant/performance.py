@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 
-from .backtest import event_study
+from .backtest import SWING_COST_BPS, SWING_DECISION, SWING_HORIZONS, SWING_POLICY, event_study
 from .identifiers import require_korean_security_symbol
 from .repository import StockRepository
 from .research_data import ResearchData
@@ -97,9 +97,10 @@ def evaluate_report_performance(
     if evaluated_at.tzinfo is None:
         raise ValueError("evaluated_at must be timezone-aware")
     market_sessions = None
-    if report_id.startswith("UR-"):
+    swing = report_id.startswith('SW-')
+    if swing or report_id.startswith("UR-"):
         store = _research_store(repository, research_database)
-        matching = store.performance_reports(as_of=evaluated_at, report_id=report_id) if store else []
+        matching = store.performance_reports(as_of=evaluated_at, report_id=report_id, swing=swing) if store else []
         report = matching[0] if matching else None
         if report is not None:
             signal_date = datetime.fromisoformat(report["published_at"]).astimezone(KST).date()
@@ -108,6 +109,8 @@ def evaluate_report_performance(
         report = repository.get_report(report_id)
     if report is None:
         raise ValueError("report not found")
+    if swing:
+        horizons, round_trip_cost_bps = SWING_HORIZONS, SWING_COST_BPS
     return _evaluate_report(repository, report, evaluated_at=evaluated_at, horizons=horizons,
                             round_trip_cost_bps=round_trip_cost_bps, market_sessions=market_sessions)
 
@@ -130,6 +133,7 @@ def _evaluate_report(repository, report, *, evaluated_at, horizons, round_trip_c
     if not isinstance(candidates, list):
         raise ValueError("stored report candidates must be a list")
     ruleset_version = str(report.get("ruleset_version") or "legacy-unversioned")
+    eligible_decision = SWING_DECISION if ruleset_version == SWING_POLICY else 'BUY_RECOMMENDATION'
     signal_date = signal_at.astimezone(KST).date()
     records: list[PerformanceRecord] = []
     completed = {
@@ -140,7 +144,7 @@ def _evaluate_report(repository, report, *, evaluated_at, horizons, round_trip_c
     for candidate in candidates:
         if not isinstance(candidate, dict):
             raise ValueError("stored report candidate must be an object")
-        if unified and candidate.get("action_decision") != "BUY_RECOMMENDATION":
+        if unified and candidate.get("action_decision") != eligible_decision:
             continue
         symbol = str(candidate["symbol"])
         if all((symbol, horizon) in completed for horizon in horizons):
@@ -253,3 +257,30 @@ def summarize_performance(records: list[PerformanceRecord]) -> list[dict[str, st
             "win_rate": str(Decimal(sum(value > 0 for value in values)) / count),
         })
     return summaries
+
+
+def evaluate_swing_performance(repository, *, evaluated_at, research_database=None) -> dict:
+    """Evaluate only swing publications and always show the three policy horizons."""
+    if evaluated_at.tzinfo is None:
+        raise ValueError('evaluated_at must be timezone-aware')
+    store = _research_store(repository, research_database)
+    reports = store.performance_reports(as_of=evaluated_at, swing=True) if store else []
+    records = []
+    if reports:
+        earliest = min(datetime.fromisoformat(report['published_at']).astimezone(KST).date() for report in reports)
+        sessions = _market_sessions(repository, store, after=earliest, as_of=evaluated_at)
+        for report in reports:
+            evaluation = _evaluate_report(repository, report, evaluated_at=evaluated_at, horizons=SWING_HORIZONS,
+                                          round_trip_cost_bps=SWING_COST_BPS, market_sessions=sessions)
+            records.extend(evaluation.records)
+    averages = {row['trading_days']: row for row in summarize_performance(records)}
+    summary = []
+    for days in SWING_HORIZONS:
+        rows = [row for row in records if row.trading_days == days]
+        summary.append({'trading_days': days, 'sample_count': 0, 'average_net_return': None, 'win_rate': None,
+                        **averages.get(days, {}),
+                        'pending_entry': sum(row.status is PerformanceStatus.PENDING_ENTRY for row in rows),
+                        'untradable_entry': sum(row.status is PerformanceStatus.UNTRADABLE_ENTRY for row in rows),
+                        'pending_horizon': sum(row.status is PerformanceStatus.PENDING_HORIZON for row in rows)})
+    return {'contract': SWING_POLICY, 'evaluated_at': evaluated_at.astimezone(timezone.utc).isoformat(),
+            'evaluated_reports': len(reports), 'round_trip_cost_bps': str(SWING_COST_BPS), 'summary': summary}

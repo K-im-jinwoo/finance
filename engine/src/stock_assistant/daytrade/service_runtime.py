@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 
 from .http import HttpResult
+from ..telegram_routing import BotChannel, resolve_telegram_route, with_channel_header
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -69,14 +70,19 @@ class ReadOnlyTransport:
 
 
 class TelegramSender:
-    def __init__(self, token, recipient, *, opener=None):
-        self.token, self.recipient = token, recipient
+    def __init__(self, token, recipient=None, *, bot_channel=BotChannel.DAYTRADE, env=None, opener=None):
+        self.token = token
+        self.route = resolve_telegram_route(bot_channel, os.environ if env is None else env, default_chat_id=recipient)
         self.opener = opener or urllib.request.build_opener(NoRedirect())
 
     def __call__(self, text):
         status = None
         try:
-            body = json.dumps({'chat_id': self.recipient, 'text': text, 'disable_notification': False}).encode()
+            payload = {'chat_id': self.route.chat_id, 'text': with_channel_header(text, self.route.bot_channel),
+                       'disable_notification': False}
+            if self.route.message_thread_id is not None:
+                payload['message_thread_id'] = self.route.message_thread_id
+            body = json.dumps(payload).encode()
             request = urllib.request.Request('https://api.telegram.org/bot' + self.token + '/sendMessage',
                 data=body, headers={'Content-Type': 'application/json'}, method='POST')
             with self.opener.open(request, timeout=1.5) as response:
@@ -86,7 +92,7 @@ class TelegramSender:
                     return {'status': 'FAILED', 'http_status': status}
                 value = json.loads(raw)
                 result = value.get('result', {})
-                if value.get('ok') is True and type(result.get('message_id')) is int and str(result.get('chat', {}).get('id')) == self.recipient:
+                if value.get('ok') is True and type(result.get('message_id')) is int and str(result.get('chat', {}).get('id')) == self.route.chat_id:
                     return {'status': 'SENT', 'http_status': 200}
         except Exception:
             pass
@@ -100,10 +106,12 @@ def telegram_sender():
     token, recipient = env.get('TELEGRAM_BOT_TOKEN'), env.get('TELEGRAM_HOME_CHANNEL')
     if not isinstance(token, str) or not re.fullmatch(r'[0-9]{5,}:[A-Za-z0-9_-]{20,}', token):
         raise ValueError('EXISTING_BOT_TOKEN_REQUIRED')
-    if not isinstance(recipient, str) or not re.fullmatch(r'-?[0-9]+', recipient):
-        raise ValueError('EXISTING_HOME_CHANNEL_REQUIRED')
-    with sqlite3.connect((profile/'state.db').as_uri() + '?mode=ro', uri=True) as connection:
-        rows = connection.execute("SELECT chat_id,thread_id FROM sessions WHERE source='telegram'").fetchall()
-    if len(rows) != 1 or str(rows[0][0]) != recipient or rows[0][1] is not None:
-        raise ValueError('APPROVED_TARGET_AMBIGUOUS')
-    return TelegramSender(token, recipient)
+    route_env = {**env, **os.environ, 'TELEGRAM_HOME_CHANNEL': recipient}
+    sender = TelegramSender(token, bot_channel=BotChannel.DAYTRADE, env=route_env)
+    if not sender.route.dedicated_chat:
+        with sqlite3.connect((profile/'state.db').as_uri() + '?mode=ro', uri=True) as connection:
+            row = connection.execute("SELECT 1 FROM sessions WHERE source='telegram' AND CAST(chat_id AS TEXT)=? "
+                                     "AND thread_id IS NULL LIMIT 1", (sender.route.chat_id,)).fetchone()
+        if row is None:
+            raise ValueError('APPROVED_TARGET_AMBIGUOUS')
+    return sender

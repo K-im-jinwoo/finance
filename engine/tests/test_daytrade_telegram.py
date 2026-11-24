@@ -183,6 +183,8 @@ class TelegramDailySummaryTests(unittest.TestCase):
                 reserved = json.loads(other.connection.execute(
                     "SELECT value FROM meta WHERE key='telegram_daily_summary_v1'").fetchone()[0])
                 self.assertEqual(reserved[day]['status'], 'RESERVED')
+                self.assertEqual(reserved[day]['bot_channel'], 'DAYTRADE')
+                self.assertEqual(reserved[day]['delivery_policy'], 'AT_MOST_ONCE')
                 self.assertEqual(self.notify(other, report, send), [])
             finally:
                 other.close()
@@ -192,6 +194,8 @@ class TelegramDailySummaryTests(unittest.TestCase):
         other = DaytradeLedger(ledger.path.parent.parent)
         try:
             self.assertEqual(self.notify(other, report, send), [])
+            delivered = other.meta['telegram_daily_summary_v1'][day]
+            self.assertEqual((delivered['bot_channel'], delivered['delivery_policy']), ('DAYTRADE', 'AT_MOST_ONCE'))
         finally:
             other.close()
         self.assertEqual(len(calls), 1)

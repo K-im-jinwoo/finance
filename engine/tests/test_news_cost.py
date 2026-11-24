@@ -14,6 +14,7 @@ from stock_assistant.providers.http import JsonResponse, NetworkError, RateLimit
 from stock_assistant.providers.news import NaverNewsClient
 
 NOW = datetime(2026, 10, 2, 3, tzinfo=timezone.utc)
+DAY_CAP, MONTH_CAP = 2_000, 50_000
 
 
 class FreePolicyTests(unittest.TestCase):
@@ -63,7 +64,7 @@ class NewsBudgetTests(unittest.TestCase):
         self.assertEqual(self.free.call_count, 1)
 
     def test_daily_and_monthly_boundary_reserve_whole_batch_or_make_zero_requests(self):
-        for daily, monthly in ((16, 16), (0, 496)):
+        for daily, monthly in ((DAY_CAP - 4, DAY_CAP - 4), (0, MONTH_CAP - 4)):
             with self.subTest(daily=daily, monthly=monthly):
                 with tempfile.TemporaryDirectory() as folder:
                     path = Path(folder) / 'budget.sqlite3'
@@ -77,9 +78,9 @@ class NewsBudgetTests(unittest.TestCase):
         self.free.assert_not_called()
 
     def test_exact_limit_is_allowed_and_next_call_is_blocked(self):
-        self.initialize(15, 495)
+        self.initialize(DAY_CAP - 5, MONTH_CAP - 5)
         self.guard.reserve(5, at=NOW)
-        self.assertEqual(self.counts(), (20, 500))
+        self.assertEqual(self.counts(), (DAY_CAP, MONTH_CAP))
         with self.assertRaisesRegex(NewsCostBlocked, 'NEWS_COST_LIMIT_REACHED'):
             self.guard.reserve(1, at=NOW + timedelta(hours=1))
 
@@ -94,6 +95,19 @@ class NewsBudgetTests(unittest.TestCase):
             self.client(fetch).collect(observed_at=NOW)
         self.assertEqual(fetch.call_count, 1)
 
+    def test_expanded_archive_is_reserved_and_requests_are_spaced(self):
+        self.initialize()
+        fetch = Mock(return_value=JsonResponse(200, {'total': 0, 'start': 1, 'items': []}))
+        sleep = Mock()
+        client = NaverNewsClient('fixture', 'fixture', fetch_json=fetch, budget=self.guard,
+                                 clock=lambda: NOW, monotonic=lambda: 10, sleeper=sleep)
+        client.archive_batch(25)
+        self.assertEqual(self.counts(), (25, 25))
+        for _ in range(3):
+            client.archive_page(query='fixture', start=1)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(0.25,), (0.25,)])
+
     def test_provider_quota_rejection_halts_later_attempts_for_month(self):
         self.initialize()
         fetch = Mock(side_effect=RateLimitError('429 fixture'))
@@ -104,7 +118,7 @@ class NewsBudgetTests(unittest.TestCase):
         self.assertEqual(fetch.call_count, 1)
 
     def test_parallel_connections_cannot_both_reserve_remaining_budget(self):
-        self.initialize(15, 495)
+        self.initialize(DAY_CAP - 5, MONTH_CAP - 5)
         def reserve(_):
             try:
                 NewsApiBudget(self.path, free_check=lambda: None).reserve(5, at=NOW)
@@ -114,7 +128,7 @@ class NewsBudgetTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             values = list(pool.map(reserve, range(2)))
         self.assertEqual(values.count('ALLOWED'), 1)
-        self.assertEqual(self.counts(), (20, 500))
+        self.assertEqual(self.counts(), (DAY_CAP, MONTH_CAP))
 
     def test_kst_midnight_resets_daily_only_and_month_start_resets_both(self):
         last = datetime(2026, 10, 1, 14, tzinfo=timezone.utc)
@@ -160,7 +174,7 @@ class NewsBudgetTests(unittest.TestCase):
         self.initialize()
         with self.assertRaises(ValueError):
             self.initialize()
-        for calls, at in ((True, NOW), (0, NOW), (6, NOW), (5, NOW.replace(tzinfo=None))):
+        for calls, at in ((True, NOW), (0, NOW), (26, NOW), (5, NOW.replace(tzinfo=None))):
             with self.subTest(calls=calls, at=at), self.assertRaises(ValueError):
                 self.guard.reserve(calls, at=at)
 

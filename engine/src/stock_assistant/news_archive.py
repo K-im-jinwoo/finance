@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from .dart_research import _year_start
 from .models import Evidence, to_json_value
+from .news_cost import MAX_UNIFIED_NEWS_CALLS
 from .news_discovery import _matches
 from .news_policy import news_windows
 from .unified_research import KST, financial_universe
@@ -153,8 +154,8 @@ def _collect_issuer(store, client, chosen, *, old, start, end, pages, clock, rec
 
 def collect_actionable_news(repository, store, client, *, symbols, clock=None, max_calls=5):
     """Fetch 1 page (up to 100 latest headlines) per actionable candidate within the bounded budget."""
-    if type(max_calls) is not int or not 1 <= max_calls <= 5:
-        raise ValueError("actionable news max_calls must be between 1 and 5")
+    if type(max_calls) is not int or not 1 <= max_calls <= MAX_UNIFIED_NEWS_CALLS:
+        raise ValueError("invalid actionable news call budget")
     clock = clock or (lambda: datetime.now(timezone.utc))
     now = validate_analysis_time(clock())
     windows = news_windows(now)

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sqlite3
 
+from .backtest import SWING_POLICY
 from .models import to_json_value
 from .validation import validate_analysis_time
 
@@ -63,7 +64,7 @@ class ResearchData:
                 out.append(parsed)
         return out
 
-    def performance_reports(self, *, as_of: datetime, report_id: str | None = None) -> list[dict]:
+    def performance_reports(self, *, as_of: datetime, report_id: str | None = None, swing=False) -> list[dict]:
         """Read saved recommendation snapshots without loading full universe evaluations."""
         if as_of.tzinfo is None:
             raise ValueError("as_of must be timezone-aware")
@@ -71,9 +72,12 @@ class ResearchData:
                           json_extract(payload_json, '$.policy_version'),
                           json_extract(payload_json, '$.as_of'), observed_at,
                           json_extract(payload_json, '$.candidates')
-                   FROM research_inputs WHERE kind='unified_report' AND symbol='ALL'
-                   AND observed_at<=? AND json_extract(payload_json, '$.contract')='UNIFIED_RESEARCH_V1'"""
-        parameters = (as_of.astimezone(timezone.utc).isoformat(),)
+                   FROM research_inputs WHERE kind=? AND observed_at<=?
+                   AND json_extract(payload_json, '$.contract')=?"""
+        kind, contract = ('swing_report', SWING_POLICY) if swing else ('unified_report', 'UNIFIED_RESEARCH_V1')
+        parameters = (kind, as_of.astimezone(timezone.utc).isoformat(), contract)
+        if not swing:
+            query += " AND symbol='ALL'"
         if report_id is not None:
             query += " AND json_extract(payload_json, '$.report_id')=?"
             parameters += (report_id,)
@@ -82,6 +86,20 @@ class ResearchData:
         return [{"report_id": identifier, "ruleset_version": version, "as_of": analyzed_at,
                  "published_at": observed_at, "candidates": json.loads(candidates)}
                 for identifier, version, analyzed_at, observed_at, candidates in rows]
+
+    def publish_swing_report(self, session, report, *, observed_at: datetime) -> dict:
+        """Keep the first publication for each trading session, including concurrent reruns."""
+        if self.read_only:
+            raise PermissionError("research input database is read-only")
+        observed_at = validate_analysis_time(observed_at)
+        key = session.isoformat()
+        identity = hashlib.sha256(f'swing_report\n{key}'.encode()).hexdigest()
+        payload = json.dumps(to_json_value(report), ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+        with closing(self._connect()) as db, db:
+            db.execute('INSERT OR IGNORE INTO research_inputs VALUES(?,?,?,?,?,?)',
+                       (identity, 'swing_report', key, observed_at.isoformat(), datetime.now(timezone.utc).isoformat(), payload))
+            stored = db.execute('SELECT payload_json FROM research_inputs WHERE input_id=?', (identity,)).fetchone()
+        return json.loads(stored[0])
 
     def put(self, kind: str, symbol: str, payload: dict, *, observed_at: datetime) -> str:
         return self.put_many([(kind, symbol, payload)], observed_at=observed_at)[0]

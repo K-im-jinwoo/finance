@@ -505,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     if args.command == "evaluate-all-performance":
         try:
+            from .backtest import SWING_POLICY
             horizons = tuple(int(value.strip()) for value in args.horizons.split(",") if value.strip())
             repository = StockRepository(args.database)
             evaluations = evaluate_all_report_performance(
@@ -514,7 +515,8 @@ def main(argv: list[str] | None = None) -> int:
                 round_trip_cost_bps=args.round_trip_cost_bps,
                 research_database=args.research_database,
             )
-            records = repository.list_performance_records()
+            records = [record for record in repository.list_performance_records()
+                       if record.ruleset_version != SWING_POLICY]
             print(json.dumps({
                 "evaluated_reports": len(evaluations),
                 "records": to_json_value(records),

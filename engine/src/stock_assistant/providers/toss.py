@@ -219,6 +219,33 @@ class TossMarketDataClient:
                     raise UpstreamSchemaError("Toss calendar previous business day is invalid")
         return result
 
+    def stock_reference(self, symbols: list[str]) -> dict[str, dict]:
+        if not 1 <= len(symbols) <= 200 or len(set(symbols)) != len(symbols):
+            raise ValueError("invalid stock reference batch")
+        codes = [require_korean_security_symbol(symbol) for symbol in symbols]
+        response = self._fetch_json(f"{self._base_url}/api/v1/stocks",
+                                    query={"symbols": ",".join(codes)},
+                                    headers={"Authorization": f"Bearer {self._token()}"})
+        rows = response.payload.get("result")
+        if not isinstance(rows, list):
+            raise UpstreamSchemaError("invalid Toss stock reference response")
+        result = {}
+        for row in rows:
+            if not isinstance(row, dict) or row.get("symbol") not in codes or row["symbol"] in result:
+                raise UpstreamSchemaError("invalid Toss stock reference symbol")
+            result[row["symbol"]] = row
+        return result
+
+    def stock_warnings(self, symbol: str) -> set[str]:
+        symbol = require_korean_security_symbol(symbol)
+        response = self._fetch_json(f"{self._base_url}/api/v1/stocks/{symbol}/warnings",
+                                    headers={"Authorization": f"Bearer {self._token()}"})
+        rows = response.payload.get("result")
+        if not isinstance(rows, list) or any(not isinstance(row, dict) or
+                not isinstance(row.get("warningType"), str) or not row["warningType"] for row in rows):
+            raise UpstreamSchemaError("invalid Toss stock warning response")
+        return {row["warningType"] for row in rows}
+
     def candles(
         self,
         symbol: str,

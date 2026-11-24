@@ -133,7 +133,7 @@ if [ "${STOCK_UNIFIED_ENABLED:-false}" = true ]; then
   fi
   unified_output=$(compose exec -T stock-assistant python -m stock_assistant.research_cli refresh-unified \
     --database "$database" --research-database /var/lib/stock/unified-research-inputs.sqlite3 \
-    --api-key-file /run/secrets/dart-api-key --batch-size 25 --archive-pages 5 \
+    --api-key-file /run/secrets/dart-api-key --batch-size 25 \
     --client-id-file /run/secrets/naver-news-client-id --client-secret-file /run/secrets/naver-news-client-secret \
     --usage-database /var/lib/stock/news-api-usage.sqlite3 \
     --toss-client-id-file /run/secrets/toss-client-id --toss-client-secret-file /run/secrets/toss-client-secret \
@@ -144,7 +144,7 @@ if [ "${STOCK_UNIFIED_ENABLED:-false}" = true ]; then
       --database "$database" --research-database /var/lib/stock/unified-research-inputs.sqlite3 \
       --as-of "$(date +%Y-%m-%dT%H:%M:%S.%6N%:z)" >/dev/null
   fi
-  printf '%s\n' "$unified_output"
+  printf '[장기]\n%s\n' "$unified_output"
   chart_output=""
   chart_failed=false
   rendered_chart_dir=""
@@ -210,6 +210,7 @@ compose exec -T stock-assistant python -m stock_assistant enrich-dart-disclosure
   --database "$database" --key-file /run/secrets/dart-api-key $news_enrichment_args >/dev/null
 
 stage=REPORT_GENERATION
-compose exec -T stock-assistant python -m stock_assistant generate-candidates \
-  --database "$database" --limit 5 --format text $news_report_args
+candidate_output=$(compose exec -T stock-assistant python -m stock_assistant generate-candidates \
+  --database "$database" --limit 5 --format text $news_report_args)
+printf '[장기]\n%s\n' "$candidate_output"
 printf 'STOCK_CYCLE status=READY mode=%s stage=REPORT_GENERATION\n' "$mode" >&2

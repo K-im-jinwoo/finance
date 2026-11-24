@@ -11,8 +11,9 @@ from pathlib import Path
 
 from .providers.http import ProviderError
 
-DAILY_LIMIT = 20
-MONTHLY_LIMIT = 500
+DAILY_LIMIT = 2_000
+MONTHLY_LIMIT = 50_000
+MAX_UNIFIED_NEWS_CALLS = 25
 COOLDOWN = timedelta(hours=1)
 KST = timezone(timedelta(hours=9))
 POLICY_URLS = ("https://guide.ncloud-docs.com/docs/apihub-overview",
@@ -92,7 +93,7 @@ class NewsApiBudget:
                                 at.astimezone(timezone.utc).isoformat(), ""))
 
     def reserve(self, calls: int, *, at: datetime, cooldown=True):
-        if at.tzinfo is None or type(calls) is not int or not 1 <= calls <= 5:
+        if at.tzinfo is None or type(calls) is not int or not 1 <= calls <= MAX_UNIFIED_NEWS_CALLS:
             raise ValueError("invalid news call reservation")
         if self.path.is_symlink() or not self.path.is_file():
             raise NewsCostBlocked("NEWS_USAGE_STATE_UNAVAILABLE")

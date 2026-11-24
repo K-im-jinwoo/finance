@@ -45,6 +45,9 @@ def main():
             for relative in (
                 'deploy/Dockerfile', 'deploy/jobs/run_stock_cycle.sh',
                 'deploy/jobs/run_stock_morning.py', 'deploy/jobs/stock-morning.sh',
+                'deploy/jobs/stock-swing.sh',
+                'deploy/swing/stock-swing@.service', 'deploy/swing/stock-swing@daily.timer',
+                'deploy/swing/stock-swing@weekly.timer',
                 'hermes/profiles/stock-cio/SOUL.md', 'hermes/skills/stock-research/SKILL.md',
             ):
                 tar.add(ROOT/'engine'/relative,arcname=relative)

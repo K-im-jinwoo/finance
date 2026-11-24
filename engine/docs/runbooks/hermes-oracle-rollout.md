@@ -79,6 +79,12 @@ The fifth `stock-live-market` profile is specified in the repository but is not 
 
 Use the test Telegram Bot while the existing production receiver remains unchanged. Validate the same report ID in Desktop and Telegram. Then create KST jobs for weekday 08:30, weekday 20:00, and Saturday 12:00. Delivery success and analysis success remain separate statuses.
 
+Set `TELEGRAM_<AXIS>_CHAT_ID` and optionally `TELEGRAM_<AXIS>_MESSAGE_THREAD_ID` in the stock CIO profile’s private `.env` or the relevant service environment. Replace `<AXIS>` with `DAYTRADE`, `SWING`, or `LONGTERM`. A blank chat ID uses `TELEGRAM_HOME_CHANNEL`. A thread ID by itself selects a topic in that home chat. The daytrade service reads its route on startup. The unified rollout reads the long-term route when configuring the three existing Hermes jobs and keeps Hermes responsible for report and chart delivery.
+
+The separate swing jobs run `sh /srv/stock-assistant/current/deploy/jobs/stock-swing.sh daily` and the same script with `weekly`. The optional user systemd units under `deploy/swing/` schedule them at 18:30 KST on weekdays and 13:30 KST on Saturdays, outside the usual LONGTERM schedule and shared Naver cooldown. Install and enable the two timers after approval. If using Hermes cron in place of the timers, set `no_agent` and `deliver=local` because the script sends through the SWING route itself. The script refuses a route identical to LONGTERM and reserves each daily report or weekly message in `swing-telegram.sqlite3` before sending. A SWING bot token can be provided in `TELEGRAM_SWING_BOT_TOKEN` if the destination has a separate bot.
+
+The first swing run loads 21 sessions of actual KRX turnover and capitalization into the swing research cache, then fetches only uncached sessions on subsequent runs. The daily screen requires a verified KRX close, checks current KIND management designations and Toss trade suspensions and warnings, and excludes market capitalizations below KRW 50 billion. Selection uses up to 15 issuer news searches. If fewer than two candidates have a qualifying catalyst, only verified candidates are listed. Existing Naver credentials and the shared usage ledger must be mounted.
+
 Rollback: stop only the CIO test gateway and stock cron jobs. The current WIKI/n8n/Telegram service remains untouched.
 
 ## Gate 6 - WIKI

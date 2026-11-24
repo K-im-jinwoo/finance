@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+from time import monotonic, sleep
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -120,7 +121,7 @@ def normalize_naver_news(payload: dict, *, observed_at: datetime) -> list[NewsAr
 
 class NaverNewsClient:
     def __init__(self, client_id: str, client_secret: str, *, fetch_json: Callable = get_json,
-                 clock: Callable | None = None, budget=None):
+                 clock: Callable | None = None, budget=None, monotonic=monotonic, sleeper=sleep):
         if any(not value.strip() or len(value) > 256 or any(ord(c) < 32 for c in value)
                for value in (client_id, client_secret)):
             raise AuthenticationError("valid Naver client credential files are required")
@@ -131,6 +132,26 @@ class NaverNewsClient:
         from ..news_cost import NewsApiBudget
         self._budget = budget if budget is not None else NewsApiBudget()
         self._archive_remaining = 0
+        self._monotonic, self._sleep = monotonic, sleeper
+        self._last_request_end = None
+
+    def _request(self, *, query: str, display: int, start: int):
+        if self._last_request_end is not None:
+            wait = 0.25 - (self._monotonic() - self._last_request_end)
+            if wait > 0:
+                self._sleep(wait)
+        try:
+            return self._fetch_json(
+                NAVER_NEWS_URL,
+                query={"query": query, "display": str(display), "start": str(start), "sort": "date", "format": "json"},
+                headers={"X-NCP-APIGW-API-KEY-ID": self._client_id, "X-NCP-APIGW-API-KEY": self._client_secret},
+                timeout_seconds=10,
+            )
+        except (RateLimitError, AuthenticationError):
+            self._budget.halt_provider(at=self._clock())
+            raise
+        finally:
+            self._last_request_end = self._monotonic()
 
     def archive_batch(self, calls: int):
         self._budget.reserve(calls, at=self._clock())
@@ -143,13 +164,7 @@ class NaverNewsClient:
         if self._archive_remaining < 1:
             raise ValueError("archive page requires a budget reservation")
         self._archive_remaining -= 1
-        try:
-            response = self._fetch_json(NAVER_NEWS_URL,
-                query={"query": query, "display": "100", "start": str(start), "sort": "date", "format": "json"},
-                headers={"X-NCP-APIGW-API-KEY-ID": self._client_id, "X-NCP-APIGW-API-KEY": self._client_secret}, timeout_seconds=10)
-        except (RateLimitError, AuthenticationError):
-            self._budget.halt_provider(at=self._clock())
-            raise
+        response = self._request(query=query, display=100, start=start)
         payload = response.payload
         if (type(payload.get("total")) is not int or payload["total"] < 0
                 or payload.get("start") != start or not isinstance(payload.get("items"), list)):
@@ -175,17 +190,7 @@ class NaverNewsClient:
         self._budget.reserve(len(queries), at=self._clock())
         articles = []
         for query in queries:
-            try:
-                response = self._fetch_json(
-                    NAVER_NEWS_URL,
-                    query={"query": query, "display": str(display), "start": "1", "sort": "date", "format": "json"},
-                    headers={"X-NCP-APIGW-API-KEY-ID": self._client_id,
-                             "X-NCP-APIGW-API-KEY": self._client_secret},
-                    timeout_seconds=10,
-                )
-            except (RateLimitError, AuthenticationError):
-                self._budget.halt_provider(at=self._clock())
-                raise
+            response = self._request(query=query, display=display, start=1)
             received_at = max(observed_at, self._clock())
             articles.extend(normalize_naver_news(response.payload, observed_at=received_at))
         return articles

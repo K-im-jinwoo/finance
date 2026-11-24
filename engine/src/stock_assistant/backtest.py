@@ -6,6 +6,11 @@ from decimal import Decimal
 
 from .models import OHLCV
 
+SWING_POLICY = 'SWING_THEME_V1'
+SWING_DECISION = 'SWING_CANDIDATE'
+SWING_HORIZONS = (3, 5, 10)
+SWING_COST_BPS = Decimal('30')
+
 
 @dataclass(frozen=True, slots=True)
 class HorizonReturn:

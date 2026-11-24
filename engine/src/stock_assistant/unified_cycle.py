@@ -5,6 +5,8 @@ import sys
 
 from .dart_research import DartResearchCollector
 from .news_archive import collect_actionable_news, collect_archive
+from .news_cost import MAX_UNIFIED_NEWS_CALLS
+from .news_policy import news_windows
 from .material_archive import collect_material_archive
 from .official_events import review_official_contracts
 from .providers.dart import DartClient
@@ -18,8 +20,6 @@ from .research_focus import choose_actionable_focus, choose_focus
 class _ArchiveBatch:
     """Share one durable reservation between broad news and material searches."""
     def __init__(self, client, calls):
-        if type(calls) is not int or not 1 <= calls <= 5:
-            raise ValueError('archive batch must reserve one to five calls')
         self.client = client
         self.calls = calls
         self.reserved_calls = 0
@@ -61,11 +61,55 @@ def _latest_available_price_session(repository, *, as_of: datetime) -> date | No
     return min(valid) if valid else None
 
 
+def _refresh_actionable_news(repository, store, batch, focus_symbols, *, build_report, clock):
+    now = clock()
+    end = news_windows(now)['end'].isoformat()
+    fresh = set()
+    for kind in ('recent_news_snapshot', 'recent_news_coverage'):
+        fresh.update(symbol for symbol, record in store.latest_by_symbol(kind, as_of=now).items()
+                     if record['payload'].get('end', '') >= end)
+    report = build_report(now)
+    results = []
+    error = None
+    expanded = False
+    while batch.actual_calls < batch.calls:
+        remaining = batch.calls - batch.actual_calls
+        targets = [row['symbol'] for row in report['candidates'] if row['symbol'] not in fresh][:remaining]
+        if not targets and not expanded:
+            expanded = True
+            # Keep room to refresh a replacement slate after the broader scan.
+            room = max(0, remaining - 5) if batch.calls > 5 else remaining
+            targets = [symbol for symbol in focus_symbols if symbol not in fresh][:room]
+        if not targets:
+            break
+        try:
+            stage = collect_actionable_news(repository, store, batch, symbols=targets, clock=clock, max_calls=len(targets))
+            results.extend(stage['results'])
+        except (ProviderError, ValueError) as exc:
+            error = exc.code if isinstance(exc, ProviderError) else str(exc)
+        fresh.update(targets)
+        now = clock()
+        report = build_report(now)
+        if error:
+            break
+
+    status = 'CURRENT' if not results else (
+        'COMPLETE' if all(row['status'] == 'COMPLETE' for row in results) else 'SNAPSHOT_100')
+    archive = {'status': status, 'requested': len(results), 'actual_calls': batch.actual_calls, 'results': results}
+    if error:
+        archive.update(status='UNAVAILABLE', error_code=error)
+    return report, archive, now
+
+
 def refresh_unified(repository, store, *, dart_client, news_client, calendar_client, dart_key,
-                    batch_size=25, archive_pages=5, clock=None, seed_symbols=None, actionable=False):
+                    batch_size=25, archive_pages=None, clock=None, seed_symbols=None, actionable=False):
     clock = clock or (lambda: datetime.now(timezone.utc))
     if not isinstance(actionable, bool):
         raise ValueError("actionable must be boolean")
+    max_pages = MAX_UNIFIED_NEWS_CALLS if actionable else 5
+    archive_pages = max_pages if archive_pages is None else archive_pages
+    if type(archive_pages) is not int or not 1 <= archive_pages <= max_pages:
+        raise ValueError('invalid unified news archive budget')
     batch = _ArchiveBatch(news_client, archive_pages)
     stages = {}
 
@@ -114,14 +158,6 @@ def refresh_unified(repository, store, *, dart_client, news_client, calendar_cli
             'ready_pool_count': len(post_focus['ready_pool']),
         }
         try:
-            stages['archive'] = (
-                collect_actionable_news(repository, store, batch, symbols=focus_symbols_list, clock=clock, max_calls=archive_pages)
-                if focus_symbols_list else {'status': 'CURRENT', 'requested': 0, 'actual_calls': 0, 'results': []}
-            )
-        except (ProviderError, ValueError) as exc:
-            stages['archive'] = {'status': 'UNAVAILABLE', 'error_code': exc.code if isinstance(exc, ProviderError) else str(exc)}
-        stages['news_budget'] = {'reserved_calls': batch.reserved_calls, 'actual_calls': batch.actual_calls}
-        try:
             stages['official_events'] = review_official_contracts(store, api_key=dart_key, as_of=clock(), clock=clock)
         except (ProviderError, ValueError) as exc:
             stages['official_events'] = {'status': 'UNAVAILABLE', 'error_code': exc.code if isinstance(exc, ProviderError) else str(exc)}
@@ -134,13 +170,19 @@ def refresh_unified(repository, store, *, dart_client, news_client, calendar_cli
                 stages['prices']['fallback_session'] = fallback_session.isoformat()
         stages['prices']['required_session'] = session.isoformat() if session else None
 
-        now = clock()
-        report = build_recommendations(
-            repository, store, as_of=now,
-            expected_session=session, verified_close_at=closed,
-            price_refresh_ready=ready, actionable=True,
-            fallback_price_session=fallback_session, actionable_focus=post_focus,
+        def build_report(as_of):
+            return build_recommendations(
+                repository, store, as_of=as_of,
+                expected_session=session, verified_close_at=closed,
+                price_refresh_ready=ready, actionable=True,
+                fallback_price_session=fallback_session, actionable_focus=post_focus,
+            )
+
+        news_focus = list(dict.fromkeys(focus_symbols_list + post_focus['ready_pool']))
+        report, stages['archive'], now = _refresh_actionable_news(
+            repository, store, batch, news_focus, build_report=build_report, clock=clock,
         )
+        stages['news_budget'] = {'reserved_calls': batch.reserved_calls, 'actual_calls': batch.actual_calls}
         report['refresh_stages'] = stages
         import hashlib, json
         report.pop('report_id', None)
@@ -165,7 +207,6 @@ def refresh_unified(repository, store, *, dart_client, news_client, calendar_cli
     material_pages = min(2, archive_pages - 1) if focus else 0
     recent_pages = archive_pages - material_pages
     if archive_pages == 1 and focus:
-        from .news_policy import news_windows
         end = news_windows(clock())['end'].isoformat()
         covered = store.latest_by_symbol('recent_news_coverage', as_of=clock())
         if all(s in covered and covered[s]['payload'].get('end', '') >= end for s in focus):
@@ -221,7 +262,7 @@ def refresh_unified(repository, store, *, dart_client, news_client, calendar_cli
     return report
 
 
-def shared_calendar(client_id, client_secret):
+def shared_calendar(client_id, client_secret, *, fetch_json=None):
     """Use the already installed common cache; never fall back to independent OAuth."""
     import os
     if not os.getenv('STOCK_TOSS_AUTH_CACHE_DIR'):
@@ -234,6 +275,6 @@ def shared_calendar(client_id, client_secret):
     return SharedTossMarketDataClient(
         client_id,
         client_secret,
-        fetch_json=requests.get_json,
+        fetch_json=fetch_json or requests.get_json,
         post_form=requests.post_form_json,
     )

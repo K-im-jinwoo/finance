@@ -58,7 +58,7 @@ printf 'MEDIA:/fixture/candidate.png\\n'
     def test_opt_in_off_preserves_the_existing_report_and_does_not_call_renderer(self):
         result = self.run_cycle()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), REPORT)
+        self.assertEqual(result.stdout.strip(), '[장기]\n' + REPORT)
         self.assertFalse(self.calls.exists())
 
     def test_enabled_passes_the_exact_generated_report_id_to_the_host_renderer(self):
@@ -87,7 +87,7 @@ printf 'MEDIA:/fixture/candidate.png\\n'
         deadline = str(int(time.time()) + 120)
         result = self.run_cycle("morning-window", deadline)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), REPORT)
+        self.assertEqual(result.stdout.strip(), '[장기]\n' + REPORT)
         refresh, report = self.cycle_calls.read_text(encoding="utf-8").splitlines()
         self.assertIn("timeout -k 1s ", refresh)
         self.assertIn("refresh-daily", refresh)

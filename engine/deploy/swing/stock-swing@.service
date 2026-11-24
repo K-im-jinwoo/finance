@@ -1,0 +1,11 @@
+[Unit]
+Description=Korean-stock swing research (%i)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/stock-assistant/current
+ExecStart=/bin/sh /srv/stock-assistant/current/deploy/jobs/stock-swing.sh %i
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=true

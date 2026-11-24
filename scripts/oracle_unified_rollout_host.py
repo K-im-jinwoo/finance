@@ -16,6 +16,7 @@ import urllib.request
 ROOT=Path('/srv/stock-assistant')
 CONTAINER='stock-assistant-stock-assistant-1'
 PROFILE=Path('/home/ubuntu/.hermes/profiles/stock-cio')
+HERMES_PYTHON=PROFILE.parents[1]/'hermes-agent/venv/bin/python'
 def run(args,timeout=900):
     p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
     if p.returncode: raise RuntimeError('COMMAND_FAILED:'+args[0]+':'+p.stderr[-1200:])
@@ -217,6 +218,21 @@ def rollback(stamp):
     for item in json.loads((backup/'files.json').read_text()):
         path=Path(item['path']);atomic(path,Path(item['backup']).read_bytes(),item['mode']);os.chown(path,item['uid'],item['gid'])
     print(json.dumps({'status':'ROLLED_BACK','backup':str(backup)}))
+
+
+def longterm_delivery_target(release):
+    # Use the existing Hermes environment to read its dotenv format without logging values.
+    code = (
+        'import os, sys\n'
+        'from dotenv import dotenv_values\n'
+        'sys.path.insert(0, sys.argv[1])\n'
+        'from stock_assistant.telegram_routing import longterm_cron_target\n'
+        'env = {**dotenv_values(sys.argv[2]), **os.environ}\n'
+        'print(longterm_cron_target(env))\n'
+    )
+    return run([str(HERMES_PYTHON), '-c', code, str(release/'src'), str(PROFILE/'.env')], timeout=10).strip()
+
+
 def deploy(stamp):
     release,backup=paths(stamp)
     if not (backup/'validation.json').exists():raise ValueError('REAL_VALIDATION_REQUIRED')
@@ -231,6 +247,7 @@ def deploy(stamp):
     old=json.loads((backup/'container.json').read_text())
     current=inspect(CONTAINER)
     if current['Id']!=old['Id'] or not current['State']['Running']:raise ValueError('CONTAINER_CHANGED_SINCE_VALIDATION')
+    longterm_target = longterm_delivery_target(release)
     # Wait for an existing brief intraday worker to finish instead of interrupting it.
     for _ in range(12):
         processes=run(['docker','top',CONTAINER])
@@ -266,6 +283,7 @@ def deploy(stamp):
             for job in jobs:
                 if job.get('name') in {'stock-morning-kst','stock-evening-kst','stock-weekly-kst'}:
                     job['no_agent']=True
+                    job.update(bot_channel='LONGTERM', deliver=longterm_target, wrap_response=False)
                     job['prompt']='스크립트가 출력한 UNIFIED_RESEARCH_V1 보고서만 그대로 Telegram에 한 번 전달하라. 보고서 ID·기준시각, 한 개의 최대 5종목 목록, 재무 F·뉴스 N·위험 R·총점 S와 action_decision을 보존하라. BUY_RECOMMENDATION은 매수 추천 (다음 거래일 조건부), WATCH는 관찰, VERIFY_PENDING은 확인 대기, EXCLUDED는 제외로 표시한다. 모든 종목을 매수 보류로 바꾸지 않는다. 추가 기사 후보·전문가 호출·새 수집·새 점수 계산·주문·모의계좌·WIKI 쓰기는 하지 않는다. 검색 범위와 미완료 자료를 보존하라.'
                 if job.get('name')=='stock-intraday-alerts-kst':job['enabled']=False
             atomic(cron,json.dumps(data,ensure_ascii=False,indent=2).encode())

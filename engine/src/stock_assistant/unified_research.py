@@ -141,7 +141,7 @@ def _actionable_news_score(news: dict, snapshot: dict | None, *, as_of: datetime
         if snapshot["payload"].get("status") != "COMPLETE":
             warnings.append("뉴스 최근 100건 스냅샷 기준(90일 전체 미도달)")
     else:
-        warnings.append("⚠️ 확인 필요: 최근 뉴스 미수집(중립 50점 기준)")
+        warnings.append("⚠️ 확인 필요: 최근 뉴스 미수집(중립 50점 출발)")
     return score, warnings
 
 
@@ -285,6 +285,18 @@ def _candidate_evidence_context(store, symbol: str, *, as_of: datetime, cursor, 
     }
 
 
+def _latest_news_reference_date(*records):
+    """Use the latest documented news search end date, independent of the collection headline."""
+    dates = []
+    for record in records:
+        if record and (end := record["payload"].get("end")):
+            try:
+                dates.append(date.fromisoformat(end))
+            except (TypeError, ValueError):
+                continue
+    return max(dates, default=None)
+
+
 def build_recommendations(repository, store, *, as_of, expected_session=None, verified_close_at=None,
                           max_candidates=5, price_refresh_ready=True, actionable=False,
                           fallback_price_session=None, actionable_focus=None):
@@ -320,7 +332,7 @@ def build_recommendations(repository, store, *, as_of, expected_session=None, ve
                 focus_order.append(item["symbol"])
 
     rows = []
-    symbol_context: dict[str, tuple[object, set[str]]] = {}
+    symbol_context: dict[str, tuple[object, set[str], date | None]] = {}
     for security, financial, bundle in financial_universe(repository, store, as_of=as_of):
         cursor = store.latest("dart_cursor", security.symbol, as_of=as_of)
         attempt = store.latest("dart_attempt", security.symbol, as_of=as_of)
@@ -382,7 +394,8 @@ def build_recommendations(repository, store, *, as_of, expected_session=None, ve
             if not price_refresh_ready and used_fallback_session is None:
                 price = {'status':'VERIFY_PENDING','reasons':['PRICE_REFRESH_UNVERIFIED']}
             if actionable:
-                symbol_context[security.symbol] = (cursor, {s["url"] for s in news.get("review_signals", [])})
+                symbol_context[security.symbol] = (cursor, {s["url"] for s in news.get("review_signals", [])},
+                                                   _latest_news_reference_date(news_snapshot, coverage))
         else:
             news = {"news_score": None, "risk_penalty": Decimal("0"), "pending_checks": (), "hard_exclusions": (), "events": [], "review_signals": []}
             price = {"status": "NOT_EVALUATED", "reasons": []}
@@ -420,7 +433,8 @@ def build_recommendations(repository, store, *, as_of, expected_session=None, ve
     for i, row in enumerate(selected, 1):
         row["rank"] = i
         if actionable and row["symbol"] in symbol_context:
-            cursor, risk_urls = symbol_context[row["symbol"]]
+            cursor, risk_urls, news_date = symbol_context[row["symbol"]]
+            row["news_reference_date"] = news_date
             row.update(_candidate_evidence_context(store, row["symbol"], as_of=as_of, cursor=cursor, risk_urls=risk_urls))
             meta = focus_meta.get(row["symbol"], {})
             if meta.get("chart_signal"):
@@ -471,7 +485,12 @@ def build_recommendations(repository, store, *, as_of, expected_session=None, ve
                           "expected_price_session": effective_session,
                           "market_calendar_input_id": calendar["input_id"] if calendar else None, "evaluations": rows})
     if actionable:
+        from .research_focus import compare_final_candidates
+
         report["policy_mode"] = "ACTIONABLE_COMMITTEE"
+        comparison = compare_final_candidates(store, report["candidates"], as_of=as_of, policy_version=policy_version)
+        if comparison is not None:
+            report["candidate_comparison"] = comparison
         if used_fallback_session is not None:
             report["price_session_basis"] = "LATEST_AVAILABLE_SESSION"
     report['decision_counts'] = dict(Counter(row['action_decision'] for row in rows))
@@ -489,6 +508,34 @@ def _format_kst(as_of_iso: str) -> str:
         return str(as_of_iso)
 
 
+def _candidate_summary_lines(candidates, comparison):
+    changes = (comparison or {}).get("changes", {})
+    changed, maintained = [], []
+    for idx, row in enumerate(candidates, 1):
+        strategy = STRATEGY_LABELS.get((row.get("price") or {}).get("strategy", ""), "")
+        chart = row.get("chart_signal") or {}
+        pattern = chart.get("primary_pattern")
+        pattern_name = pattern.get("name_ko") if isinstance(pattern, dict) else None
+        change = changes.get(row["symbol"], {})
+        tags = []
+        if change.get("new"):
+            tags.append("신규 추천" if row["action_decision"] == "BUY_RECOMMENDATION" else "신규 관찰")
+        if "previous_total_score" in change:
+            tags.append(f"{change['previous_total_score']} → {row['total_score']}")
+        if change.get("component_scores_changed"):
+            tags.append("세부 점수 변동")
+        if previous_decision := change.get("previous_decision"):
+            tags.append(f"{LABELS.get(previous_decision, previous_decision)} → {LABELS[row['action_decision']]}")
+        tags.extend(tag for tag in (chart.get("grade_label") or strategy, pattern_name) if tag)
+        line = " · ".join([f"{idx}. {row['name']} ({row['symbol']})", f"총점 {row['total_score']}", *tags])
+        (changed if change else maintained).append(line)
+    if comparison is None:
+        return maintained
+    return [f"직전 저장 리포트 대비 ({_format_kst(comparison['previous_as_of'])})",
+            "[신규 추천·관찰 / 점수·판정 변동]", *(changed or ["• 없음"]),
+            f"[기존 유지 {len(maintained)}종목]", *(maintained or ["• 없음"])]
+
+
 def _render_actionable_report(report: dict) -> str:
     candidates = report.get("candidates", [])
     kst_str = _format_kst(report.get("as_of", ""))
@@ -504,11 +551,11 @@ def _render_actionable_report(report: dict) -> str:
     archive_status = archive.get("status")
     archive_error = archive.get("error_code")
     if archive_status == "UNAVAILABLE":
-        news_summary = "뉴스: 쿨다운(중립 기준)" if archive_error == "NEWS_REFRESH_COOLDOWN" else "뉴스: 미수집(중립 기준)"
+        news_summary = "조사 대상 뉴스 조회: 쿨다운" if archive_error == "NEWS_REFRESH_COOLDOWN" else "조사 대상 뉴스 조회: 미수집"
     elif archive.get("actual_calls"):
-        news_summary = f"뉴스: 최근 기사 수집 완료({archive['actual_calls']}회)"
+        news_summary = f"조사 대상 뉴스 조회: {archive['actual_calls']}회"
     else:
-        news_summary = "뉴스: 최근 스냅샷 반영"
+        news_summary = "조사 대상 뉴스 조회: 기록 없음"
 
     lines = [
         f"📊 장기투자 종목 리서치 ({kst_str})",
@@ -517,16 +564,11 @@ def _render_actionable_report(report: dict) -> str:
         "",
         f"[오늘의 후보 {len(candidates)}종목]",
     ]
-    for idx, row in enumerate(candidates, 1):
-        strategy = STRATEGY_LABELS.get((row.get("price") or {}).get("strategy", ""), "")
-        cs = row.get("chart_signal") or {}
-        grade_tag = f" · {cs['grade_label']}" if cs.get("grade_label") else (f" · {strategy}" if strategy else "")
-        pat = cs.get("primary_pattern")
-        pat_tag = f" · {pat['name_ko']}" if isinstance(pat, dict) and pat.get("name_ko") else ""
-        lines.append(f"{idx}. {row['name']} ({row['symbol']}) · 총점 {row['total_score']}{grade_tag}{pat_tag}")
+    lines.extend(_candidate_summary_lines(candidates, report.get("candidate_comparison")))
 
     lines.extend(["", "━━━━━━━━━━━━━━━"])
 
+    required_news_date = (report.get("research_windows") or {}).get("end")
     for idx, row in enumerate(candidates):
         badge = _RANK_BADGES[idx] if idx < len(_RANK_BADGES) else f"{idx + 1}."
         strategy = STRATEGY_LABELS.get((row.get("price") or {}).get("strategy", ""), "")
@@ -535,6 +577,9 @@ def _render_actionable_report(report: dict) -> str:
         lines.append("")
         lines.append(f"{badge} {row['name']} ({row['symbol']}) · {decision_short}{strategy_suffix}")
         lines.append(f"• 점수: 총점 {row['total_score']} (재무 {row['financial_score']} / 뉴스 {row['news_score']} / 위험 -{row['risk_penalty']})")
+        news_date = row.get("news_reference_date")
+        stale_note = f" · ⚠️ {required_news_date} 기준 미갱신" if news_date and required_news_date and news_date < required_news_date else ""
+        lines.append(f"• 뉴스 기준일: {news_date or '확인 불가'}{stale_note}")
         metrics = (row.get("price") or {}).get("metrics") or {}
         if metrics.get("average_value20") and metrics.get("return20") is not None:
             avg_eok = Decimal(str(metrics["average_value20"])) / Decimal("100000000")
@@ -564,7 +609,7 @@ def _render_actionable_report(report: dict) -> str:
         # Keep only issuer-specific warnings/advisories; common notices live once in header/footer.
         specific_notes = []
         for w in row.get("warnings", []):
-            if w.startswith("⚠️ 가격 기준:") or "최근 뉴스 미수집" in w:
+            if w.startswith("⚠️ 가격 기준:"):
                 continue
             specific_notes.append(w.removeprefix("⚠️ 확인 필요: ").strip())
         for adv in row.get("advisories", []):

@@ -63,6 +63,26 @@ class ResearchData:
                 out.append(parsed)
         return out
 
+    def performance_reports(self, *, as_of: datetime, report_id: str | None = None) -> list[dict]:
+        """Read saved recommendation snapshots without loading full universe evaluations."""
+        if as_of.tzinfo is None:
+            raise ValueError("as_of must be timezone-aware")
+        query = """SELECT json_extract(payload_json, '$.report_id'),
+                          json_extract(payload_json, '$.policy_version'),
+                          json_extract(payload_json, '$.as_of'), observed_at,
+                          json_extract(payload_json, '$.candidates')
+                   FROM research_inputs WHERE kind='unified_report' AND symbol='ALL'
+                   AND observed_at<=? AND json_extract(payload_json, '$.contract')='UNIFIED_RESEARCH_V1'"""
+        parameters = (as_of.astimezone(timezone.utc).isoformat(),)
+        if report_id is not None:
+            query += " AND json_extract(payload_json, '$.report_id')=?"
+            parameters += (report_id,)
+        with closing(self._connect()) as db:
+            rows = db.execute(query + " ORDER BY observed_at, rowid", parameters).fetchall()
+        return [{"report_id": identifier, "ruleset_version": version, "as_of": analyzed_at,
+                 "published_at": observed_at, "candidates": json.loads(candidates)}
+                for identifier, version, analyzed_at, observed_at, candidates in rows]
+
     def put(self, kind: str, symbol: str, payload: dict, *, observed_at: datetime) -> str:
         return self.put_many([(kind, symbol, payload)], observed_at=observed_at)[0]
 

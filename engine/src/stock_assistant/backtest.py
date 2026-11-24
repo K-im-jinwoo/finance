@@ -22,6 +22,8 @@ class EventStudyResult:
     entry_date: date | None
     entry_price: Decimal | None
     horizons: tuple[HorizonReturn, ...]
+    scheduled_entry_date: date | None = None
+    entry_tradability: str | None = None
 
 
 def event_study(
@@ -30,6 +32,7 @@ def event_study(
     signal_date: date,
     horizons: tuple[int, ...] = (5, 20, 60),
     round_trip_cost_bps: Decimal = Decimal("30"),
+    market_sessions: tuple[date, ...] | None = None,
 ) -> EventStudyResult:
     if not horizons or any(value < 1 for value in horizons):
         raise ValueError("horizons must contain positive trading-day counts")
@@ -42,25 +45,30 @@ def event_study(
     if len(symbols) > 1:
         raise ValueError("event-study input contains multiple symbols")
     symbol = next(iter(symbols), "")
-    entry_index = next(
-        (index for index, item in enumerate(ordered) if item.trade_date > signal_date),
-        None,
-    )
-    if entry_index is None:
+    by_date = {bar.trade_date: bar for bar in ordered}
+    sessions = tuple(by_date) if market_sessions is None else market_sessions
+    future = [day for day in sessions if day > signal_date]
+    target = future[0] if future else None
+    entry = by_date.get(target)
+    tradability = None
+    if market_sessions is not None:
+        tradability = "UNCONFIRMED" if entry is None else (
+            "TRADABLE" if entry.volume > 0 and entry.open > 0 else "NOT_TRADABLE")
+    if entry is None or tradability == "NOT_TRADABLE":
         return EventStudyResult(
             symbol, signal_date, None, None,
             tuple(HorizonReturn(value, None, None, None) for value in horizons),
+            target, tradability,
         )
-    entry = ordered[entry_index]
     cost = round_trip_cost_bps / Decimal("10000")
     outcomes: list[HorizonReturn] = []
     for horizon in horizons:
-        exit_index = entry_index + horizon
-        if exit_index >= len(ordered):
+        exit_bar = by_date.get(future[horizon]) if horizon < len(future) else None
+        if exit_bar is None or (market_sessions is not None and (exit_bar.volume <= 0 or exit_bar.close <= 0)):
             outcomes.append(HorizonReturn(horizon, None, None, None))
             continue
-        exit_bar = ordered[exit_index]
         gross = (exit_bar.close / entry.open) - Decimal("1")
         outcomes.append(HorizonReturn(horizon, exit_bar.trade_date, gross, gross - cost))
-    return EventStudyResult(symbol, signal_date, entry.trade_date, entry.open, tuple(outcomes))
+    return EventStudyResult(symbol, signal_date, entry.trade_date, entry.open, tuple(outcomes),
+                            target if market_sessions is not None else None, tradability)
 

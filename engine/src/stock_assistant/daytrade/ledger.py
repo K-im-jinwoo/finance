@@ -40,6 +40,47 @@ class FixtureCosts:
         return (gross * Decimal(rate) / 10000).quantize(Decimal(1), rounding=ROUND_HALF_UP)
 
 
+@dataclass(frozen=True)
+class _FillQuote:
+    quantity: int
+    gross: Decimal
+    fee: Decimal
+    tax: Decimal
+
+
+def _affordable_shares(costs, gross, unit_price, available, budget):
+    """Floor to the largest whole-share count including the rounded fill fee."""
+    lower, upper = 0, available
+    while lower < upper:
+        shares = (lower + upper + 1) // 2
+        new_gross = gross + shares * unit_price
+        if new_gross + costs.charge(new_gross, costs.buy_fee_bps) <= budget:
+            lower = shares
+        else:
+            upper = shares - 1
+    return lower
+
+
+def _price_book_fill(levels, *, side, requested, costs, buy_budget=None):
+    participation = Decimal(costs.participation)
+    slippage = Decimal(costs.extra_slippage_bps) / 10000
+    multiplier = 1 + slippage if side == "BUY" else 1 - slippage
+    filled, gross = 0, Decimal(0)
+    for level in levels:
+        depth = int((Decimal(level["volume"]) * participation).to_integral_value(rounding=ROUND_DOWN))
+        available = min(requested - filled, depth)
+        price = Decimal(level["price"]) * multiplier
+        shares = available if buy_budget is None else _affordable_shares(costs, gross, price, available, buy_budget)
+        filled += shares
+        gross += shares * price
+        # The rest of the asks cannot improve the price of a budget-limited fill.
+        if filled == requested or shares < available:
+            break
+    fee = costs.charge(gross, costs.buy_fee_bps if side == "BUY" else costs.sell_fee_bps)
+    tax = costs.charge(gross, costs.sell_tax_bps) if side == "SELL" else Decimal(0)
+    return _FillQuote(filled, gross, fee, tax)
+
+
 def isolated_path(root, path=None):
     root = Path(root).resolve(strict=True)
     target = root / ".runtime" / "intraday-paper.sqlite3"
@@ -293,6 +334,12 @@ class DaytradeLedger:
                 (event_id, seq, fingerprint, at.isoformat(), kind, canonical(event), canonical(outcome)))
         return outcome
 
+    def _strategy_buy_intent(self, intent_id):
+        # The bot uses the creating event's ID. Its stored signal also identifies existing intents after reopen.
+        row = self.connection.execute("SELECT payload FROM events WHERE id=? AND kind='INTENT'", (intent_id,)).fetchone()
+        signal = json.loads(row[0])["data"].get("strategy_signal") if row else None
+        return isinstance(signal, dict) and signal.get("action") == "BUY"
+
     def _fixture_fill(self, event_id, data, state, risk, at):
         if not self.meta["synthetic"] or self.costs is None:
             raise ValueError("only explicit synthetic fixtures with costs can execute")
@@ -322,19 +369,10 @@ class DaytradeLedger:
         left = intent["quantity"] - intent["filled"]
         if side == "SELL":
             left = min(left, state["positions"].get(code, 0))
-        filled, gross = 0, Decimal(0)
         levels = json.loads(quote["payload_json"])["asks" if side == "BUY" else "bids"]
-        for level in levels:
-            quantity = min(left - filled, int((Decimal(level["volume"]) * Decimal(self.costs.participation)).to_integral_value(rounding=ROUND_DOWN)))
-            price = Decimal(level["price"]) * (1 + Decimal(self.costs.extra_slippage_bps) / 10000 * (1 if side == "BUY" else -1))
-            gross += quantity * price
-            filled += quantity
-            if filled == left:
-                break
-        if not filled:
+        priced = _price_book_fill(levels, side=side, requested=left, costs=self.costs)
+        if not priced.quantity:
             return {"status": "UNFILLED"}
-        fee = self.costs.charge(gross, self.costs.buy_fee_bps if side == "BUY" else self.costs.sell_fee_bps)
-        tax = self.costs.charge(gross, self.costs.sell_tax_bps) if side == "SELL" else Decimal(0)
         if side == "BUY":
             valuation = self._valuation(state, at)
             if valuation["equity"] is None:
@@ -342,12 +380,21 @@ class DaytradeLedger:
             equity, exposure = valuation["equity"], valuation["position_values"]
             if code not in state["positions"] and len(state["positions"]) >= 3:
                 raise ValueError("three-position limit")
-            if exposure.get(code, Decimal(0)) + gross + fee > equity * Decimal("0.20"):
+            position_budget = equity * Decimal("0.20") - exposure.get(code, Decimal(0))
+            total_budget = equity * Decimal("0.60") - sum(exposure.values(), Decimal(0))
+            cash = Decimal(state["cash"])
+            budget = min(position_budget, total_budget, cash)
+            if priced.gross + priced.fee > budget and self._strategy_buy_intent(intent_id):
+                priced = _price_book_fill(levels, side=side, requested=left, costs=self.costs, buy_budget=budget)
+                if not priced.quantity:
+                    return {"status": "UNFILLED_RISK_BUDGET"}
+            if priced.gross + priced.fee > position_budget:
                 raise ValueError("twenty-percent position limit")
-            if sum(exposure.values(), Decimal(0)) + gross + fee > equity * Decimal("0.60"):
+            if priced.gross + priced.fee > total_budget:
                 raise ValueError("sixty-percent total limit")
-            if gross + fee > Decimal(state["cash"]):
+            if priced.gross + priced.fee > cash:
                 raise ValueError("cash limit")
+        filled, gross, fee, tax = priced.quantity, priced.gross, priced.fee, priced.tax
         state["cash"] = str(Decimal(state["cash"]) + (gross - fee - tax if side == "SELL" else -gross - fee))
         state["positions"][code] = state["positions"].get(code, 0) + (filled if side == "BUY" else -filled)
         if state["positions"][code] == 0:

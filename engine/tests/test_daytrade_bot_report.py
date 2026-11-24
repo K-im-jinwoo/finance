@@ -12,6 +12,8 @@ import unittest
 from stock_assistant.daytrade import run_paper_session, build_trading_report, render_markdown_report
 from stock_assistant.daytrade.bot import scan_dataset
 from stock_assistant.daytrade.ledger import DaytradeLedger
+from stock_assistant.daytrade.report import _drawdown
+from stock_assistant.daytrade.stream import LivePaperSession
 
 FIXTURE = Path(__file__).parent / "fixtures/daytrade_bot_sample.json"
 ENGINE_SRC = Path(__file__).resolve().parents[1] / "src"
@@ -81,6 +83,10 @@ class BotReportTests(unittest.TestCase):
         self.assertIsNone(report["account"]["final_equity"])
         self.assertIsNone(report["account"]["net_pnl"])
         self.assertIsNone(report["account"]["mdd_pct"])
+        self.assertGreater(Decimal(report["account"]["valuation_missing_pct"]), 0)
+        markdown = render_markdown_report(report)
+        self.assertIn("평가점 누락률(%)", markdown)
+        self.assertIn("관측 구간 낙폭(%)", markdown)
         self.assertEqual(report["account"]["valuation_status"], "MARK_UNCERTAIN")
         self.assertEqual(report["account"]["completed_trades"], 1)
         self.assertTrue(report["audit"]["quantity_identity"])
@@ -99,6 +105,23 @@ class BotReportTests(unittest.TestCase):
             self.assertTrue(report["audit"]["cash_identity"])
             if expected == "LOSS_EXIT":
                 self.assertTrue(any("LOSS_LOCKED" in r["locks"] for r in report["risk_events"]))
+
+    def test_recorded_data_source_is_independent_of_simulated_execution(self):
+        with tempfile.TemporaryDirectory() as root, LivePaperSession(root, websocket_slot_available=True, stream_kind="RECORDED") as session:
+            report = session.report()
+        self.assertEqual(report["data_source"], "LIVE_RECORDED")
+        self.assertEqual(report["execution_mode"], "SIMULATED_FILL")
+        self.assertEqual(report["dataset_kind"], "LIVE_RECORDED")
+        self.assertIn("LIVE_RECORDED", render_markdown_report(report))
+
+    def test_missing_rate_includes_known_compacted_points_and_drawdown_uses_known_values(self):
+        curve = [{"equity": None, "diagnostic_truncation": True,
+                  "omitted_valuation_points": 4, "omitted_missing_valuation_points": 2},
+                 {"equity": "120"}, {"equity": None}, {"equity": "90"}]
+        result = _drawdown(curve, Decimal(100))
+        self.assertIsNone(result["mdd_pct"])
+        self.assertEqual(result["mdd_observed_pct"], Decimal(25))
+        self.assertEqual(result["valuation_missing_pct"], Decimal(300) / 7)
 
     def test_clock_requests_time_exit_and_next_post_latency_book_fills(self):
         data = dataset()

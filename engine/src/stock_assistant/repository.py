@@ -4,7 +4,7 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -34,6 +34,7 @@ from .models import (
 
 SCHEMA_VERSION = 9
 _REPORT_ID = re.compile(r"^R-[0-9]{8}T[0-9]{4}Z-[A-F0-9]{8}$")
+_UNIFIED_REPORT_ID = re.compile(r"^UR-[a-f0-9]{24}$")
 _DATASET = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
 
@@ -454,6 +455,17 @@ class StockRepository:
             ).fetchall()
         return [_bar_from_dict(json.loads(row["payload_json"])) for row in rows]
 
+    def krx_sessions(self, *, after: date, as_of: datetime) -> tuple[date, ...]:
+        """Observed exchange sessions, independent of an individual issuer's missing bars."""
+        kst = timezone(timedelta(hours=9))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT trade_date FROM ohlcv WHERE trade_date>? AND trade_date<=? "
+                "AND observed_at<=? AND json_extract(payload_json,'$.source')='KRX_OPEN_API' ORDER BY trade_date",
+                (after.isoformat(), as_of.astimezone(kst).date().isoformat(), as_of.astimezone(timezone.utc).isoformat()),
+            ).fetchall()
+        return tuple(date.fromisoformat(row[0]) for row in rows)
+
     def save_financial_snapshot(self, snapshot: FinancialSnapshot) -> None:
         payload = json.dumps(to_json_value(snapshot), ensure_ascii=False, sort_keys=True)
         with self._connect() as connection:
@@ -759,6 +771,7 @@ class StockRepository:
                         "expected_holding_period", "score",
                         "signal_at", "trading_days", "status", "entry_date", "entry_price",
                         "exit_date", "gross_return", "net_return",
+                        "scheduled_entry_date", "entry_tradability", "round_trip_cost_bps",
                     )
                     if any(getattr(previous, field) != getattr(record, field) for field in stable_fields):
                         raise ValueError("completed performance record is immutable")
@@ -777,7 +790,7 @@ class StockRepository:
         query = "SELECT payload_json FROM performance_records"
         parameters: tuple[str, ...] = ()
         if report_id is not None:
-            if not _REPORT_ID.fullmatch(report_id):
+            if not (_REPORT_ID.fullmatch(report_id) or _UNIFIED_REPORT_ID.fullmatch(report_id)):
                 raise ValueError("report_id has an invalid format")
             query += " WHERE report_id=?"
             parameters = (report_id,)
@@ -1002,4 +1015,7 @@ def _performance_from_dict(payload: dict):
         exit_date=payload.get("exit_date"),
         gross_return=optional_decimal("gross_return"),
         net_return=optional_decimal("net_return"),
+        scheduled_entry_date=payload.get("scheduled_entry_date"),
+        entry_tradability=payload.get("entry_tradability"),
+        round_trip_cost_bps=optional_decimal("round_trip_cost_bps"),
     )

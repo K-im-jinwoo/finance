@@ -22,7 +22,7 @@ from stock_assistant.research_data import ResearchData
 from stock_assistant.research_focus import choose_actionable_focus
 from stock_assistant.research_repository import ReadOnlyResearchRepository
 from stock_assistant.unified_cycle import refresh_unified
-from stock_assistant.unified_research import build_recommendations, render_recommendations
+from stock_assistant.unified_research import POLICY_VERSION_ACTIONABLE, build_recommendations, render_recommendations
 from tests.helpers import make_bars
 from tests.test_dart_research import FakeDart
 from tests.test_screening import AS_OF, samsung
@@ -199,6 +199,70 @@ class ActionableScreeningTests(unittest.TestCase):
         self.assertEqual(report["candidates"], [])
         self.assertEqual(report["evaluations"][0]["action_decision"], "EXCLUDED")
 
+    def test_repeated_top_five_are_presented_as_maintained(self):
+        for symbol in ("005930", "000200", "000201", "000300", "000400"):
+            self._seed_bundle(symbol, symbol)
+        options = {"expected_session": date(2026, 9, 19), "actionable": True, "actionable_focus": {}}
+        first = build_recommendations(self.reader, self.store, as_of=AS_OF, **options)
+        self.assertEqual(len(first["candidates"]), 5)
+        for hours in (1, 2):
+            previous_time = AS_OF + timedelta(hours=hours - 1)
+            self.store.put("unified_report", "ALL", first, observed_at=previous_time)
+            current = build_recommendations(self.reader, self.store, as_of=AS_OF + timedelta(hours=hours), **options)
+            body = render_recommendations(current)
+            self.assertIn("[신규 추천·관찰 / 점수·판정 변동]\n• 없음", body)
+            self.assertIn("[기존 유지 5종목]", body)
+            self.assertEqual([(c["symbol"], c["total_score"]) for c in current["candidates"]],
+                             [(c["symbol"], c["total_score"]) for c in first["candidates"]])
+            first = current
+
+    def test_candidate_summary_lists_new_and_changed_scores_without_losing_rank(self):
+        for symbol, name in (("005930", "유지기업"), ("000200", "점수변동기업"), ("000300", "신규기업")):
+            self._seed_bundle(symbol, name)
+        previous_at = AS_OF - timedelta(days=1)
+        self.store.put("unified_report", "ALL", {
+            "report_id": "UR-" + "1" * 24, "as_of": previous_at.isoformat(), "policy_version": POLICY_VERSION_ACTIONABLE,
+            "candidates": [{"symbol": "005930", "total_score": "85", "action_decision": "BUY_RECOMMENDATION"},
+                           {"symbol": "000200", "total_score": "84", "action_decision": "WATCH"}],
+        }, observed_at=previous_at)
+        report = build_recommendations(self.reader, self.store, as_of=AS_OF,
+                                       expected_session=date(2026, 9, 19), actionable=True, actionable_focus={})
+        body = render_recommendations(report)
+        self.assertIn("1. 점수변동기업 (000200) · 총점 85.0 · 84 → 85.0 · 관찰 → 매수 추천", body)
+        self.assertIn("2. 신규기업 (000300) · 총점 85.0 · 신규 추천", body)
+        self.assertIn("[기존 유지 1종목]\n3. 유지기업 (005930)", body)
+
+    def test_candidate_news_dates_and_missing_warning_are_visible_after_successful_collection(self):
+        for symbol, name in (("005930", "미수집기업"), ("000200", "오래된기업"), ("000300", "최신기업"),
+                             ("000400", "며칠전수집기업")):
+            self._seed_bundle(symbol, name)
+        for symbol, age, end in (("000200", 8, "2026-09-11"), ("000300", 0, "2026-09-19"),
+                                 ("000400", 6, "2026-09-13")):
+            observed_at = AS_OF - timedelta(days=age)
+            self.store.put("recent_news_snapshot", symbol, {"end": end, "status": "SNAPSHOT_100"}, observed_at=observed_at)
+        report = build_recommendations(self.reader, self.store, as_of=AS_OF,
+                                       expected_session=date(2026, 9, 19), actionable=True, actionable_focus={})
+        report["refresh_stages"] = {"archive": {"status": "SNAPSHOT_100", "actual_calls": 5}}
+        body = render_recommendations(report)
+        self.assertIn("뉴스 기준일: 2026-09-11 · ⚠️ 2026-09-19 기준 미갱신", body)
+        self.assertIn("뉴스 기준일: 2026-09-13 · ⚠️ 2026-09-19 기준 미갱신", body)
+        self.assertIn("뉴스 기준일: 2026-09-19\n", body)
+        self.assertIn("뉴스 기준일: 확인 불가", body)
+        self.assertEqual(body.count("최근 뉴스 미수집(중립 50점 출발)"), 2)
+        self.assertNotIn("최근 기사 수집 완료", body)
+
+    def test_older_saved_report_keeps_existing_missing_news_warning(self):
+        self._seed_bundle("005930", "삼성전자")
+        report = build_recommendations(self.reader, self.store, as_of=AS_OF,
+                                       expected_session=date(2026, 9, 19), actionable=True)
+        report.pop("candidate_comparison", None)
+        candidate = report["candidates"][0]
+        candidate.pop("news_reference_date", None)
+        candidate["warnings"] = ["⚠️ 확인 필요: 최근 뉴스 미수집(중립 50점 기준)"]
+        body = render_recommendations(report)
+        self.assertIn("뉴스 기준일: 확인 불가", body)
+        self.assertIn("최근 뉴스 미수집(중립 50점 기준)", body)
+
     def test_dart_collector_prioritizes_actionable_symbols_first(self):
         self._seed_bundle("000001", "일반기업1", cursor_end="2026-09-10")
         self._seed_bundle("005930", "우선후보", cursor_end="2026-09-10")
@@ -332,6 +396,7 @@ printf '%s\\n' "$*" >> "$DOCKER_ARGS_FILE"
 case "$*" in
   *refresh-daily*) exit 0 ;;
   *refresh-unified*) printf '%s\\n' "$FAKE_REPORT" ;;
+  *evaluate-all-performance*) exit 0 ;;
   *) exit 33 ;;
 esac
 """, encoding="utf-8", newline="\n")
@@ -385,6 +450,15 @@ printf '투자위원회 요약\\n- [1] 현대모비스 Bull/Bear\\n'
         self.assertNotIn("refresh-unified", docker_calls)
         self.assertFalse(self.brief_args.exists())
         self.assertIn("STOCK_CYCLE status=READY mode=daily-refresh stage=DAILY_REFRESH", res.stderr)
+
+    def test_weekly_cycle_evaluates_saved_unified_reports(self):
+        res = subprocess.run([SHELL, SCRIPT.as_posix(), "weekly"], env=self.env,
+                             capture_output=True, text=True, encoding="utf-8", timeout=15)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        calls = self.docker_args.read_text(encoding="utf-8").splitlines()
+        self.assertIn("refresh-unified", calls[1])
+        self.assertIn("evaluate-all-performance", calls[2])
+        self.assertIn("--research-database /var/lib/stock/unified-research-inputs.sqlite3", calls[2])
 
 
 if __name__ == "__main__":

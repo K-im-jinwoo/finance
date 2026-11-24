@@ -1,9 +1,15 @@
 """Offline service lifecycle and real ledger restart tests; no external sending."""
+from contextlib import closing, redirect_stdout
 from datetime import datetime, timedelta
 import importlib
+from io import StringIO
 import json
 from pathlib import Path
+import socket
+import sqlite3
+import ssl
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -360,6 +366,131 @@ class DailySummaryDaemonTests(unittest.TestCase):
                     self.assertNotIn('sensitive-', json.dumps(list(other.connection.execute('SELECT * FROM meta'))))
                 finally:
                     other.close()
+
+
+class DaemonRestartGuardTests(unittest.TestCase):
+    def setUp(self):
+        self.daemon = importlib.import_module('stock_assistant.daytrade.daemon')
+        self.runtime = importlib.import_module('stock_assistant.daytrade.service_runtime')
+        self.now = datetime(2026, 11, 24, 9, 30, tzinfo=KST)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.output = StringIO()
+        self.sent = []
+
+    def send(self, text):
+        self.assertEqual(self.failures()[-1]['notification_status'], 'RESERVED')
+        self.sent.append(text)
+        return {'status': 'SENT', 'http_status': 200}
+
+    def run_service(self, result=None, *, error=None, create_sender=None):
+        with (patch.object(self.runtime, 'telegram_sender', side_effect=create_sender,
+                           return_value=self.send),
+              patch.object(self.daemon, 'run_trading_day', side_effect=error,
+                           return_value=result) as run,
+              redirect_stdout(self.output)):
+            code = self.daemon.run_service(self.root, stop=threading.Event(), clock=lambda: self.now)
+        return code, run.call_count
+
+    def failures(self):
+        with closing(sqlite3.connect(self.root/'daemon-state.sqlite3')) as db:
+            return [json.loads(raw) for raw, in db.execute('SELECT payload FROM daemon_failures ORDER BY id')]
+
+    def test_error_records_only_safe_fields_and_stack_locations(self):
+        closed = type('ConnectionClosedError', (Exception,), {'__module__': 'websockets.exceptions'})
+
+        def fail(*args, **kwargs):
+            raise closed('Bearer private-token, account=12345678901, https://broker.test/?key=private-query')
+
+        self.assertEqual(self.run_service(error=fail), (1, 1))
+        record, = self.failures()
+        self.assertEqual(record['error_code'], 'NETWORK')
+        self.assertEqual(record['error_class'], 'ConnectionClosedError')
+        self.assertIn(len(record['frames']), range(1, 4))
+        self.assertTrue(all(set(frame) == {'file', 'line'} for frame in record['frames']))
+        exit_report = (self.root/'exit.json').read_text(encoding='utf-8')
+        self.assertEqual(json.loads(exit_report), record)
+        for secret in ('private-token', '12345678901', 'broker.test', 'private-query'):
+            self.assertNotIn(secret, self.output.getvalue() + exit_report + json.dumps(record))
+
+    def test_dns_and_tls_errors_are_network_failures(self):
+        for error in (socket.gaierror('dns detail'), ssl.SSLError('tls detail')):
+            with self.subTest(error_type=type(error)):
+                self.assertEqual(self.run_service(error=error), (1, 1))
+                self.assertEqual(self.failures()[-1]['error_code'], 'NETWORK')
+
+    def test_interrupted_processes_count_once_and_stop_before_startup(self):
+        for _ in range(3):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_service(error=KeyboardInterrupt())
+        self.assertEqual(self.run_service(error=KeyboardInterrupt()), (0, 0))
+        self.assertEqual(self.run_service(), (0, 0))
+        records = self.failures()
+        self.assertEqual([r['error_class'] for r in records], ['UnexpectedTermination'] * 3)
+        self.assertEqual(records[-1]['entry_blocked'], True)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_same_error_locks_existing_ledger_and_sends_once_across_restarts(self):
+        day = self.now.date().isoformat()
+        with self.daemon.open_or_resume_session(self.root, day) as session:
+            session.on_session(normal_session_verified=True, at=self.now)
+            intent, _ = session._runner.emit('INTENT', {'symbol': '005930', 'side': 'BUY', 'quantity': 1}, self.now)
+            self.now += timedelta(seconds=1)
+            quote, _ = session._runner.emit('MARKET', {'symbol': '005930', 'feed': 'orderbook',
+                'received_monotonic': 1, 'payload': {'currency': 'KRW', 'timestamp': self.now.isoformat(),
+                    'asks': [{'price': '10000', 'volume': '10'}], 'bids': [{'price': '9990', 'volume': '10'}]}}, self.now)
+            session._runner.emit('FILL', {'intent_id': intent, 'quote_event_id': quote}, self.now)
+            ledger_path = session.ledger.path.parent.parent
+
+        error = RuntimeError('SHARED_TOKEN_EXPIRING_NO_RENEWAL')
+        self.assertEqual(self.run_service(error=error), (1, 1))
+        self.assertEqual(self.run_service(error=error), (1, 1))
+        self.assertEqual(self.run_service(error=error), (0, 1))
+        self.assertEqual(self.run_service(error=error), (0, 0))
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn('AUTH', self.sent[0])
+        self.assertIn('미청산 보유: 1종목 · 손절·시간청산 감시 중단', self.sent[0])
+        record = self.failures()[-1]
+        self.assertEqual((record['status'], record['notification_status']), ('RESTART_LOCKED', 'SENT'))
+        with closing(self.daemon.DaytradeLedger(ledger_path)) as ledger:
+            self.assertEqual(ledger.state()['positions'], {'005930': 1})
+            self.assertEqual(ledger.state()['risk']['reasons']['DATA_DEGRADED'], ['DAEMON_RESTART_LIMIT'])
+            self.assertEqual(ledger.state()['sessions'], {day: 'OBSERVING'})
+            self.assertTrue(ledger.audit()['cash_identity'])
+
+    def test_mixed_failure_limit_ignores_old_failures_and_clean_shutdown(self):
+        def network_error():
+            return TimeoutError('network')
+
+        self.assertEqual(self.run_service(error=network_error()), (1, 1))
+        self.now += timedelta(minutes=10, seconds=1)
+        self.assertEqual(self.run_service({'status': 'STOPPED'}), (0, 1))
+        errors = [network_error(), ValueError('data'), RuntimeError('unknown'),
+                  sqlite3.DatabaseError('state'), network_error(), ValueError('data')]
+        for error in errors[:-1]:
+            self.assertEqual(self.run_service(error=error), (1, 1))
+        self.assertEqual(self.run_service(error=errors[-1]), (0, 1))
+        self.assertEqual(self.failures()[-1]['window_failures'], 6)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_failed_alert_remains_single_attempt_and_setup_errors_are_classified(self):
+        def fail_send(_):
+            self.sent.append('attempt')
+            raise TimeoutError('sensitive-notification')
+
+        for expected in (1, 1, 0, 0):
+            self.assertEqual(self.run_service(error=RuntimeError('fatal'), create_sender=lambda: fail_send)[0], expected)
+        self.assertEqual(self.sent, ['attempt'])
+        self.assertEqual(self.failures()[-1]['notification_status'], 'FAILED')
+        self.assertNotIn('sensitive-notification', self.output.getvalue())
+
+        self.now += timedelta(days=1)
+        def bad_config():
+            raise ValueError('EXISTING_BOT_TOKEN_REQUIRED')
+
+        self.assertEqual(self.run_service(create_sender=bad_config), (1, 0))
+        self.assertEqual(self.failures()[-1]['error_code'], 'AUTH')
 
 
 if __name__ == '__main__': unittest.main()

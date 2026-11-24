@@ -1,4 +1,4 @@
-"""Reports derived from audited synthetic cash flows, not hypothetical fills."""
+"""Reports derived from audited simulated fills and their market data source."""
 from __future__ import annotations
 
 from decimal import Decimal
@@ -93,17 +93,37 @@ def trading_inventory(fills):
     return inventory, completed, details
 
 
+def valuation_point_counts(curve):
+    total = missing = 0
+    complete = True
+    for sample in curve:
+        if sample.get("diagnostic_truncation"):
+            total += sample.get("omitted_valuation_points", 0)
+            missing += sample.get("omitted_missing_valuation_points", 0)
+            complete &= sample.get("valuation_point_counts_complete", "omitted_valuation_points" in sample)
+        else:
+            total += 1
+            missing += sample["equity"] is None
+    return total, missing, complete
+
+
 def _drawdown(curve, capital):
+    total, missing, complete = valuation_point_counts(curve)
     peak, worst, uncertain = capital, Decimal(0), not bool(curve)
+    observed = False
     for sample in curve:
         if sample["equity"] is None:
             uncertain = True
             continue
         equity = Decimal(sample["equity"])
+        observed = True
         peak = max(peak, equity)
         worst = max(worst, (peak - equity) * 100 / peak)
-    return {"mdd_pct": None if uncertain else worst, "mdd_observed_pct": worst,
-            "mdd_basis": "RECORDED_VALUATIONS_ONLY", "mdd_uncertain": uncertain}
+    return {"mdd_pct": None if uncertain else worst, "mdd_observed_pct": worst if observed else None,
+            "mdd_basis": "RECORDED_VALUATIONS_ONLY", "mdd_uncertain": uncertain,
+            "valuation_points": total, "missing_valuation_points": missing,
+            "valuation_missing_pct": Decimal(missing * 100) / total if total else None,
+            "valuation_point_counts_complete": complete}
 
 
 def build_trading_report(ledger, *, scan_history=(), signals=(), simulation_meta=None):
@@ -121,6 +141,12 @@ def build_trading_report(ledger, *, scan_history=(), signals=(), simulation_meta
             persisted = latest
     meta = simulation_meta if simulation_meta is not None else persisted or ledger.meta
     costs = ledger.meta["fixture_costs"]
+    provenance = meta.get("stream_provenance") or ledger.meta.get("stream_provenance")
+    if provenance and provenance.get("kind") in {"RECORDED", "LIVE_RECORDED"}:
+        data_source = "LIVE_RECORDED"
+    else:
+        data_source = "SYNTHETIC" if ledger.meta["synthetic"] else "OBSERVATION"
+    execution_mode = "SIMULATED_FILL" if ledger.meta["synthetic"] and costs is not None else "OBSERVATION_ONLY"
     cost_status, cost_notice = _cost_policy(costs, meta)
     scans = list(scan_history) if scan_history else meta.get("scan_history", [])
     signals = list(signals) if signals else meta.get("signals", [])
@@ -146,13 +172,13 @@ def build_trading_report(ledger, *, scan_history=(), signals=(), simulation_meta
                 "symbol":json.loads(row[5])["data"].get("symbol")}
                for row in snapshot["events"] if json.loads(row[6]).get("quality_issues")]
     report = {"mode": ledger.meta["mode"], "profile": meta.get("profile", "UNSPECIFIED"),
-        "dataset_kind": "SYNTHETIC" if ledger.meta["synthetic"] else "OBSERVATION",
+        "dataset_kind": data_source, "data_source": data_source, "execution_mode": execution_mode,
         "orders_enabled": False, "paper_ready": bool(meta.get("paper_ready", False)) and cost_status == APPROVED_COST_STATUS,
         "scope": "INTEGRATED_KR",
         "policy_version": ledger.meta["policy_version"], "seed": ledger.meta["replay_seed"],
         "fixture_costs": ledger.meta["fixture_costs"], "order_strength": "UNAVAILABLE", "tick_vwap": "UNAVAILABLE",
         "cost_policy_status": cost_status, "cost_policy_notice": cost_notice,
-        "stream_provenance": meta.get("stream_provenance"),
+        "stream_provenance": {**provenance, "kind": data_source} if provenance else None,
         "account": {"initial_capital": capital, "cash": Decimal(snapshot["state"]["cash"]),
             "final_equity": valuation["equity"], "valuation_status": valuation["status"],
             "realized_pnl_net": realized, "net_pnl": net, "return_pct": net * 100 / capital if net is not None else None,
@@ -185,20 +211,27 @@ def _display(value):
 
 def render_markdown_report(report):
     account = report["account"]
-    lines = ["# 당일 단타 오프라인 모의거래 리포트", "",
-        f"모드: {report['mode']} / {report['profile']} / {report['dataset_kind']}", "",
+    data_source = report.get("data_source") or report["dataset_kind"]
+    title = "당일 단타 모의거래 리포트" if data_source == "LIVE_RECORDED" else "당일 단타 오프라인 모의거래 리포트"
+    mdd_note = "MDD는 기록된 평가 시점 기준입니다. 평가 공백이 있으면 전체 MDD는 확인 불가로 표시합니다."
+    if account.get("valuation_point_counts_complete") is False:
+        mdd_note += " 평가점 누락률의 분모는 개수를 확인할 수 있는 평가점입니다."
+    lines = [f"# {title}", "",
+        f"모드: {report['mode']} / {report['profile']}",
+        f"데이터 출처: {data_source} · 체결 방식: {_display(report.get('execution_mode'))}", "",
         f"orders_enabled=false · PAPER_READY={str(report['paper_ready']).lower()} · KRX+NXT 통합 시세(INTEGRATED_KR)", "",
-        "합성 데이터와 명시한 가정 비용을 사용한 결과입니다. 실거래 성과가 아닙니다. "
+        "명시한 가정 비용을 적용한 모의 결과입니다. "
         "체결강도·틱 VWAP은 미제공이며 분봉 VWAP은 근사치입니다.", "",
         f"가정 비용: `{canonical(report['fixture_costs'])}` (bps, participation 비율, latency_ms 밀리초)", "",
         f"비용 정책: {report['cost_policy_status']} · {report['cost_policy_notice']}", "",
         "## 계좌 요약", "", "| 항목 | 값 |", "|---|---:|",
-        *[f"| {label} | {_display(account[key])} |" for label, key in (
+        *[f"| {label} | {_display(account.get(key))} |" for label, key in (
             ("초기 자본(원)", "initial_capital"), ("최종 현금(원)", "cash"), ("최종 평가자산(원)", "final_equity"),
             ("평가 상태", "valuation_status"), ("비용 차감 실현 손익(원)", "realized_pnl_net"),
             ("총 순손익(원)", "net_pnl"), ("수익률(%)", "return_pct"), ("완결 거래 수", "completed_trades"),
-            ("승률(%)", "win_rate_pct"), ("관측 최대 낙폭 MDD(%)", "mdd_pct"))], "",
-        "MDD는 기록된 평가 시점 기준입니다. 평가 공백이 있으면 전체 MDD는 확인 불가로 표시합니다.", "",
+            ("승률(%)", "win_rate_pct"), ("최대 낙폭 MDD(%)", "mdd_pct"),
+            ("평가점 누락률(%)", "valuation_missing_pct"), ("관측 구간 낙폭(%)", "mdd_observed_pct"))], "",
+        mdd_note, "",
         f"세션 종료 상태: `{canonical(report['sessions'])}`", "", "## 종목 탐색", ""]
     for scan in report["scan_history"]:
         lines.append(f"- {_kst(scan['at'])} KST")

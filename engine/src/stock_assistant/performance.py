@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
+from pathlib import Path
 
 from .backtest import event_study
 from .identifiers import require_korean_security_symbol
 from .repository import StockRepository
+from .research_data import ResearchData
 
 
 KST = timezone(timedelta(hours=9))
@@ -15,6 +17,7 @@ KST = timezone(timedelta(hours=9))
 
 class PerformanceStatus(StrEnum):
     PENDING_ENTRY = "PENDING_ENTRY"
+    UNTRADABLE_ENTRY = "UNTRADABLE_ENTRY"
     PENDING_HORIZON = "PENDING_HORIZON"
     COMPLETE = "COMPLETE"
 
@@ -37,6 +40,9 @@ class PerformanceRecord:
     exit_date: str | None
     gross_return: Decimal | None
     net_return: Decimal | None
+    scheduled_entry_date: str | None = None
+    entry_tradability: str | None = None
+    round_trip_cost_bps: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.signal_at.tzinfo is None or self.evaluated_at.tzinfo is None:
@@ -55,6 +61,30 @@ class PerformanceEvaluation:
     records: tuple[PerformanceRecord, ...]
 
 
+def _research_store(repository, research_database):
+    path = research_database or repository.database_path.with_name("unified-research-inputs.sqlite3")
+    if research_database is None and not path.is_file():
+        return None
+    return ResearchData(path, source_database=repository.database_path, read_only=True)
+
+
+def _market_sessions(repository, store, *, after, as_of):
+    sessions = set(repository.krx_sessions(after=after, as_of=as_of))
+    through = as_of.astimezone(KST).date()
+    for record in store.records("market_calendar", "KR", as_of=as_of):
+        payload = record["payload"]
+        if payload.get("source") != "TOSS_SECURITIES_OPEN_API":
+            continue
+        calendar = payload["calendar"]
+        for field in ("today", "previousBusinessDay"):
+            session = calendar.get(field, {})
+            if session.get("integrated", {}).get("regularMarket"):
+                day = date.fromisoformat(session["date"])
+                if after < day <= through:
+                    sessions.add(day)
+    return tuple(sorted(sessions))
+
+
 def evaluate_report_performance(
     repository: StockRepository,
     *,
@@ -62,19 +92,36 @@ def evaluate_report_performance(
     evaluated_at: datetime,
     horizons: tuple[int, ...] = (5, 20, 60),
     round_trip_cost_bps: Decimal = Decimal("30"),
+    research_database: Path | None = None,
 ) -> PerformanceEvaluation:
     if evaluated_at.tzinfo is None:
         raise ValueError("evaluated_at must be timezone-aware")
+    market_sessions = None
+    if report_id.startswith("UR-"):
+        store = _research_store(repository, research_database)
+        matching = store.performance_reports(as_of=evaluated_at, report_id=report_id) if store else []
+        report = matching[0] if matching else None
+        if report is not None:
+            signal_date = datetime.fromisoformat(report["published_at"]).astimezone(KST).date()
+            market_sessions = _market_sessions(repository, store, after=signal_date, as_of=evaluated_at)
+    else:
+        report = repository.get_report(report_id)
+    if report is None:
+        raise ValueError("report not found")
+    return _evaluate_report(repository, report, evaluated_at=evaluated_at, horizons=horizons,
+                            round_trip_cost_bps=round_trip_cost_bps, market_sessions=market_sessions)
+
+
+def _evaluate_report(repository, report, *, evaluated_at, horizons, round_trip_cost_bps, market_sessions=None):
     if not horizons or any(value < 1 for value in horizons):
         raise ValueError("horizons must contain positive trading-day counts")
     if len(set(horizons)) != len(horizons):
         raise ValueError("horizons cannot contain duplicates")
     if round_trip_cost_bps < 0:
         raise ValueError("round_trip_cost_bps cannot be negative")
-    report = repository.get_report(report_id)
-    if report is None:
-        raise ValueError("report not found")
-    signal_at = datetime.fromisoformat(str(report["as_of"]))
+    report_id = report["report_id"]
+    unified = market_sessions is not None
+    signal_at = datetime.fromisoformat(report["published_at"] if unified else str(report["as_of"]))
     if signal_at.tzinfo is None:
         raise ValueError("stored report as_of must be timezone-aware")
     if evaluated_at < signal_at:
@@ -93,20 +140,31 @@ def evaluate_report_performance(
     for candidate in candidates:
         if not isinstance(candidate, dict):
             raise ValueError("stored report candidate must be an object")
+        if unified and candidate.get("action_decision") != "BUY_RECOMMENDATION":
+            continue
         symbol = str(candidate["symbol"])
-        bars = repository.bars_since(symbol, start_date=signal_date, as_of=evaluated_at)
+        if all((symbol, horizon) in completed for horizon in horizons):
+            records.extend(completed[(symbol, horizon)] for horizon in horizons)
+            continue
+        price_cutoff = evaluated_at.astimezone(KST) if unified else evaluated_at
+        bars = repository.bars_since(symbol, start_date=signal_date, as_of=price_cutoff)
+        if unified:
+            bars = [bar for bar in bars if bar.source == "KRX_OPEN_API"]
         study = event_study(
             bars,
             signal_date=signal_date,
             horizons=horizons,
             round_trip_cost_bps=round_trip_cost_bps,
+            market_sessions=market_sessions,
         )
         for outcome in study.horizons:
             frozen = completed.get((symbol, outcome.trading_days))
             if frozen is not None:
                 records.append(frozen)
                 continue
-            if study.entry_date is None:
+            if study.entry_tradability == "NOT_TRADABLE":
+                status = PerformanceStatus.UNTRADABLE_ENTRY
+            elif study.entry_date is None:
                 status = PerformanceStatus.PENDING_ENTRY
             elif outcome.exit_date is None:
                 status = PerformanceStatus.PENDING_HORIZON
@@ -116,12 +174,12 @@ def evaluate_report_performance(
                 report_id=report_id,
                 ruleset_version=ruleset_version,
                 symbol=symbol,
-                decision=str(candidate.get("decision") or "UNKNOWN"),
-                strategy=str(candidate.get("strategy") or "UNAVAILABLE"),
+                decision=str(candidate.get("action_decision" if unified else "decision") or "UNKNOWN"),
+                strategy=str(((candidate.get("price") or {}).get("strategy") if unified else candidate.get("strategy")) or "UNAVAILABLE"),
                 expected_holding_period=str(
                     candidate.get("expected_holding_period") or "REVIEW_REQUIRED"
                 ),
-                score=Decimal(str(candidate.get("score", "0"))),
+                score=Decimal(str(candidate.get("total_score" if unified else "score", "0"))),
                 signal_at=signal_at.astimezone(timezone.utc),
                 evaluated_at=evaluated_at.astimezone(timezone.utc),
                 trading_days=outcome.trading_days,
@@ -131,6 +189,9 @@ def evaluate_report_performance(
                 exit_date=outcome.exit_date.isoformat() if outcome.exit_date else None,
                 gross_return=outcome.gross_return,
                 net_return=outcome.net_return,
+                scheduled_entry_date=study.scheduled_entry_date.isoformat() if study.scheduled_entry_date else None,
+                entry_tradability=study.entry_tradability,
+                round_trip_cost_bps=round_trip_cost_bps,
             ))
     repository.save_performance_records(records)
     stored = {
@@ -147,10 +208,11 @@ def evaluate_all_report_performance(
     evaluated_at: datetime,
     horizons: tuple[int, ...] = (5, 20, 60),
     round_trip_cost_bps: Decimal = Decimal("30"),
+    research_database: Path | None = None,
 ) -> tuple[PerformanceEvaluation, ...]:
     if evaluated_at.tzinfo is None:
         raise ValueError("evaluated_at must be timezone-aware")
-    return tuple(
+    legacy = tuple(
         evaluate_report_performance(
             repository,
             report_id=report_id,
@@ -160,6 +222,15 @@ def evaluate_all_report_performance(
         )
         for report_id in repository.list_report_ids(as_of=evaluated_at)
     )
+    store = _research_store(repository, research_database)
+    reports = store.performance_reports(as_of=evaluated_at) if store else []
+    if not reports:
+        return legacy
+    earliest = min(datetime.fromisoformat(report["published_at"]).astimezone(KST).date() for report in reports)
+    sessions = _market_sessions(repository, store, after=earliest, as_of=evaluated_at)
+    return legacy + tuple(_evaluate_report(repository, report, evaluated_at=evaluated_at, horizons=horizons,
+                                           round_trip_cost_bps=round_trip_cost_bps, market_sessions=sessions)
+                          for report in reports)
 
 
 def summarize_performance(records: list[PerformanceRecord]) -> list[dict[str, str | int]]:

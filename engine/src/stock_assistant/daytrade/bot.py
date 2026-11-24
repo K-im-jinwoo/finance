@@ -13,7 +13,7 @@ from . import POLICY_VERSION
 from .contracts import KST, canonical, digest, identifier, instant, number
 from .ledger import DaytradeLedger, FixtureCosts
 from .market import QualityPolicy, normalize
-from .report import build_trading_report, trading_inventory
+from .report import build_trading_report, trading_inventory, valuation_point_counts
 from .risk import RiskState, Phase
 from .scanner import ScannerConfig, orderbook_metrics, scan_rankings, risk_reasons, stock_reference_reasons
 from .strategy import StrategyConfig, StrategyEngine
@@ -371,8 +371,11 @@ class _PaperSession:
         curve=self.meta['equity_curve']
         if len(curve)>64:
             tail=curve[-63:]
+            total, missing, complete = valuation_point_counts(curve[:-63])
             # Preserve honest drawdown uncertainty after diagnostic history truncation.
-            marker={**tail[0],'equity':None,'diagnostic_truncation':True}
+            marker={**tail[0], 'equity':None, 'diagnostic_truncation':True,
+                    'omitted_valuation_points':total, 'omitted_missing_valuation_points':missing,
+                    'valuation_point_counts_complete':complete}
             curve=[marker]+tail
         self.meta['equity_curve']=curve
         self.meta['diagnostic_retention']={'scan_history':scan_limit,'signals':signal_limit,

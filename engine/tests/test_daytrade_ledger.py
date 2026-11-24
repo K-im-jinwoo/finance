@@ -33,18 +33,22 @@ class LedgerTests(unittest.TestCase):
              "at": self.now.isoformat(), "policy_version": POLICY_VERSION, "kind": kind, "data": data}
         return self.ledger.apply(e)
 
-    def book(self, code="005930", ask="100", bid="99", depth="100000", timestamp="AUTO"):
+    def book(self, code="005930", ask="100", bid="99", depth="100000", timestamp="AUTO", *, deeper_asks=()):
         # next event is received one second after self.now
         stamp = (self.now + timedelta(seconds=1)).isoformat() if timestamp == "AUTO" else timestamp
         eid = "book" + str(self.sequence + 1)
         self.emit("MARKET", {"feed": "orderbook", "symbol": code, "received_monotonic": self.sequence + 1,
             "payload": {"currency": "KRW", "timestamp": stamp,
-                "asks": [{"price": ask, "volume": depth}], "bids": [{"price": bid, "volume": depth}]}}, event_id=eid)
+                "asks": [{"price": ask, "volume": depth}, *deeper_asks],
+                "bids": [{"price": bid, "volume": depth}]}}, event_id=eid)
         return eid
 
-    def intent(self, code="005930", side="BUY", quantity=100):
+    def intent(self, code="005930", side="BUY", quantity=100, *, strategy=False):
         eid = "intent" + str(self.sequence + 1)
-        self.emit("INTENT", {"side": side, "symbol": code, "quantity": quantity, "intent_id": eid})
+        data = {"side": side, "symbol": code, "quantity": quantity, "intent_id": eid}
+        if strategy:
+            data["strategy_signal"] = {"action": side}
+        self.emit("INTENT", data, event_id=eid if strategy else None)
         return eid
 
     def buy(self, code="005930", quantity=100, depth="100000"):
@@ -93,6 +97,63 @@ class LedgerTests(unittest.TestCase):
             self.emit("FILL", {"intent_id": i, "quote_event_id": b})
         self.assertEqual(before_fill, self.ledger.state_hash)
         self.assertTrue(self.ledger.audit()["quantity_identity"])
+
+    def test_strategy_fill_uses_affordable_quantity_across_ask_levels(self):
+        # The best ask alone fits 19 shares, but only 5 are available at 50% participation.
+        self.ledger.close()
+        root = self.root / "multi-level"
+        root.mkdir()
+        costs = FixtureCosts("PAPER-COSTS", "2", "2", "20", "2", "0.5", 200)
+        self.ledger = DaytradeLedger.create(root, initial_capital="100000", synthetic=True,
+                                            costs=costs, quality=QualityPolicy(900, 30, 120))
+        self.emit("SESSION", {"normal_session_verified": True})
+        intent = self.intent(quantity=19, strategy=True)
+        self.ledger.close()
+        self.ledger = DaytradeLedger(root)
+        book = self.book(ask="1000", bid="999", depth="10", deeper_asks=({"price": "1100", "volume": "100"},))
+        result = self.emit("FILL", {"intent_id": intent, "quote_event_id": book})
+
+        self.assertEqual(result["status"], "PARTIAL")
+        fill = result["fill"]
+        self.assertEqual(fill["quantity"], 18)
+        self.assertEqual((fill["gross"], fill["fee"], fill["tax"]), (Decimal("19303.86"), Decimal(4), Decimal(0)))
+        self.assertEqual(Decimal(self.ledger.state()["cash"]), Decimal("80692.14"))
+        self.assertEqual(self.ledger.state()["positions"], {"005930": 18})
+        repeat = self.emit("FILL", {"intent_id": intent, "quote_event_id": book})
+        self.assertEqual(repeat["status"], "UNFILLED_QUOTE_ALREADY_CONSUMED")
+        self.assertTrue(self.ledger.audit()["quantity_identity"])
+
+    def test_strategy_fill_respects_smaller_portfolio_budget(self):
+        for code in ("005930", "000660"):
+            self.buy(code, quantity=10000)
+            self.book(code, ask="301", bid="300")
+        intent = self.intent("017960", quantity=25000, strategy=True)
+        book = self.book("017960")
+        result = self.emit("FILL", {"intent_id": intent, "quote_event_id": book})
+
+        self.assertEqual(result["status"], "PARTIAL")
+        self.assertEqual(result["fill"]["quantity"], 24000)
+        self.assertEqual(result["fill"]["gross"], Decimal("2400000"))
+        self.assertTrue(self.ledger.audit()["cash_identity"])
+
+    def test_strategy_fill_skips_when_costs_leave_no_affordable_share(self):
+        self.ledger.close()
+        root = self.root / "zero-affordable-shares"
+        root.mkdir()
+        costs = FixtureCosts("PAPER-COSTS", "2", "2", "20", "2", "0.5", 200)
+        self.ledger = DaytradeLedger.create(root, synthetic=True, costs=costs, quality=QualityPolicy(900, 30, 120))
+        self.emit("SESSION", {"normal_session_verified": True})
+        intent = self.intent(quantity=2, strategy=True)
+        book = self.book(ask="2000000", bid="1999990", depth="2",
+                         deeper_asks=({"price": "2000100", "volume": "2"},))
+        before = self.ledger.state()
+        result = self.emit("FILL", {"intent_id": intent, "quote_event_id": book})
+
+        self.assertEqual(result["status"], "UNFILLED_RISK_BUDGET")
+        self.assertNotIn("fill", result)
+        self.assertFalse(self.ledger.snapshot()["fills"])
+        for key in ("cash", "positions", "intents", "used_quotes"):
+            self.assertEqual(self.ledger.state()[key], before[key])
 
     def test_fourth_distinct_position_is_rejected(self):
         for code in ["005930", "000660", "017960"]:

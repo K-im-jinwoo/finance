@@ -70,6 +70,33 @@ def recent_recommended_symbols(store, *, as_of, cooldown_days: int = 30) -> set[
     return recent
 
 
+def compare_final_candidates(store, candidates, *, as_of, policy_version):
+    """Describe changes from the previous saved report without influencing selection."""
+    # The store compares Julian dates at millisecond precision. Exclude the current report on rebuilds.
+    previous = store.latest("unified_report", "ALL", as_of=as_of - timedelta(milliseconds=1))
+    if previous is None or previous["payload"].get("policy_version") != policy_version:
+        return None
+    prior = {row["symbol"]: row for row in previous["payload"].get("candidates", [])}
+    changes = {}
+    for row in candidates:
+        symbol = row["symbol"]
+        old = prior.get(symbol)
+        if old is None:
+            changes[symbol] = {"new": True}
+            continue
+        change = {}
+        if old.get("total_score") is not None and Decimal(str(old["total_score"])) != Decimal(str(row["total_score"])):
+            change["previous_total_score"] = old["total_score"]
+        elif any(old.get(key) is not None and Decimal(str(old[key])) != Decimal(str(row[key]))
+                 for key in ("financial_score", "news_score", "risk_penalty")):
+            change["component_scores_changed"] = True
+        if old.get("action_decision") and old["action_decision"] != row["action_decision"]:
+            change["previous_decision"] = old["action_decision"]
+        if change:
+            changes[symbol] = change
+    return {"previous_as_of": previous["payload"].get("as_of") or previous["observed_at"], "changes": changes}
+
+
 def _select_diverse(ranked: list[dict], limit: int) -> list[dict]:
     """Select up to limit candidates across LARGE/MID/SMALL liquidity tiers, respecting cooldown."""
     selected: list[dict] = []

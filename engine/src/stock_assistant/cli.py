@@ -118,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     performance_parser = subparsers.add_parser("evaluate-performance")
     performance_parser.add_argument("report_id")
     performance_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    performance_parser.add_argument("--research-database", type=Path)
     performance_parser.add_argument("--as-of", type=datetime.fromisoformat, required=True)
     performance_parser.add_argument("--horizons", default="5,20,60")
     performance_parser.add_argument("--round-trip-cost-bps", type=Decimal, default=Decimal("30"))
@@ -126,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     summary_parser.add_argument("--report-id")
     all_performance_parser = subparsers.add_parser("evaluate-all-performance")
     all_performance_parser.add_argument("--database", type=Path, default=Path("data/stock-assistant.sqlite3"))
+    all_performance_parser.add_argument("--research-database", type=Path)
     all_performance_parser.add_argument("--as-of", type=datetime.fromisoformat, required=True)
     all_performance_parser.add_argument("--horizons", default="5,20,60")
     all_performance_parser.add_argument("--round-trip-cost-bps", type=Decimal, default=Decimal("30"))
@@ -483,6 +485,7 @@ def main(argv: list[str] | None = None) -> int:
                 evaluated_at=args.as_of,
                 horizons=horizons,
                 round_trip_cost_bps=args.round_trip_cost_bps,
+                research_database=args.research_database,
             )
             print(json.dumps(to_json_value(evaluation), ensure_ascii=False, indent=2))
             return 0
@@ -509,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
                 evaluated_at=args.as_of,
                 horizons=horizons,
                 round_trip_cost_bps=args.round_trip_cost_bps,
+                research_database=args.research_database,
             )
             records = repository.list_performance_records()
             print(json.dumps({

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from dataclasses import asdict
 from datetime import date, datetime, time as daytime, timedelta
 import json
@@ -10,8 +11,13 @@ from pathlib import Path
 import queue
 import random
 import signal
+import socket
+import sqlite3
+import ssl
 import threading
 import time
+from traceback import walk_tb
+from urllib.error import HTTPError, URLError
 
 from .bot import BotConfig, _PaperSession
 from .contracts import KST, canonical, digest, instant, number
@@ -26,11 +32,134 @@ from .live_config import merge_live_settings, live_settings as approved_live_set
 from .metadata import StockMetadataCache
 
 
+RESTART_WINDOW_SECONDS = 10 * 60
+MAX_FAILURES_PER_WINDOW = 5
+SAME_ERROR_LIMIT = 3
+RESTART_LOCK_REASON = 'DAEMON_RESTART_LIMIT'
+AUTH_ERRORS = frozenset({
+    'SHARED_TOKEN_EXPIRING_NO_RENEWAL', 'SHARED_AUTH_REJECTED_NO_MUTATION',
+    'SHARED_AUTH_REVOKED_NO_MUTATION', 'AUTH_CACHE_SYMLINK_REFUSED',
+    'EXISTING_BOT_TOKEN_REQUIRED', 'EXISTING_HOME_CHANNEL_REQUIRED',
+    'APPROVED_TARGET_AMBIGUOUS', 'DAYTRADE_CLIENT_ID_FILE',
+    'DAYTRADE_TOKEN_CACHE', 'DAYTRADE_TELEGRAM_PROFILE',
+})
+STATE_ERRORS = frozenset({
+    'SOCKET_OVERLAP_REFUSED', 'APPROVED_PAPER_LEDGER_REQUIRED',
+    'PRIOR_DAY_UNFLATTENED_REQUIRES_RECONCILIATION',
+    'PRIOR_DAY_NOT_CLOSED_REQUIRES_RECONCILIATION', 'EXPLICIT_SESSION_DRIVER_REQUIRED',
+})
+WS_CLOSE_ERRORS = frozenset({'ConnectionClosed', 'ConnectionClosedOK', 'ConnectionClosedError'})
+NETWORK_ERRORS = (ConnectionError, TimeoutError, URLError, socket.gaierror, ssl.SSLError)
+STACK_FILES = frozenset({
+    'daemon.py', 'websocket.py', 'service_runtime.py', 'stream.py', 'ledger.py',
+    'http.py', 'bot.py', 'contracts.py', 'market.py', 'metadata.py', 'report.py',
+    'risk.py', 'scanner.py', 'strategy.py', 'telegram.py', 'live_config.py',
+})
+
+
 def atomic_json(path, value):
     path = Path(path)
     temporary = path.with_name(path.name + '.new')
     temporary.write_text(canonical(value), encoding='utf-8')
     os.replace(temporary, path)
+
+
+def _error_details(error):
+    # Match known internal codes without serializing arbitrary exception strings or locals.
+    detail = error.args[0] if error.args and type(error.args[0]) is str else None
+    ws_close = next((cls.__name__ for cls in type(error).__mro__
+                     if cls.__module__ == 'websockets.exceptions' and cls.__name__ in WS_CLOSE_ERRORS), None)
+    if detail in AUTH_ERRORS or (isinstance(error, HTTPError) and error.code in {401, 403}):
+        category = 'AUTH'
+    elif ws_close or detail == 'CALENDAR_HTTP_FAILED' or isinstance(error, NETWORK_ERRORS):
+        category = 'NETWORK'
+    elif detail in STATE_ERRORS or isinstance(error, (sqlite3.Error, OSError)):
+        category = 'STATE'
+    elif isinstance(error, (KeyError, ValueError, TypeError)):
+        category = 'DATA'
+    else:
+        category = 'UNKNOWN'
+    safe_types = (RuntimeError, ConnectionError, ConnectionResetError, BrokenPipeError, TimeoutError,
+                  HTTPError, URLError, socket.gaierror, ssl.SSLError, sqlite3.Error, sqlite3.DatabaseError,
+                  sqlite3.OperationalError, OSError, PermissionError, json.JSONDecodeError,
+                  ValueError, KeyError, TypeError, SystemExit)
+    error_class = ws_close or next((cls.__name__ for cls in safe_types if type(error) is cls), 'Exception')
+    frames = []
+    external = None
+    for frame, line in walk_tb(error.__traceback__):
+        filename = Path(frame.f_code.co_filename).name
+        module = frame.f_globals.get('__name__', '')
+        if frame.f_code.co_filename == __file__ or (
+                module.startswith('stock_assistant.daytrade.') and filename in STACK_FILES):
+            frames.append({'file': filename, 'line': line})
+        else:
+            external = {'file': '[external]', 'line': line}
+    if not frames and external is not None:
+        frames.append(external)
+    return {'error_code': category, 'error_class': error_class, 'frames': frames[-3:]}
+
+
+class DaemonRestartGuard:
+    """Keep the failure window and stop decision across systemd process restarts."""
+
+    def __init__(self, db):
+        self.db = db
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS daemon_failures (
+                id INTEGER PRIMARY KEY, occurred_at INTEGER NOT NULL,
+                error_code TEXT NOT NULL, payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS daemon_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1), running INTEGER NOT NULL,
+                locked_day TEXT, locked_failure_id INTEGER REFERENCES daemon_failures(id)
+            );
+            INSERT OR IGNORE INTO daemon_state (id, running) VALUES (1, 0);
+        ''')
+
+    def start(self, at):
+        running, day, failure_id = self.db.execute(
+            'SELECT running, locked_day, locked_failure_id FROM daemon_state WHERE id=1').fetchone()
+        if day == at.date().isoformat():
+            raw, = self.db.execute('SELECT payload FROM daemon_failures WHERE id=?', (failure_id,)).fetchone()
+            return None, json.loads(raw)
+        interrupted = None
+        if running:
+            interrupted = self.fail(at, {'error_code': 'STATE', 'error_class': 'UnexpectedTermination', 'frames': []})
+        if interrupted is None or not interrupted[1]['entry_blocked']:
+            with self.db:
+                self.db.execute('UPDATE daemon_state SET running=1 WHERE id=1')
+        return interrupted
+
+    def finish(self):
+        with self.db:
+            self.db.execute('UPDATE daemon_state SET running=0 WHERE id=1')
+
+    def fail(self, at, details):
+        stamp = int(at.timestamp())
+        with self.db:
+            count, same = self.db.execute('''
+                SELECT count(*), count(CASE WHEN error_code=? THEN 1 END)
+                FROM daemon_failures WHERE occurred_at BETWEEN ? AND ?
+            ''', (details['error_code'], stamp - RESTART_WINDOW_SECONDS, stamp)).fetchone()
+            count, same = count + 1, same + 1
+            locked = count > MAX_FAILURES_PER_WINDOW or same >= SAME_ERROR_LIMIT
+            record = {'status': 'RESTART_LOCKED' if locked else 'FAILED', 'at': at.isoformat(),
+                      'entry_blocked': locked, 'orders_enabled': False, **details,
+                      'window_failures': count, 'same_error_failures': same}
+            if locked:
+                # Reserve the single alert in the same transaction as the restart lock.
+                record['notification_status'] = 'RESERVED'
+            failure_id = self.db.execute('INSERT INTO daemon_failures (occurred_at, error_code, payload) VALUES (?,?,?)',
+                                         (stamp, details['error_code'], canonical(record))).lastrowid
+            if locked:
+                self.db.execute('UPDATE daemon_state SET locked_day=?, locked_failure_id=? WHERE id=1',
+                                (at.date().isoformat(), failure_id))
+            self.db.execute('UPDATE daemon_state SET running=0 WHERE id=1')
+        return failure_id, record
+
+    def save(self, failure_id, record):
+        with self.db:
+            self.db.execute('UPDATE daemon_failures SET payload=? WHERE id=?', (canonical(record), failure_id))
 
 
 class DurablePaperSession(LivePaperSession):
@@ -188,6 +317,8 @@ def open_or_resume_session(state_root, day, *, initial_capital='10000000', send_
 
 def finish_session(session, adapter, *, at, end):
     try:
+        # The final CLOCK still evaluates signals. Exit checks may run, but no new buys may start.
+        session._runner.subscription_symbols = set()
         session.on_clock(at=at, received_monotonic=max(time.monotonic(), session.ledger.state()['last_monotonic']))
         if instant(at) >= instant(end):
             session.close_session(at=at, received_monotonic=max(time.monotonic(), session.ledger.state()['last_monotonic']))
@@ -224,6 +355,8 @@ def run_trading_day(state_root, *, transport, clock=lambda: datetime.now(KST),
     day = now.date().isoformat()
     response = transport('/api/v1/market-calendar/KR', {'date': day})
     if hasattr(response, 'status'):
+        if response.status in {401, 403}:
+            raise RuntimeError('SHARED_AUTH_REJECTED_NO_MUTATION')
         if response.status != 200:
             raise RuntimeError('CALENDAR_HTTP_FAILED')
         response = response.payload
@@ -248,15 +381,15 @@ def run_trading_day(state_root, *, transport, clock=lambda: datetime.now(KST),
     if instant(clock()) >= end:
         finish_session(session, None, at=clock(), end=end)
         return {'status': 'CLOSED_WITHOUT_COLLECTION'}
-    session.on_session(normal_session_verified=True, at=clock(),
-        received_monotonic=max(time.monotonic(), session.ledger.state()['last_monotonic']))
     try:
+        session.on_session(normal_session_verified=True, at=clock(),
+            received_monotonic=max(time.monotonic(), session.ledger.state()['last_monotonic']))
         if run_session is None:
             raise ValueError('EXPLICIT_SESSION_DRIVER_REQUIRED')
         return run_session(session, end)
     except BaseException:
         if not session._closed:
-            finish_session(session, None, at=clock(), end=end)
+            finish_session(session, session.ws_adapter, at=clock(), end=end)
         raise
 
 
@@ -562,8 +695,114 @@ class Collector:
             finish_session(session, adapter, at=self.clock(), end=end)
 
 
-def main():
+def _lock_paper_entries(root, at):
+    day = at.date().isoformat()
+    daily = root/'daily'
+    session_root = daily/day
+    if not (session_root/'.runtime/intraday-paper.sqlite3').is_file():
+        session_root = max((path.parent.parent for path in daily.glob('????-??-??/.runtime/intraday-paper.sqlite3')
+                            if path.parent.parent.name < day), default=None)
+        if session_root is None:
+            return 'NO_OPEN_LEDGER', 0
+    with closing(DaytradeLedger(session_root)) as ledger:
+        state = ledger.state()
+        unclosed = sum(quantity > 0 for quantity in state['positions'].values())
+        if session_root.name != day or _closed(state) or state['risk']['session_date'] != day:
+            return 'NO_OPEN_LEDGER', unclosed
+        if RESTART_LOCK_REASON not in state['risk']['reasons'].get('DATA_DEGRADED', []):
+            ledger.apply({'id': f'daemon-restart-lock-{day}', 'kind': 'LOCK',
+                          'sequence': state['last_sequence'] + 1,
+                          'at': max(at, instant(state['risk']['last_at'])).isoformat(),
+                          'policy_version': ledger.meta['policy_version'],
+                          'data': {'lock': 'DATA_DEGRADED', 'reason': RESTART_LOCK_REASON}})
+    return 'APPLIED', unclosed
+
+
+def _alert_restart_lock(send, record):
+    if send is None:
+        return 'UNAVAILABLE'
+    unclosed = record.get('unclosed_positions')
+    holdings = f'{unclosed}종목' if unclosed is not None else '확인 불가'
+    warning = ' · 손절·시간청산 감시 중단' if unclosed != 0 else ''
+    message = (f"장중 모의거래 안전 종료 ({record['error_code']})\n"
+               f"최근 10분 종료 {record['window_failures']}회 · 같은 분류 {record['same_error_failures']}회\n"
+               f"오늘 신규 진입과 자동 재시작을 중단했습니다.\n미청산 보유: {holdings}{warning}")
+    try:
+        result = send(message)
+        if isinstance(result, dict) and result.get('status') == 'SENT':
+            return 'SENT'
+    except Exception:
+        pass  # The reservation is durable even when the delivery outcome is unknown.
+    return 'FAILED'
+
+
+def _write_failure(root, record):
+    print(canonical(record), flush=True)
+    atomic_json(root/'exit.json', record)
+    atomic_json(root/'status.json', record)
+
+
+def _stop_after_limit(root, guard, failure_id, record, at, send):
+    if record.get('ledger_lock') not in {'APPLIED', 'NO_OPEN_LEDGER'}:
+        try:
+            record['ledger_lock'], record['unclosed_positions'] = _lock_paper_entries(root, at)
+            record.pop('ledger_lock_error', None)
+        except Exception as error:
+            record['ledger_lock'] = 'FAILED'
+            record['ledger_lock_error'] = _error_details(error)
+    if failure_id is not None:
+        record['notification_status'] = _alert_restart_lock(send, record)
+        guard.save(failure_id, record)
+    _write_failure(root, record)
+    # systemd uses Restart=on-failure. A successful exit leaves the entry lock in force.
+    return 0
+
+
+def run_service(root, *, stop, clock=lambda: datetime.now(KST)):
     from .service_runtime import ReadOnlyTransport, read_token, telegram_sender
+
+    root = Path(root)
+    with closing(sqlite3.connect(root/'daemon-state.sqlite3')) as db:
+        guard = DaemonRestartGuard(db)
+        at = instant(clock()).astimezone(KST)
+        previous = guard.start(at)
+        if previous is not None:
+            failure_id, record = previous
+            if record['entry_blocked']:
+                stop.set()
+                sender = None
+                if failure_id is not None:
+                    try:
+                        sender = telegram_sender()
+                    except Exception as error:
+                        record['notification_error'] = _error_details(error)
+                return _stop_after_limit(root, guard, failure_id, record, at, sender)
+            _write_failure(root, record)
+        sender = None
+        try:
+            transport = ReadOnlyTransport(read_token, stop)
+            sender = telegram_sender()
+            collector = Collector(transport, read_token, sender, stop, root, clock=clock)
+            result = run_trading_day(root, transport=transport, clock=clock, send_fn=sender, stop=stop,
+                sleep=lambda seconds: stop.wait(seconds), run_session=collector.run,
+                live_settings=approved_live_settings())
+        except (Exception, SystemExit) as error:
+            if not (type(error) is RuntimeError and error.args == ('STOPPING',) and stop.is_set()):
+                at = instant(clock()).astimezone(KST)
+                failure_id, record = guard.fail(at, _error_details(error))
+                if record['entry_blocked']:
+                    stop.set()
+                    return _stop_after_limit(root, guard, failure_id, record, at, sender)
+                _write_failure(root, record)
+                return 1
+            result = {'status': 'STOPPED'}
+        guard.finish()
+        atomic_json(root/'exit.json', result)
+        print(canonical(result), flush=True)
+        return 0
+
+
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--state-root', required=True)
     args = parser.parse_args()
@@ -573,25 +812,21 @@ def main():
     # flock is process-scoped; a second manually started instance never shares a ledger/socket.
     import fcntl
     root = Path(args.state_root)
-    root.mkdir(parents=True, exist_ok=True)
-    with (root/'service.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        transport = ReadOnlyTransport(read_token, stop)
-        sender = telegram_sender()
-        collector = Collector(transport, read_token, sender, stop, root)
-        try:
-            result = run_trading_day(root, transport=transport, send_fn=sender, stop=stop,
-                sleep=lambda s: stop.wait(s), run_session=collector.run,live_settings=approved_live_settings())
-            atomic_json(root/'exit.json', result)
-            print(canonical(result), flush=True)
-        except Exception as error:
-            # No raw exception text: upstream URLs may contain credentials.
-            import traceback
-            atomic_json(root/'exit.json', {'status': 'FAILED', 'error_class': type(error).__name__,
-                'frames': [{'file': Path(f.filename).name, 'line': f.lineno} for f in traceback.extract_tb(error.__traceback__)]})
-            print(canonical({'status': 'FAILED', 'error_class': type(error).__name__}), flush=True)
-            raise SystemExit(1) from None
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        with (root/'service.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(canonical({'status': 'ALREADY_RUNNING'}), flush=True)
+                return 0
+            return run_service(root, stop=stop)
+    except (OSError, sqlite3.Error, ValueError) as error:
+        # A broken state store cannot safely budget another restart.
+        print(canonical({'status': 'STATE_STORE_UNAVAILABLE', 'entry_blocked': True,
+                         'at': datetime.now(KST).isoformat(), **_error_details(error)}), flush=True)
+        return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

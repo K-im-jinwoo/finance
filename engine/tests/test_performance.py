@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from stock_assistant.performance import (
 )
 from stock_assistant.reports import build_candidate_report, report_to_dict
 from stock_assistant.repository import StockRepository
+from stock_assistant.research_data import ResearchData
 from tests.helpers import make_bars
 
 
@@ -104,6 +106,65 @@ class PerformanceTests(unittest.TestCase):
                 horizons=(5,),
             )
             self.assertEqual([item.report_id for item in evaluations], [report_id])
+
+    def test_unified_recommendation_uses_publication_and_completes_three_horizons(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = StockRepository(Path(directory) / "stock.sqlite3")
+            store = ResearchData(Path(directory) / "unified-research-inputs.sqlite3", source_database=repo.database_path)
+            published = datetime(2026, 1, 9, 15, 30, tzinfo=UTC)  # Saturday KST.
+            report_id = "UR-" + "a" * 24
+            store.put("unified_report", "ALL", {
+                "report_id": report_id, "contract": "UNIFIED_RESEARCH_V1", "policy_version": "unified-example",
+                "as_of": "2026-01-08T03:00:00+00:00",
+                "candidates": [{"symbol": "005930", "action_decision": "BUY_RECOMMENDATION",
+                                "total_score": "85", "price": {"strategy": "MOMENTUM_CONTINUATION"}},
+                               {"symbol": "000660", "action_decision": "WATCH", "total_score": "74.5"}],
+            }, observed_at=published)
+            bars = [replace(bar, source="KRX_OPEN_API") for bar in make_bars(count=120) if bar.trade_date.weekday() < 5]
+            repo.save_bars(bars)
+            evaluated_at = datetime(2026, 5, 1, tzinfo=UTC)
+            result, = evaluate_all_report_performance(repo, evaluated_at=evaluated_at)
+            self.assertEqual(result.report_id, report_id)
+            for record in result.records:
+                self.assertEqual(record.signal_at, published)
+                self.assertEqual(record.entry_date, "2026-01-12")
+                self.assertEqual(record.entry_tradability, "TRADABLE")
+                self.assertEqual(record.status, PerformanceStatus.COMPLETE)
+                self.assertEqual(record.round_trip_cost_bps, Decimal("30"))
+                self.assertEqual(record.net_return, record.gross_return - Decimal("0.003"))
+            self.assertEqual([r.trading_days for r in result.records], [5, 20, 60])
+            self.assertEqual([r["sample_count"] for r in summarize_performance(repo.list_performance_records(report_id=report_id))], [1, 1, 1])
+            self.assertEqual(evaluate_report_performance(repo, report_id=report_id, evaluated_at=evaluated_at).records,
+                             result.records)
+
+    def test_unified_does_not_slide_missing_or_non_tradable_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = StockRepository(Path(directory) / "stock.sqlite3")
+            store = ResearchData(Path(directory) / "unified-research-inputs.sqlite3", source_database=repo.database_path)
+            published = datetime(2026, 1, 9, 3, tzinfo=UTC)
+            report_id = "UR-" + "b" * 24
+            store.put("unified_report", "ALL", {"report_id": report_id, "contract": "UNIFIED_RESEARCH_V1",
+                "as_of": published.isoformat(), "policy_version": "unified-example",
+                "candidates": [{"symbol": "005930", "action_decision": "BUY_RECOMMENDATION", "total_score": "85"}],
+            }, observed_at=published)
+            target = date(2026, 1, 12)
+            reference = [replace(bar, source="KRX_OPEN_API") for bar in make_bars("000660") if bar.trade_date.weekday() < 5]
+            store.put("market_calendar", "KR", {"source": "TOSS_SECURITIES_OPEN_API", "calendar": {
+                "today": {"date": target.isoformat(), "integrated": {"regularMarket": True}},
+            }}, observed_at=datetime(2026, 1, 12, 3, tzinfo=UTC))
+            available = [bar for bar in reference if bar.trade_date != target]
+            repo.save_bars(available + [replace(bar, symbol="005930") for bar in available])
+            at = datetime(2026, 3, 3, tzinfo=UTC)
+            def evaluate():
+                return evaluate_report_performance(repo, report_id=report_id, evaluated_at=at, horizons=(5,)).records[0]
+            missing = evaluate()
+            self.assertEqual(missing.scheduled_entry_date, target.isoformat())
+            self.assertEqual(missing.entry_tradability, "UNCONFIRMED")
+            self.assertIsNone(missing.entry_price)
+            entry = next(bar for bar in reference if bar.trade_date == target)
+            repo.save_bars([replace(entry, symbol="005930", volume=0)])
+            self.assertEqual(evaluate().entry_tradability, "NOT_TRADABLE")
+            self.assertIsNone(evaluate().net_return)
 
 
 if __name__ == "__main__":

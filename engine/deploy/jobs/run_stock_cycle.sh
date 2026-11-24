@@ -138,6 +138,12 @@ if [ "${STOCK_UNIFIED_ENABLED:-false}" = true ]; then
     --usage-database /var/lib/stock/news-api-usage.sqlite3 \
     --toss-client-id-file /run/secrets/toss-client-id --toss-client-secret-file /run/secrets/toss-client-secret \
     $actionable_args --format text)
+  if [ "$mode" = weekly ]; then
+    stage=PERFORMANCE
+    compose exec -T stock-assistant python -m stock_assistant evaluate-all-performance \
+      --database "$database" --research-database /var/lib/stock/unified-research-inputs.sqlite3 \
+      --as-of "$(date +%Y-%m-%dT%H:%M:%S.%6N%:z)" >/dev/null
+  fi
   printf '%s\n' "$unified_output"
   chart_output=""
   chart_failed=false

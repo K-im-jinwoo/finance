@@ -44,6 +44,53 @@ class SwingThemeTests(unittest.TestCase):
         self.assertIsNone(swing_price_signal(bars('005930', close=100), values))
         self.assertIsNone(swing_price_signal(bars('005930'), values[:-1] + [values[-1] - 1]))
 
+    def premarket_fixture(self, *, regular=True):
+        now = datetime(2026, 9, 22, 23, 35, tzinfo=timezone.utc)
+        session = date(2026, 9, 22)
+        market = Mock()
+        market.calendar.return_value = {
+            'today': {'date': '2026-09-23', 'integrated': {'regularMarket':
+                {'endTime': '2026-09-23T15:30:00+09:00'} if regular else None}},
+            'previousBusinessDay': {'date': session.isoformat(), 'integrated': {'regularMarket': True}},
+        }
+        krx, news, management = Mock(), Mock(), Mock(return_value=set())
+        def refresh():
+            return refresh_swing(self.repo, self.store, krx_client=krx, market_client=market,
+                                 news_client=news, management_list=management, clock=lambda: now)
+        return now, session, refresh, krx, news, management
+
+    def test_premarket_report_uses_previous_session_and_reuses_publication(self):
+        now, session, refresh, _, news, management = self.premarket_fixture()
+        history = tuple(session - timedelta(days=n) for n in range(20, -1, -1))
+        self.repo.save_bars(bars('005930', (*history, date(2026, 9, 23)), at=now))
+        self.repo.save_daily_check({'status': 'READY', 'target_date': '2026-09-22', 'checked_at': now.isoformat()})
+        report = refresh()
+        self.assertEqual(report['status'], 'READY')
+        self.assertEqual((report['price_session'], report['orders_enabled']), ('2026-09-22', False))
+        self.assertEqual(report['report_id'], swing_report_id(session))
+        self.assertEqual(refresh(), report)
+        self.assertEqual(len(self.store.records('swing_report', '2026-09-22', as_of=now)), 1)
+        management.assert_not_called()
+        news.archive_batch.assert_not_called()
+
+    def test_premarket_skip_on_non_trading_day_without_screening(self):
+        _, _, refresh, krx, news, management = self.premarket_fixture(regular=False)
+        self.assertEqual(refresh(), {
+            'contract': SWING_POLICY, 'status': 'SKIPPED', 'reason': 'SWING_NON_TRADING_DAY',
+            'orders_enabled': False, 'candidates': [],
+        })
+        self.assertFalse(krx.mock_calls or news.mock_calls or management.mock_calls)
+
+    def test_premarket_requires_latest_ready_check_for_the_exact_session(self):
+        now, _, refresh, krx, news, _ = self.premarket_fixture()
+        self.assertEqual(refresh()['reason'], 'SWING_KRX_DAILY_UNVERIFIED')
+        for offset, (status, target) in enumerate((('FAILED', '2026-09-22'), ('READY', '2026-09-21')), start=1):
+            with self.subTest(status=status, target=target):
+                checked = now - timedelta(minutes=3 - offset)
+                self.repo.save_daily_check({'status': status, 'target_date': target, 'checked_at': checked.isoformat()})
+                self.assertEqual(refresh()['reason'], 'SWING_KRX_DAILY_UNVERIFIED')
+        self.assertFalse(krx.mock_calls or news.mock_calls)
+
     def test_kind_management_snapshot_rejects_truncated_list(self):
         html = ('<table class="bbs_tb"><tr><th>종목명</th><th>종목코드</th></tr>'
                 '<tr><td>예시기업</td><td>005930</td><td>2026-11-23</td></tr></table>')

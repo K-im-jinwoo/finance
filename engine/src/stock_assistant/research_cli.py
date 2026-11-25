@@ -155,7 +155,8 @@ def main(argv=None) -> int:
                        for p in protected):
                     raise ValueError("news usage database must be separate from source and research data")
                 client = NaverNewsClient(_credential(args.client_id_file), _credential(args.client_secret_file),
-                                         budget=NewsApiBudget(args.usage_database))
+                                         budget=NewsApiBudget(args.usage_database),
+                                         budget_scope="SWING" if args.command == "refresh-swing" else "DEFAULT")
                 if args.command == "collect-news":
                     result = collect_targeted_news(repository, store, client, limit=args.limit)
                 elif args.command == "collect-archive":

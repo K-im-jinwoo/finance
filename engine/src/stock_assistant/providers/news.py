@@ -121,7 +121,7 @@ def normalize_naver_news(payload: dict, *, observed_at: datetime) -> list[NewsAr
 
 class NaverNewsClient:
     def __init__(self, client_id: str, client_secret: str, *, fetch_json: Callable = get_json,
-                 clock: Callable | None = None, budget=None, monotonic=monotonic, sleeper=sleep):
+                 clock: Callable | None = None, budget=None, budget_scope="DEFAULT", monotonic=monotonic, sleeper=sleep):
         if any(not value.strip() or len(value) > 256 or any(ord(c) < 32 for c in value)
                for value in (client_id, client_secret)):
             raise AuthenticationError("valid Naver client credential files are required")
@@ -131,6 +131,7 @@ class NaverNewsClient:
         # Lazy import keeps the shared provider exception definitions independent.
         from ..news_cost import NewsApiBudget
         self._budget = budget if budget is not None else NewsApiBudget()
+        self._budget_scope = budget_scope
         self._archive_remaining = 0
         self._monotonic, self._sleep = monotonic, sleeper
         self._last_request_end = None
@@ -154,7 +155,7 @@ class NaverNewsClient:
             self._last_request_end = self._monotonic()
 
     def archive_batch(self, calls: int):
-        self._budget.reserve(calls, at=self._clock())
+        self._budget.reserve(calls, at=self._clock(), scope=self._budget_scope)
         self._archive_remaining = calls
 
     def archive_page(self, *, query: str, start: int) -> NewsPage:
@@ -187,7 +188,7 @@ class NaverNewsClient:
             raise ValueError("news query must contain 1 to 80 characters")
         if len(set(queries)) != len(queries):
             raise ValueError("one to five unique news queries are required")
-        self._budget.reserve(len(queries), at=self._clock())
+        self._budget.reserve(len(queries), at=self._clock(), scope=self._budget_scope)
         articles = []
         for query in queries:
             response = self._request(query=query, display=display, start=1)

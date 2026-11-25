@@ -1,8 +1,8 @@
 [Unit]
-Description=Run swing research after the Korean equity session
+Description=Run premarket swing research using the previous confirmed KRX session
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 18:30:00 Asia/Seoul
+OnCalendar=Mon..Fri *-*-* 08:35:00 Asia/Seoul
 Unit=stock-swing@daily.service
 
 [Install]

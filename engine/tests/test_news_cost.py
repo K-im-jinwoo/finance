@@ -53,6 +53,49 @@ class NewsBudgetTests(unittest.TestCase):
         return NaverNewsClient('fixture-id', 'fixture-secret', fetch_json=fetch,
                                budget=self.guard, clock=lambda: NOW)
 
+    def test_legacy_ledger_separates_swing_and_default_cooldowns_but_shares_totals(self):
+        self.initialize(10, 30)
+        with closing(sqlite3.connect(self.path)) as db:
+            self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='news_api_cooldowns'").fetchone())
+        self.guard.reserve(3, at=NOW)
+        self.guard.reserve(5, at=NOW + timedelta(minutes=10), scope='SWING')
+        self.assertEqual(self.counts(), (18, 38))
+        for scope in ('DEFAULT', 'SWING'):
+            with self.subTest(scope=scope), self.assertRaisesRegex(NewsCostBlocked, 'NEWS_REFRESH_COOLDOWN'):
+                self.guard.reserve(1, at=NOW + timedelta(minutes=11), scope=scope)
+        self.guard.reserve(2, at=NOW + timedelta(hours=1))
+        with self.assertRaisesRegex(NewsCostBlocked, 'NEWS_REFRESH_COOLDOWN'):
+            self.guard.reserve(1, at=NOW + timedelta(hours=1), scope='SWING')
+        self.guard.reserve(4, at=NOW + timedelta(minutes=70), scope='SWING')
+        self.assertEqual(self.counts(), (24, 44))
+
+    def test_swing_keeps_global_budget_clock_policy_and_provider_halt(self):
+        self.initialize(DAY_CAP - 5, MONTH_CAP - 6)
+        with self.assertRaises(ValueError):
+            self.guard.reserve(1, at=NOW, scope='UNTRACKED')
+        self.guard.reserve(2, at=NOW)
+        self.free.side_effect = NewsCostBlocked('NEWS_FREE_POLICY_UNCONFIRMED')
+        with self.assertRaisesRegex(NewsCostBlocked, 'NEWS_FREE_POLICY_UNCONFIRMED'):
+            self.guard.reserve(3, at=NOW + timedelta(minutes=10), scope='SWING')
+        self.free.side_effect = None
+        self.guard.reserve(3, at=NOW + timedelta(minutes=10), scope='SWING')
+        with self.assertRaisesRegex(NewsCostBlocked, 'NEWS_USAGE_CLOCK_REVERSED'):
+            self.guard.reserve(1, at=NOW + timedelta(minutes=9))
+        with self.assertRaisesRegex(NewsCostBlocked, 'NEWS_COST_LIMIT_REACHED'):
+            self.guard.reserve(1, at=NOW + timedelta(hours=1))
+        self.assertEqual(self.counts(), (DAY_CAP, MONTH_CAP - 1))
+        self.guard.halt_provider(at=NOW + timedelta(hours=1))
+        with self.assertRaisesRegex(NewsCostBlocked, 'NEWS_PROVIDER_QUOTA_BLOCKED'):
+            self.guard.reserve(1, at=NOW + timedelta(days=1), scope='SWING')
+
+    def test_swing_news_client_archive_reserves_under_swing_scope(self):
+        self.initialize()
+        self.guard.reserve(5, at=NOW)
+        client = NaverNewsClient('fixture', 'fixture', budget=self.guard, budget_scope='SWING',
+                                 clock=lambda: NOW + timedelta(minutes=10))
+        client.archive_batch(15)
+        self.assertEqual(self.counts(), (20, 20))
+
     def test_batch_reserved_before_first_call_with_article_count_not_charged(self):
         self.initialize(7, 7)
         def fetch(*args, **kwargs):

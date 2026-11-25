@@ -15,6 +15,7 @@ DAILY_LIMIT = 2_000
 MONTHLY_LIMIT = 50_000
 MAX_UNIFIED_NEWS_CALLS = 25
 COOLDOWN = timedelta(hours=1)
+COOLDOWN_SCOPES = frozenset(("DEFAULT", "SWING"))
 KST = timezone(timedelta(hours=9))
 POLICY_URLS = ("https://guide.ncloud-docs.com/docs/apihub-overview",
                "https://guide.ncloud-docs.com/docs/apihub-spec")
@@ -92,9 +93,11 @@ class NewsApiBudget:
                                (local_day, local_day[:7], used_today, used_month,
                                 at.astimezone(timezone.utc).isoformat(), ""))
 
-    def reserve(self, calls: int, *, at: datetime, cooldown=True):
+    def reserve(self, calls: int, *, at: datetime, cooldown=True, scope="DEFAULT"):
         if at.tzinfo is None or type(calls) is not int or not 1 <= calls <= MAX_UNIFIED_NEWS_CALLS:
             raise ValueError("invalid news call reservation")
+        if not isinstance(scope, str) or scope not in COOLDOWN_SCOPES:
+            raise ValueError("invalid news cooldown scope")
         if self.path.is_symlink() or not self.path.is_file():
             raise NewsCostBlocked("NEWS_USAGE_STATE_UNAVAILABLE")
         now = at.astimezone(timezone.utc)
@@ -109,12 +112,20 @@ class NewsApiBudget:
                     raise ValueError("missing budget state")
                 old_day, old_month, daily, monthly, last, halted = rows[0]
                 old_date = date.fromisoformat(old_day)
-                last_at = datetime.fromisoformat(last)
-                if (old_day != old_date.isoformat() or old_month != old_day[:7] or last_at.tzinfo is None
+                connection.execute("CREATE TABLE IF NOT EXISTS news_api_cooldowns "
+                                   "(scope TEXT PRIMARY KEY, last_reserved_at TEXT NOT NULL)")
+                last_by_scope = {"DEFAULT": datetime.fromisoformat(last)}
+                for saved_scope, timestamp in connection.execute(
+                        "SELECT scope,last_reserved_at FROM news_api_cooldowns"):
+                    if saved_scope not in COOLDOWN_SCOPES or saved_scope == "DEFAULT":
+                        raise ValueError("invalid stored news cooldown scope")
+                    last_by_scope[saved_scope] = datetime.fromisoformat(timestamp)
+                if (old_day != old_date.isoformat() or old_month != old_day[:7]
+                        or any(moment.tzinfo is None for moment in last_by_scope.values())
                         or any(type(n) is not int or n < 0 for n in (daily, monthly)) or monthly < daily
                         or halted not in ("", old_month)):
                     raise ValueError("invalid budget state")
-                if day < old_day or now < last_at:
+                if day < old_day or now < max(last_by_scope.values()):
                     raise NewsCostBlocked("NEWS_USAGE_CLOCK_REVERSED")
                 if halted == month:
                     raise NewsCostBlocked("NEWS_PROVIDER_QUOTA_BLOCKED")
@@ -122,13 +133,19 @@ class NewsApiBudget:
                 monthly = monthly if old_month == month else 0
                 if daily + calls > DAILY_LIMIT or monthly + calls > MONTHLY_LIMIT:
                     raise NewsCostBlocked("NEWS_COST_LIMIT_REACHED")
-                if cooldown and now - last_at < COOLDOWN:
+                scope_last_at = last_by_scope.get(scope)
+                if cooldown and scope_last_at is not None and now - scope_last_at < COOLDOWN:
                     raise NewsCostBlocked("NEWS_REFRESH_COOLDOWN")
                 self.free_check()
                 # Commit the entire batch before the first request. Never refund on failure.
                 connection.execute("UPDATE news_api_budget SET day=?,month=?,daily_used=?,monthly_used=?,"
-                                   "last_reserved_at=?,halted_month='' WHERE id=1",
-                                   (day, month, daily + calls, monthly + calls, now.isoformat()))
+                                   "halted_month='' WHERE id=1", (day, month, daily + calls, monthly + calls))
+                if scope == "DEFAULT":
+                    connection.execute("UPDATE news_api_budget SET last_reserved_at=? WHERE id=1", (now.isoformat(),))
+                else:
+                    connection.execute("INSERT INTO news_api_cooldowns VALUES(?,?) ON CONFLICT(scope) "
+                                       "DO UPDATE SET last_reserved_at=excluded.last_reserved_at",
+                                       (scope, now.isoformat()))
         except NewsCostBlocked:
             raise
         except Exception:

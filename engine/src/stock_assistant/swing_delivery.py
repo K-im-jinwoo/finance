@@ -156,6 +156,9 @@ def main(argv=None):
         if not isinstance(report, dict) or report.get('contract') != SWING_POLICY:
             raise ValueError('SWING_REPORT_POLICY_MISMATCH')
         if args.mode == 'daily':
+            if report.get('status') == 'SKIPPED':
+                print('STOCK_SWING status=SKIPPED', file=sys.stderr)
+                return 0
             if report.get('status') != 'READY':
                 print('STOCK_SWING status=VERIFY_PENDING', file=sys.stderr)
                 return 1

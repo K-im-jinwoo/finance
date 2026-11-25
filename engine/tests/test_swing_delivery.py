@@ -1,17 +1,19 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from stock_assistant.swing_delivery import (
-    deliver_once, render_swing, summarize_with_hermes, swing_route,
+    SWING_POLICY, deliver_once, main, render_swing, summarize_with_hermes, swing_route,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +22,24 @@ BASH = str(GIT_BASH) if GIT_BASH.is_file() else shutil.which('bash')
 
 
 class SwingDeliveryTests(unittest.TestCase):
+    def test_daily_skips_holiday_but_other_nonready_reports_fail(self):
+        env = {'TELEGRAM_HOME_CHANNEL': '-100123', 'TELEGRAM_SWING_CHAT_ID': '123456789',
+               'TELEGRAM_SWING_BOT_TOKEN': '10002:' + 'b' * 24}
+        for status, expected in (('SKIPPED', 0), ('VERIFY_PENDING', 1)):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                ledger = root / 'delivery.sqlite3'
+                report = {'contract': SWING_POLICY, 'status': status, 'orders_enabled': False, 'candidates': []}
+                stderr = io.StringIO()
+                with (patch.dict(os.environ, env, clear=True),
+                      patch.dict('sys.modules', {'dotenv': Mock(dotenv_values=lambda _: {})}),
+                      patch('sys.stdin', Mock(buffer=io.BytesIO(json.dumps(report).encode()))),
+                      patch('sys.stderr', stderr), patch('stock_assistant.swing_delivery.TelegramSender') as sender):
+                    self.assertEqual(main(['daily', '--profile', str(root), '--ledger', str(ledger)]), expected)
+                self.assertEqual(stderr.getvalue().strip(), f'STOCK_SWING status={status}')
+                sender.assert_not_called()
+                self.assertFalse(ledger.exists())
+
     def test_dedicated_topic_cannot_alias_longterm_destination(self):
         env = {'TELEGRAM_HOME_CHANNEL': '-100123'}
         with self.assertRaisesRegex(ValueError, 'SWING_TELEGRAM_ROUTE_NOT_DISTINCT'):
@@ -91,6 +111,9 @@ esac
 ''', encoding='utf-8', newline='\n')
             sender = root / 'swing-python'
             sender.write_text('''#!/bin/sh
+if [ "$3" = stock_assistant.swing_job ]; then
+  exec "$SWING_TEST_PYTHON" "$@"
+fi
 printf 'swing:%s\\n' "$4" >> "$SWING_TEST_LOG"
 [ "$4" = check ] || cat >> "$SWING_TEST_LOG"
 ''', encoding='utf-8', newline='\n')
@@ -98,9 +121,10 @@ printf 'swing:%s\\n' "$4" >> "$SWING_TEST_LOG"
                 path.chmod(0o700)
             env = {**os.environ, 'PATH': str(root) + os.pathsep + os.environ['PATH'],
                    'STOCK_SCHEDULE_ENV_FILE': config.as_posix(), 'STOCK_CANDIDATE_ENV_FILE': config.as_posix(),
-                   'STOCK_SWING_PYTHON': sender.as_posix(), 'SWING_TEST_LOG': log.as_posix()}
-            for mode in ('daily', 'weekly'):
-                result = subprocess.run([BASH, (ROOT / 'deploy/jobs/stock-swing.sh').as_posix(), mode],
+                   'STOCK_SWING_PYTHON': sender.as_posix(), 'SWING_TEST_LOG': log.as_posix(),
+                   'SWING_TEST_PYTHON': Path(sys.executable).as_posix()}
+            for args in (('daily', '--once'), ('weekly',)):
+                result = subprocess.run([BASH, (ROOT / 'deploy/jobs/stock-swing.sh').as_posix(), *args],
                                         env=env, capture_output=True, text=True, timeout=20)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, '')

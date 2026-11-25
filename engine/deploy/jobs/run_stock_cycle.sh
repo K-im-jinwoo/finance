@@ -7,15 +7,15 @@ trap 'code=$?; if [ "$code" -ne 0 ]; then printf "STOCK_CYCLE status=FAILED stag
 mode="${1:-}"
 morning_cutoff=""
 case "$mode" in
-  morning-window)
-    mode=morning
+  morning-window|daily-refresh-window)
+    mode=${mode%-window}
     morning_cutoff="${2:-}"
     case "$morning_cutoff" in
       ''|*[!0-9]*) echo "Invalid morning daily cutoff" >&2; exit 2 ;;
     esac
     ;;
   morning|evening|weekly|daily-refresh) ;;
-  *) echo "usage: run_stock_cycle.sh morning|evening|weekly|daily-refresh|morning-window CUTOFF_EPOCH" >&2; exit 2 ;;
+  *) echo "usage: run_stock_cycle.sh morning|evening|weekly|daily-refresh|(morning-window|daily-refresh-window) CUTOFF_EPOCH" >&2; exit 2 ;;
 esac
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

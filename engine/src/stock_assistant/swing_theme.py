@@ -86,18 +86,21 @@ def refresh_swing(repository, store, *, krx_client, market_client, news_client,
     clock = clock or (lambda: datetime.now(timezone.utc))
     collect_calendar(store, market_client, clock=clock)
     now = clock()
-    session, closed = market_session(store, as_of=now)
-    # Run the daily track only for a confirmed completed regular session today.
     pending = {'contract': SWING_POLICY, 'status': 'VERIFY_PENDING', 'orders_enabled': False, 'candidates': []}
-    if session is None or closed is None or session != now.astimezone(KST).date():
-        return {**pending, 'reason': 'SWING_AWAITING_MARKET_CLOSE'}
+    calendar = store.latest('market_calendar', 'KR', as_of=now)
+    if calendar and calendar['payload']['date'] == now.astimezone(KST).date().isoformat():
+        today = calendar['payload']['calendar']['today']
+        if not today['integrated'].get('regularMarket'):
+            return {**pending, 'status': 'SKIPPED', 'reason': 'SWING_NON_TRADING_DAY'}
+    session, _ = market_session(store, as_of=now)
+    check = repository.latest_daily_check(as_of=now)
+    if session is None or not check or check.get('status') != 'READY' or check.get('target_date') != session.isoformat():
+        return {**pending, 'reason': 'SWING_KRX_DAILY_UNVERIFIED'}
     previous = store.latest('swing_report', session.isoformat(), as_of=now)
     if previous:
         return previous['payload']
-    check = repository.latest_daily_check(as_of=now)
-    if not check or check.get('status') != 'READY' or check.get('target_date') != session.isoformat():
-        return {**pending, 'reason': 'SWING_KRX_DAILY_UNVERIFIED'}
-    sessions = repository.krx_sessions(after=session - timedelta(days=60), as_of=now)[-21:]
+    sessions = tuple(day for day in repository.krx_sessions(after=session - timedelta(days=60), as_of=now)
+                     if day <= session)[-21:]
     if len(sessions) != 21 or sessions[-1] != session:
         return {**pending, 'reason': 'SWING_KRX_HISTORY_INCOMPLETE'}
 

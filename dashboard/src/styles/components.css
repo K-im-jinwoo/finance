@@ -35,7 +35,7 @@
   padding: var(--space-2);
   border-radius: var(--radius-control);
   color: var(--text-secondary);
-  font-weight: 500;
+  font-weight: 600;
   text-decoration: none;
   line-height: 1.25;
 }
@@ -110,7 +110,27 @@
   gap: var(--space-4);
   min-width: 0;
 }
-.overview-card > header a { display: inline-flex; align-items: center; gap: var(--space-1); font-size: 14px; }
+.action-link, .experiment-tabs a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 28px;
+}
+.overview-card > header a { font-size: 14px; }
+.experiment-tabs a {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.experiment-tabs a:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.experiment-tabs a[aria-current="page"] {
+  border-color: var(--accent-primary);
+  background: var(--status-ok-bg);
+  color: var(--status-ok);
+  font-weight: 600;
+}
 .status-band, .notice {
   min-width: 0;
   padding: var(--space-3) var(--space-4);
@@ -157,13 +177,20 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-panel);
   overflow: hidden;
-  background: var(--border-subtle);
+  background: var(--bg-surface);
+}
+.metric-grid[data-metric-count="4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (min-width: 768px) {
+  .metric-grid[data-metric-count="5"] { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .metric-grid[data-metric-count="5"] > .metric { grid-column: span 2; }
+  .metric-grid[data-metric-count="5"] > .metric:nth-child(n + 4) { grid-column: span 3; }
 }
 .metric {
   min-width: 0;
   min-height: 98px;
   padding: var(--space-3) var(--space-4);
   background: var(--bg-surface);
+  outline: 1px solid var(--border-subtle);
   overflow-wrap: anywhere;
 }
 .metric dt { color: var(--text-secondary); font-size: 14px; }
@@ -185,7 +212,7 @@ table { border-collapse: collapse; width: 100%; font-size: 14px; text-align: sta
 thead { background: var(--bg-elevated); }
 th, td { padding: var(--space-2) var(--space-3); text-align: start; vertical-align: top; border-bottom: 1px solid var(--border-subtle); }
 thead th { color: var(--text-secondary); white-space: nowrap; font-weight: 600; }
-tbody th { font-weight: 500; }
+tbody th { font-weight: 400; }
 tbody tr:hover { background: var(--bg-elevated); }
 table td.mono, table td > .mono { white-space: nowrap; }
 .table-sort {
@@ -203,6 +230,8 @@ table td.mono, table td > .mono { white-space: nowrap; }
   border-bottom: 1px solid var(--border-subtle);
   overflow-wrap: anywhere;
 }
+.evidence-list a { min-height: 28px; }
+.evidence-list a.stack { justify-content: center; }
 .evidence-list > li:last-child { border-bottom: 0; }
 .disclosure-body { margin-block-end: var(--space-2); }
 
@@ -270,6 +299,7 @@ table td.mono, table td > .mono { white-space: nowrap; }
   .global-bar { padding-inline: var(--space-4); }
   .mobile-menu { display: inline-flex; }
   .icon-button { min-width: 44px; }
+  .action-link, .experiment-tabs a, .evidence-list a { min-height: 44px; }
   .mobile-brand { display: inline; font-weight: 700; }
   .page { padding-block-end: calc(76px + env(safe-area-inset-bottom)); }
   .mobile-tabs {
@@ -309,6 +339,7 @@ table td.mono, table td > .mono { white-space: nowrap; }
   .page { padding-inline: var(--space-4); padding-block-start: var(--space-4); }
   .workspace-grid { grid-template-columns: 1fr; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric-grid > .metric:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .metric-value { font-size: 20px; }
   .table-sort { min-height: 44px; }
   .report-text { font-size: 16px; }
@@ -316,4 +347,7 @@ table td.mono, table td > .mono { white-space: nowrap; }
 @media (max-width: 430px) {
   .badge-extra, .mobile-brand { display: none; }
   .global-tools .last-check { flex-basis: 100%; }
+  .metric-value { font-size: 18px; }
+  .metric-value .pnl { align-items: baseline; }
+  .metric-value .pnl > span { min-width: 0; word-break: keep-all; }
 }

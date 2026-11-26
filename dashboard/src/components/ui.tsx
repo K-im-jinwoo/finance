@@ -79,7 +79,7 @@ export function Table({ label, columns, children, sort }: {
 }
 
 export function MetricGrid({ metrics }: { metrics: { label: string; value: ReactNode; detail?: ReactNode }[] }) {
-  return <dl className="metric-grid">
+  return <dl className="metric-grid" data-metric-count={metrics.length}>
     {metrics.map(({ label, value, detail }) => <div key={label} className="metric">
       <dt>{label}</dt>
       <dd className="metric-value">{value}</dd>

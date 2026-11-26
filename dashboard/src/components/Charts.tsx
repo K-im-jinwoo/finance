@@ -205,6 +205,7 @@ export function EquityDrawdownChart({ points, fills = [], label }: {
           onFocus={() => setFocus(description)} onBlur={() => setFocus(null)}
           onMouseEnter={() => setFocus(description)} onMouseLeave={() => setFocus(null)}>
           <title>{description}</title>
+          <circle className="chart-hit" cx={x} cy={y} r={14} fill="transparent" pointerEvents="all" aria-hidden="true" />
           <path className={buy ? 'chart-fill-buy' : 'chart-fill-sell'} d={marker} />
         </g>
       })}

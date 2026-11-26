@@ -193,14 +193,14 @@ export default function Experiments() {
               <option value={60}>60bps · 민감도 가정</option>
             </select>
           </label>
-          <button type="submit" disabled={pending !== null}>
+          <button className="primary-button" type="submit" disabled={pending !== null}>
             {pending === 'create' ? '실험 생성 중…' : '별도 검증 실험 생성'}
           </button>
         </form>}
       </div>
       <ResourceState loading={list.loading} error={list.error} />
       {actionError && <p role="alert" className="notice">{actionError}</p>}
-      <nav className="cluster" aria-label="검증 실험 보기">
+      <nav className="cluster experiment-tabs" aria-label="검증 실험 보기">
         <a {...link(experimentQuery(params, { view: null }, true))} aria-current={!comparing ? 'page' : undefined}>단일 실험</a>
         <a {...link(experimentQuery(params, { view: 'costs' }, true))} aria-current={comparing ? 'page' : undefined}>비용 민감도 비교</a>
       </nav>
@@ -391,7 +391,7 @@ function SingleExperiment({ result, detailLink, canWrite, pending, onAction }: {
           <td className="mono">{trade.quantity}주</td>
           <td className="mono">{money(decimal(trade.price))}</td>
           <td className="mono">{money(decimal(trade.fee))}</td>
-          <td><a {...detailLink({ trade: trade.trade_id, report: trade.report_id })} aria-label={trade.symbol + ' ' + label(trade.side) + ' 거래 근거'}>거래 근거</a></td>
+          <td><a className="action-link" {...detailLink({ trade: trade.trade_id, report: trade.report_id })} aria-label={trade.symbol + ' ' + label(trade.side) + ' 거래 근거'}>거래 근거</a></td>
         </tr>)}
       </Table> : <Empty>아직 가상 체결이 없습니다.</Empty>}
     </Panel>
@@ -538,7 +538,7 @@ function Observations({ state, detailLink }: { state: Experiment['state']; detai
           <td>{observationLabel(item.state)}</td>
           <td>{item.reason ? observationLabel(item.reason) : isReentry(item) ? '재진입 주문' : '—'}</td>
           <td>{[item.original_decision, item.original_review_tier].filter(Boolean).join(' / ') || '—'}</td>
-          <td>{report ? <a {...detailLink({ report })}>원본 보고서</a> : '—'}</td>
+          <td>{report ? <a className="action-link" {...detailLink({ report })}>원본 보고서</a> : '—'}</td>
         </tr>
       })}
     </Table> : <Empty>{filter ? '선택한 조건의 판단 로그가 없습니다.' : '기록된 판단 로그가 없습니다.'}</Empty>}
@@ -559,7 +559,7 @@ function DraftItem({ draft, detailLink }: { draft: AlertDraft; detailLink: Detai
       <Badge tone="warn">발송 대기 초안</Badge>
       <strong>{label(draft.kind)} {draft.symbol}</strong>
       <span className="muted">{kst(draft.at)}</span>
-      {experiment && <a {...detailLink(selection, experiment)}>과거 상세</a>}
+      {experiment && <a className="action-link" {...detailLink(selection, experiment)}>과거 상세</a>}
     </div>
     <details>
       <summary>초안 원문</summary>

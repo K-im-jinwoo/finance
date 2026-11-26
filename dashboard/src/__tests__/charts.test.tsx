@@ -15,6 +15,12 @@ it('splits missing marks and exposes fills and keyboard data without inline styl
     fills={[{ time: points[1].time, label: '005930 가상 매수', side: 'BUY' }]} />)
   expect(container.querySelectorAll('.chart-equity[data-segment]')).toHaveLength(2)
   expect(container.querySelector('.chart-fill-buy')).not.toBeNull()
+  const hit = container.querySelector('.chart-marker > circle.chart-hit')
+  expect(hit?.getAttribute('r')).toBe('14')
+  expect(hit?.getAttribute('fill')).toBe('transparent')
+  expect(hit?.getAttribute('pointer-events')).toBe('all')
+  fireEvent.mouseEnter(hit!)
+  expect(container.querySelector('.chart-focus')?.textContent).toContain('005930 가상 매수')
   expect(container.querySelector('style, [style]')).toBeNull()
   const details = screen.getByText('차트 데이터 보기').closest('details')!
   expect(screen.queryByRole('table', { name: '테스트 자산 데이터' })).toBeNull()

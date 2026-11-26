@@ -1,8 +1,8 @@
 import { Activity, CandlestickChart, FlaskConical, House, Menu, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Settings, Sun, TrendingUp } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import type { MouseEvent } from 'react'
 import { CapabilitiesProvider, EvidenceProvider, PollProvider, evidenceMode, usePolling, useResource } from './api/client'
 import type { Capabilities, PollInterval } from './api/client'
+import { AppLink, AppNavigation } from './components/AppLink'
 import { Badge, Drawer, ResourceState } from './components/ui'
 import Daytrade from './pages/Daytrade'
 import Experiments from './pages/Experiments'
@@ -47,7 +47,7 @@ function savePreference(key: string, value: string) {
   catch { /* The current tab still keeps its selected preference. */ }
 }
 
-function Workspace({ path, openPath }: { path: string; openPath: (path: string) => void }) {
+function Workspace({ path, openPath }: { path: string; openPath: (href: string) => boolean }) {
   const { data: capability, error, loading } = useResource<Capabilities>('/api/capabilities')
   const { interval, setInterval, refresh, checkedAt } = usePolling()
   const [theme, setTheme] = useState(() => preference('finance.theme', 'dark') === 'light' ? 'light' : 'dark')
@@ -72,17 +72,18 @@ function Workspace({ path, openPath }: { path: string; openPath: (path: string) 
   const allowedRoutes = capability ? routes.filter(route => capability.routes.includes(route.path)) : []
   const pageAllowed = !capability || capability.routes.includes(path)
   const Page = path === '/experiments' ? Experiments : active?.page
-  const mode = readOnly ? 'READ_ONLY' : evidenceMode(evidence)
+  const mode = readOnly ? 'READ_ONLY' : path === '/' ? 'MULTI-TRACK' : evidenceMode(evidence)
+  const pnlLabel = pnl === 'krx' ? 'KRX 적/청' : '글로벌 녹/적'
+  const nextPnlLabel = pnl === 'krx' ? '글로벌 녹/적' : 'KRX 적/청'
 
   useEffect(() => {
     document.title = (active?.label ?? '페이지 안내') + ' · Finance'
   }, [active])
 
-  function navigate(event: MouseEvent<HTMLAnchorElement>, href: string) {
-    if (event.button !== 0 || event.altKey || event.ctrlKey || event.shiftKey || event.metaKey) return
-    event.preventDefault()
-    openPath(href)
+  function navigate(href: string) {
+    const moved = openPath(href)
     setMenu(false)
+    if (!moved) return
     requestAnimationFrame(() => {
       window.scrollTo(0, 0)
       main.current?.focus()
@@ -91,73 +92,75 @@ function Workspace({ path, openPath }: { path: string; openPath: (path: string) 
 
   function navItems(items: typeof routes, mobile = false) {
     return items.map(({ path: href, label, compact: short, icon: Icon }) =>
-      <a key={href} href={href} onClick={event => navigate(event, href)}
+      <AppLink key={href} href={href}
         aria-current={href === path ? 'page' : undefined} aria-label={label} title={label}>
         <Icon size={19} strokeWidth={1.5} aria-hidden="true" />
         <span>{mobile ? short : label}</span>
-      </a>)
+      </AppLink>)
   }
 
-  return <CapabilitiesProvider value={capability}>
-    <EvidenceProvider onChange={setEvidence}>
-      <a className="skip-link" href="#dashboard-main">본문으로 건너뛰기</a>
-      <div className={compact ? 'app app-collapsed' : 'app'}>
-        <aside className="sidebar" aria-label="사이드바">
-          <div className="brand">
-            <Activity size={21} aria-hidden="true" /><span>Finance</span>
-            <button className="icon-button collapse-button" aria-label={compact ? '사이드바 펼치기' : '사이드바 접기'}
-              aria-expanded={!compact} onClick={() => setCompact(!compact)}>
-              {compact ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-            </button>
-          </div>
-          <nav className="primary-nav" aria-label="대시보드 메뉴">{navItems(allowedRoutes)}</nav>
-        </aside>
-        <div className="app-main">
-          <header className="global-bar">
-            <div className="cluster global-context">
-              {!readOnly && <button className="icon-button mobile-menu" aria-label="메뉴 열기" aria-expanded={menu}
-                disabled={!allowedRoutes.length} onClick={() => setMenu(true)}><Menu size={20} /></button>}
-              <span className="mobile-brand">Finance</span>
-              <Badge tone="ok">실주문 차단 <span className="badge-extra">(PAPER ONLY)</span></Badge>
-              <Badge>{mode}</Badge>
-              {readOnly && evidenceMode(evidence) !== 'UNKNOWN' && <Badge>{evidenceMode(evidence)}</Badge>}
-            </div>
-            <div className="cluster global-tools">
-              <span className="last-check mono" aria-live="off">{checkedAt ? kst(checkedAt) : '확인 대기'}</span>
-              <label className="visually-hidden" htmlFor="poll-interval">자동 새로고침 주기</label>
-              <select id="poll-interval" value={interval} onChange={event => setInterval(Number(event.target.value) as PollInterval)}>
-                <option value={5}>5초</option><option value={30}>30초</option><option value={0}>일시정지</option>
-              </select>
-              <button className="icon-button" aria-label="수동 새로고침" onClick={refresh}><RefreshCw size={18} /></button>
-              <button aria-label="글로벌 녹색 상승·적색 하락 적용" aria-pressed={pnl === 'global'}
-                onClick={() => setPnl(pnl === 'krx' ? 'global' : 'krx')}>{pnl === 'krx' ? 'KRX 적/청' : '글로벌 녹/적'}</button>
-              <button className="icon-button" aria-label={theme === 'dark' ? '라이트 테마로 전환' : '다크 테마로 전환'}
-                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-                {theme === 'dark' ? <Sun size={19} /> : <Moon size={19} />}
+  return <AppNavigation.Provider value={navigate}>
+    <CapabilitiesProvider value={capability}>
+      <EvidenceProvider onChange={setEvidence}>
+        <a className="skip-link" href="#dashboard-main">본문으로 건너뛰기</a>
+        <div className={compact ? 'app app-collapsed' : 'app'}>
+          <aside className="sidebar" aria-label="사이드바">
+            <div className="brand">
+              <Activity size={21} aria-hidden="true" /><span>Finance</span>
+              <button className="icon-button collapse-button" aria-label={compact ? '사이드바 펼치기' : '사이드바 접기'}
+                aria-expanded={!compact} onClick={() => setCompact(!compact)}>
+                {compact ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
               </button>
             </div>
-          </header>
-          <main id="dashboard-main" ref={main} tabIndex={-1} className="page">
-            <ResourceState loading={loading} error={error} />
-            {!pageAllowed && <><h1>지원하지 않는 화면</h1><p>이 서버는 당일 단타 읽기 전용 화면을 제공합니다.</p><a href="/daytrade">당일 단타 열기</a></>}
-            {pageAllowed && Page && <Page />}
-            {pageAllowed && !Page && <>
-              <h1>{active?.label ?? '페이지를 찾을 수 없습니다'}</h1>
-              {active && <div className="notice stack"><Badge tone="warn">Phase B 준비 중</Badge><p>{planned[path]}</p></div>}
-              {!active && <a href="/">통합 홈으로 이동</a>}
-            </>}
-          </main>
+            <nav className="primary-nav" aria-label="대시보드 메뉴">{navItems(allowedRoutes)}</nav>
+          </aside>
+          <div className="app-main">
+            <header className="global-bar">
+              <div className="cluster global-context">
+                {!readOnly && <button className="icon-button mobile-menu" aria-label="메뉴 열기" aria-expanded={menu}
+                  disabled={!allowedRoutes.length} onClick={() => setMenu(true)}><Menu size={20} /></button>}
+                <span className="mobile-brand">Finance</span>
+                <Badge tone="ok">실주문 차단 <span className="badge-extra">(PAPER ONLY)</span></Badge>
+                <Badge>{mode}</Badge>
+                {readOnly && evidenceMode(evidence) !== 'UNKNOWN' && <Badge>{evidenceMode(evidence)}</Badge>}
+              </div>
+              <div className="cluster global-tools">
+                <span className="last-check mono" aria-live="off">{checkedAt ? kst(checkedAt) : '확인 대기'}</span>
+                <label className="visually-hidden" htmlFor="poll-interval">자동 새로고침 주기</label>
+                <select id="poll-interval" value={interval} onChange={event => setInterval(Number(event.target.value) as PollInterval)}>
+                  <option value={5}>5초</option><option value={30}>30초</option><option value={0}>일시정지</option>
+                </select>
+                <button className="icon-button" aria-label="수동 새로고침" onClick={refresh}><RefreshCw size={18} /></button>
+                <button aria-label={pnlLabel + ' (' + nextPnlLabel + '으로 전환)'} aria-pressed={pnl === 'global'}
+                  onClick={() => setPnl(pnl === 'krx' ? 'global' : 'krx')}>{pnlLabel}</button>
+                <button className="icon-button" aria-label={theme === 'dark' ? '라이트 테마로 전환' : '다크 테마로 전환'}
+                  onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+                  {theme === 'dark' ? <Sun size={19} /> : <Moon size={19} />}
+                </button>
+              </div>
+            </header>
+            <main id="dashboard-main" ref={main} tabIndex={-1} className="page">
+              <ResourceState loading={loading} error={error} />
+              {!pageAllowed && <><h1>지원하지 않는 화면</h1><p>이 서버는 당일 단타 읽기 전용 화면을 제공합니다.</p><AppLink className="action-link" href="/daytrade">당일 단타 열기</AppLink></>}
+              {pageAllowed && Page && <Page />}
+              {pageAllowed && !Page && <>
+                <h1>{active?.label ?? '페이지를 찾을 수 없습니다'}</h1>
+                {active && <div className="notice stack"><Badge tone="warn">Phase B 준비 중</Badge><p>{planned[path]}</p></div>}
+                {!active && <AppLink className="action-link" href="/">통합 홈으로 이동</AppLink>}
+              </>}
+            </main>
+          </div>
+          {allowedRoutes.length > 1 && <nav className="mobile-tabs" aria-label="주요 화면">
+            {navItems(allowedRoutes.filter(route => ['/', '/hermes', '/daytrade', '/research'].includes(route.path)), true)}
+            <button onClick={() => setMenu(true)} aria-expanded={menu}><Menu size={19} aria-hidden="true" />더보기</button>
+          </nav>}
+          {menu && <Drawer title="대시보드 메뉴" onClose={() => setMenu(false)}>
+            <nav className="primary-nav" aria-label="전체 메뉴">{navItems(allowedRoutes)}</nav>
+          </Drawer>}
         </div>
-        {allowedRoutes.length > 1 && <nav className="mobile-tabs" aria-label="주요 화면">
-          {navItems(allowedRoutes.filter(route => ['/', '/hermes', '/daytrade', '/research'].includes(route.path)), true)}
-          <button onClick={() => setMenu(true)} aria-expanded={menu}><Menu size={19} aria-hidden="true" />더보기</button>
-        </nav>}
-        {menu && <Drawer title="대시보드 메뉴" onClose={() => setMenu(false)}>
-          <nav className="primary-nav" aria-label="전체 메뉴">{navItems(allowedRoutes)}</nav>
-        </Drawer>}
-      </div>
-    </EvidenceProvider>
-  </CapabilitiesProvider>
+      </EvidenceProvider>
+    </CapabilitiesProvider>
+  </AppNavigation.Provider>
 }
 
 export default function App() {
@@ -169,10 +172,15 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePop)
   }, [])
 
-  function openPath(destination: string) {
-    if (destination === window.location.pathname) return
+  function openPath(href: string) {
+    const current = new URL(window.location.href)
+    const destination = new URL(canonicalLocation(new URL(href, current)), current)
+    const samePage = destination.pathname === current.pathname
+    if (destination.href === current.href || (samePage && !destination.search && !destination.hash)) return false
     window.history.pushState(null, '', destination)
-    setPath(destination)
+    if (samePage) window.dispatchEvent(new PopStateEvent('popstate'))
+    else setPath(destination.pathname)
+    return true
   }
 
   return <PollProvider defaultInterval={path === '/daytrade' ? 5 : 30}>

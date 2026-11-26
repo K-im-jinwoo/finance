@@ -1,5 +1,6 @@
 import { ArrowUpRight } from 'lucide-react'
 import { evidenceMode, useResource } from '../api/client'
+import { AppLink } from '../components/AppLink'
 import { Badge, Pnl, ResourceState } from '../components/ui'
 import { finite, koreanUnit, kst, percent } from '../utils/formatters'
 import type { DaytradeData } from './daytradeData'
@@ -70,7 +71,7 @@ export default function Overview() {
     </section>
     <div className="workspace-grid">
       <article className="overview-card">
-        <header className="section-header"><h2>Hermes 모의계좌</h2><a href="/hermes">계좌 보기 <ArrowUpRight size={15} /></a></header>
+        <header className="section-header"><h2>Hermes 모의계좌</h2><AppLink className="action-link" href="/hermes">계좌 보기 <ArrowUpRight size={15} /></AppLink></header>
         <ResourceState loading={accounts.loading || account.loading} error={accounts.error ?? account.error} />
         <div className="overview-card-content stack">
           <div className="cluster"><Badge tone={accounts.data?.source.state === 'CONNECTED' ? 'ok' : 'unknown'}>{accounts.data?.source.state ?? 'UNKNOWN'}</Badge>
@@ -83,7 +84,7 @@ export default function Overview() {
         </div>
       </article>
       <article className="overview-card">
-        <header className="section-header"><h2>당일 단타</h2><a href="/daytrade">세션 보기 <ArrowUpRight size={15} /></a></header>
+        <header className="section-header"><h2>당일 단타</h2><AppLink className="action-link" href="/daytrade">세션 보기 <ArrowUpRight size={15} /></AppLink></header>
         <ResourceState loading={daytrade.loading} error={daytrade.error} />
         <div className="overview-card-content stack">
           <div className="cluster"><Badge tone={states.includes('UNFLATTENED') ? 'warn' : 'unknown'}>{states.length ? states.join(' · ') : 'UNKNOWN'}</Badge>
@@ -96,7 +97,7 @@ export default function Overview() {
         </div>
       </article>
       <article className="overview-card">
-        <header className="section-header"><h2>계산 검증 실험</h2><a href={latest ? '/experiments?experiment=' + encodeURIComponent(latest.experiment_id) : '/experiments'}>실험 보기 <ArrowUpRight size={15} /></a></header>
+        <header className="section-header"><h2>계산 검증 실험</h2><AppLink className="action-link" href={latest ? '/experiments?experiment=' + encodeURIComponent(latest.experiment_id) : '/experiments'}>실험 보기 <ArrowUpRight size={15} /></AppLink></header>
         <ResourceState loading={experiments.loading || experiment.loading} error={experiments.error ?? experiment.error} />
         <div className="overview-card-content stack">
           <p><Badge>{latest?.mode ?? 'UNKNOWN'}</Badge></p>
@@ -110,7 +111,7 @@ export default function Overview() {
         <header className="section-header"><h2>통합 리서치·스윙</h2><Badge tone="warn">Phase B</Badge></header>
         <div className="overview-card-content stack">
           <p>리서치 보고서와 스윙 성과 연결을 준비 중입니다.</p>
-          <div className="cluster"><a href="/research">리서치 준비 상태</a><a href="/swing">스윙 준비 상태</a></div>
+          <div className="cluster"><AppLink className="action-link" href="/research">리서치 준비 상태</AppLink><AppLink className="action-link" href="/swing">스윙 준비 상태</AppLink></div>
           <dl className="data-pairs"><dt>Oracle 커버리지</dt><dd>{status.data?.data_status ?? '확인 불가'}</dd>
             <dt>자료 기준</dt><dd className="mono">{kst(status.data?.checked_at_kst)}</dd></dl>
         </div>

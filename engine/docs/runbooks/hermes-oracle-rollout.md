@@ -75,6 +75,11 @@ Gate 4 still requires one visible Desktop group room with all four profiles and 
 
 The fifth `stock-live-market` profile is specified in the repository but is not covered by the 2026-09-21 four-profile verification. Create it, authenticate it, copy its SOUL, policy, and wrapper, then verify one delegated fresh quote and one invalid-symbol rejection before marking the extension deployed.
 
+Updated on 2026-11-26:
+
+- Switched the Oracle `stock-cio`, `stock-market`, `stock-fundamentals`, and `stock-risk` profiles on `openai-codex` from `gpt-5.6-luna` (`max`) to `gpt-6.2-sol` (`medium`), and switched `stock-live-market` to `gpt-6-luna` (`low`).
+- Backed up the prior `config.yaml` files under `/srv/stock-assistant/backups/20261126T013940Z-model-sweetspot`, restarted `hermes-gateway-stock-cio.service`, and verified YAML parsing across all five profiles plus default-config CLI oneshot smoke responses for `stock-cio` and `stock-live-market`. Scheduled specialist runs (including `stock-market` chart vision) remain to be observed on the next weekday batch.
+
 ## Gate 5 - Channels and schedules
 
 Use the test Telegram Bot while the existing production receiver remains unchanged. Validate the same report ID in Desktop and Telegram. Then create KST jobs for weekday 08:30, weekday 20:00, and Saturday 12:00. Delivery success and analysis success remain separate statuses.

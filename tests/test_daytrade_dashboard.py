@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sqlite3
@@ -27,13 +28,20 @@ class PageSafety(HTMLParser):
     def __init__(self):
         super().__init__()
         self.links = set()
+        self.scripts = set()
+        self.stylesheets = set()
 
     def handle_starttag(self, tag, attrs):
         attributes = dict(attrs)
         if tag == "style" or "style" in attributes or any(name.startswith("on") for name in attributes):
             raise AssertionError("inline style or event handler")
-        if tag == "script" and not attributes.get("src", "").startswith("/"):
-            raise AssertionError("external self script required")
+        if tag == "script":
+            source = attributes.get("src", "")
+            if not source.startswith("/") or source.startswith("//"):
+                raise AssertionError("external self script required")
+            self.scripts.add(source)
+        if tag == "link" and attributes.get("rel") == "stylesheet":
+            self.stylesheets.add(attributes.get("href", ""))
         if tag == "a":
             self.links.add(attributes.get("href"))
 
@@ -176,6 +184,32 @@ class DaytradeDashboardTests(unittest.TestCase):
         result = subprocess.run(["node", "--check", str(ROOT / "web/daytrade.js")],
                                 capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_built_spa_matches_static_page_safety_contract(self):
+        index = ROOT / "web/dist/index.html"
+        if not index.is_file():
+            self.skipTest("Build the Vite dashboard to verify its HTML")
+        status, headers, body = self.request("GET", "/daytrade")
+        self.assertEqual((status, body), (200, index.read_bytes()))
+        self.assertNotIn("unsafe-inline", headers["Content-Security-Policy"])
+        parser = PageSafety()
+        parser.feed(body.decode("utf-8"))
+        for urls, content_type in ((parser.scripts, "text/javascript"), (parser.stylesheets, "text/css")):
+            self.assertTrue(urls)
+            for url in urls:
+                with self.subTest(url=url):
+                    self.assertTrue(url.startswith("/assets/"))
+                    asset_status, asset_headers, asset_body = self.request("GET", url)
+                    self.assertEqual(asset_status, 200)
+                    self.assertTrue(asset_headers["Content-Type"].startswith(content_type))
+                    self.assertTrue(asset_body)
+                    if content_type == "text/css":
+                        fonts = set(re.findall(rb"url\((/assets/[^)]+)\)", asset_body))
+                        self.assertTrue(fonts)
+                        self.assertTrue(all(font.endswith(b".woff2") for font in fonts))
+                        font_status, font_headers, font_body = self.request("GET", next(iter(fonts)).decode())
+                        self.assertEqual((font_status, font_headers["Content-Type"]), (200, "font/woff2"))
+                        self.assertTrue(font_body.startswith(b"wOF2"))
 
     def test_authentication_csrf_origin_action_and_local_host_guards(self):
         self.assertEqual(self.request("GET", "/api/daytrade/report")[0], 401)

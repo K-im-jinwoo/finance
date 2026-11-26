@@ -8,6 +8,7 @@ import type { DaytradeData, DaytradeReport } from '../pages/daytradeData'
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  window.history.replaceState(null, '', '/')
 })
 
 const at = (second: number) => '2026-11-25T09:00:' + String(second).padStart(2, '0') + '+09:00'
@@ -95,4 +96,49 @@ it('preserves missing valuations and treats diagnostic truncation as a chart gap
   expect(equityPoints(marks, report.account.initial_capital).map(point => [point.equity, point.drawdown, point.risk])).toEqual([
     [10_000_000, 0, null], [null, null, '일손실 한도 잠금'], [null, null, null], [9_900_000, -1, null],
   ])
+})
+
+it('selects dated ledgers without write controls on the read-only server', async () => {
+  window.history.replaceState(null, '', '/daytrade?date=2026-11-24')
+  const api = vi.fn(async (path: string) => Response.json(path === '/api/daytrade/sessions'
+    ? { present: true, sessions: ['2026-11-25', '2026-11-24'] }
+    : { present: false, report: null, sample_available: true }))
+  vi.stubGlobal('fetch', api)
+  render(<PollProvider defaultInterval={0}>
+    <CapabilitiesProvider value={{ read_only: true, orders_enabled: false, telegram_delivery_enabled: false,
+      phase_b_available: false, routes: ['/daytrade'], ...{ daytrade_sessions_available: true } }}>
+      <Daytrade />
+    </CapabilitiesProvider>
+  </PollProvider>)
+  const selector = await screen.findByRole('combobox', { name: '거래일' }) as HTMLSelectElement
+  expect(selector.value).toBe('2026-11-24')
+  expect(api.mock.calls.map(([path]) => path)).toContain('/api/daytrade/report?date=2026-11-24')
+  fireEvent.change(selector, { target: { value: '2026-11-25' } })
+  await waitFor(() => expect(api.mock.calls.map(([path]) => path)).toContain('/api/daytrade/report?date=2026-11-25'))
+  expect(window.location.search).toBe('?date=2026-11-25')
+  expect(screen.queryByRole('button', { name: '오프라인 샘플 실행' })).toBeNull()
+})
+
+
+it('loads cumulative realized amounts on demand without counting unavailable sessions', async () => {
+  const api = vi.fn(async (path: string) => Response.json(path === '/api/daytrade/sessions'
+    ? { present: true, sessions: ['2026-11-25', '2026-11-24'] }
+    : path.endsWith('date=2026-11-24')
+      ? { present: true, report, sample_available: false }
+      : { present: false, report: null, sample_available: false }))
+  vi.stubGlobal('fetch', api)
+  render(<PollProvider defaultInterval={0}>
+    <CapabilitiesProvider value={{ read_only: true, orders_enabled: false, telegram_delivery_enabled: false,
+      phase_b_available: false, routes: ['/daytrade'], daytrade_sessions_available: true }}>
+      <Daytrade />
+    </CapabilitiesProvider>
+  </PollProvider>)
+  const load = await screen.findByRole('button', { name: '최근 2개 원장 집계' })
+  expect(screen.getByText('최근 최대 5개 거래일 원장의 실현손익을 집계합니다.')).toBeTruthy()
+  expect(api.mock.calls.map(([path]) => path)).not.toContain('/api/daytrade/report?date=2026-11-24')
+  fireEvent.click(load)
+  const table = await screen.findByRole('table', { name: '일자별 단타 성과' })
+  expect(within(table).getByText('-1,234원')).toBeTruthy()
+  expect(within(table).getByText('원장 확인 불가')).toBeTruthy()
+  expect(screen.getByText('2개 중 1개 원장에서 실현손익을 확인했습니다.')).toBeTruthy()
 })

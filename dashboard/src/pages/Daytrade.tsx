@@ -1,6 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ApiError, postJson, useCapabilities, useEvidenceMode, useRefresh, useResource } from '../api/client'
+import { ApiError, getJson, postJson, useCapabilities, useEvidenceMode, useRefresh, useResource } from '../api/client'
+import { unavailableReason } from '../api/phaseB'
+import type { Presence } from '../api/phaseB'
+import { useRouteQuery } from '../utils/routeQuery'
+import { RuntimeSettings } from './Ops'
 import { EquityDrawdownChart } from '../components/Charts'
 import { Badge, Empty, MetricGrid, Panel, Pnl, ResourceState, Table } from '../components/ui'
 import { finite, koreanUnit, kst, money, numeric, percent, spreadText, turnoverText } from '../utils/formatters'
@@ -229,17 +233,94 @@ function TradingReport({ report, markdown }: { report: DaytradeReport; markdown?
   </>
 }
 
+type SessionResult = { date: string; source?: string; account?: DaytradeReport['account'] }
+
+function DaytradeHistory({ dates }: { dates: string[] }) {
+  const recent = dates.slice(0, 5)
+  const [results, setResults] = useState<SessionResult[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  const pending = useRef<AbortController | null>(null)
+  useEffect(() => () => pending.current?.abort(), [])
+
+  async function load() {
+    if (pending.current) return
+    const controller = new AbortController()
+    pending.current = controller
+    setLoading(true)
+    const rows: SessionResult[] = []
+    try {
+      for (const day of recent) {
+        if (controller.signal.aborted) return
+        try {
+          const { report } = await getJson<DaytradeData>('/api/daytrade/report?date=' + encodeURIComponent(day), controller.signal)
+          rows.push({ date: day, source: report?.data_source ?? report?.dataset_kind, account: report?.account })
+        } catch {
+          rows.push({ date: day })
+        }
+      }
+      if (!controller.signal.aborted) setResults(rows)
+    } finally {
+      pending.current = null
+      if (!controller.signal.aborted) setLoading(false)
+    }
+  }
+
+  const realized = results?.flatMap(row => {
+    const value = finite(row.account?.realized_pnl_net)
+    return value === null ? [] : [value]
+  }) ?? []
+  const sameSource = results?.[0]?.source != null && results.every(row => row.source === results[0].source)
+  const complete = results && realized.length === results.length && sameSource
+  return <Panel title="일자별 누적 성과" actions={
+    <button onClick={() => void load()} disabled={loading}>
+      {loading ? '원장 집계 중…' : '최근 ' + recent.length + '개 원장 집계'}
+    </button>
+  }>
+    {!results && <p className="muted">최근 최대 5개 거래일 원장의 실현손익을 집계합니다.</p>}
+    {results && <>
+      <p role="status">{results.length}개 중 {realized.length}개 원장에서 실현손익을 확인했습니다.
+        {complete && <> 누적 실현손익 <Pnl value={realized.reduce((sum, value) => sum + value, 0)} format={money} /></>}
+      </p>
+      <Table label="일자별 단타 성과" columns={['거래일', '데이터 출처', '완결 거래', '순실현손익', '평가 손익']}>
+        {results.map(row => <tr key={row.date}>
+          <th scope="row" className="mono">{row.date}</th>
+          <td>{row.source ?? '원장 확인 불가'}</td>
+          <td>{numeric(row.account?.completed_trades, '건')}</td>
+          <td><Pnl value={finite(row.account?.realized_pnl_net)} format={money} /></td>
+          <td><Pnl value={finite(row.account?.net_pnl)} format={money} /></td>
+        </tr>)}
+      </Table>
+    </>}
+  </Panel>
+}
+
+type Sessions = Presence & { sessions?: string[]; latest?: string | null }
+
+function validDate(value: string) {
+  const timestamp = Date.parse(value)
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(timestamp) &&
+    new Date(timestamp).toISOString().slice(0, 10) === value
+}
+
 export default function Daytrade() {
   const capability = useCapabilities()
   const refresh = useRefresh()
-  const { data, loading, error } = useResource<DaytradeData>('/api/daytrade/report')
+  const { query, updateQuery } = useRouteQuery()
+  const date = query.get('date')
+  const sessionsSupported = capability?.daytrade_sessions_available === true
+  const sessions = useResource<Sessions>(sessionsSupported ? '/api/daytrade/sessions' : null)
+  const dates = sessions.data?.sessions ?? []
+  const validSelection = date === null || validDate(date)
+  const reportUrl = date === null ? '/api/daytrade/report' : sessionsSupported && validSelection
+    ? '/api/daytrade/report?date=' + encodeURIComponent(date) : null
+  const { data, loading, error } = useResource<DaytradeData>(reportUrl)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const report = data?.report
   useEvidenceMode(report?.data_source ?? report?.dataset_kind)
 
   async function startSample() {
-    if (busy || capability?.read_only !== false || !data?.sample_available || data.present) return
+    if (date !== null || busy || capability?.read_only !== false || !data?.sample_available || data.present) return
     setBusy(true)
     setActionError(null)
     try {
@@ -256,15 +337,29 @@ export default function Daytrade() {
   return <div className="stack page-content">
     <header className="page-heading">
       <div><h1>당일 단타</h1><p>KRX+NXT 통합 시세 · 비용 반영 모의계좌</p></div>
-      {capability?.read_only === false && data?.sample_available && !data.present &&
-        <button className="primary-button" onClick={() => void startSample()} disabled={busy}>
-          {busy ? '샘플 계산 중…' : '오프라인 샘플 실행'}
-        </button>}
+      <div className="toolbar">
+        {sessionsSupported && (dates.length > 0 || date !== null) && <label>거래일
+          <select value={date ?? ''} onChange={event => updateQuery({ date: event.target.value })}>
+            <option value="">기본 원장</option>
+            {date !== null && !dates.includes(date) && <option value={date}>현재 선택 · {date || '잘못된 날짜'}</option>}
+            {dates.map(day => <option key={day}>{day}</option>)}
+          </select>
+        </label>}
+        {date === null && capability?.read_only === false && data?.sample_available && !data.present &&
+          <button className="primary-button" onClick={() => void startSample()} disabled={busy}>
+            {busy ? '샘플 계산 중…' : '오프라인 샘플 실행'}
+          </button>}
+      </div>
     </header>
-    <ResourceState loading={loading} error={error} />
+    <ResourceState loading={loading || sessions.loading} error={error ?? sessions.error} />
+    {date !== null && !validSelection && <p className="notice notice-warn">거래일은 YYYY-MM-DD 형식의 유효한 날짜여야 합니다.</p>}
+    {date !== null && capability && !sessionsSupported && <p className="notice">이 서버는 날짜별 원장 조회를 제공하지 않습니다.</p>}
     {actionError && <p role="status" className="notice notice-danger">{actionError}</p>}
-    {data && !report && <p className="notice">저장된 단타 원장이 없습니다.{capability?.read_only === false && data.sample_available &&
-      ' 오프라인 샘플을 실행하면 모의 결과를 확인할 수 있습니다.'}</p>}
+    {data && !report && <p className="notice">{unavailableReason(data.reason, date
+      ? '선택한 거래일에 저장된 단타 원장이 없습니다.' : '저장된 단타 원장이 없습니다.')}
+      {date === null && capability?.read_only === false && data.sample_available &&
+        ' 오프라인 샘플을 실행하면 모의 결과를 확인할 수 있습니다.'}</p>}
+    {dates.length > 1 && <DaytradeHistory key={dates.slice(0, 5).join(',')} dates={dates} />}
     {report && <>
       <div className="status-band stack" aria-label="단타 데이터 출처와 비용">
         <div className="cluster"><Badge>{report.profile || 'UNKNOWN'}</Badge>
@@ -274,7 +369,8 @@ export default function Daytrade() {
         </div>
         <p>{report.cost_policy_status ?? '비용 정책 미확인'} · {report.cost_policy_notice ?? '비용 기준 확인 불가'}</p>
       </div>
-      <TradingReport report={report} markdown={data?.markdown} />
+      {data?.live_settings && <Panel title="세션 설정"><RuntimeSettings value={data.live_settings} /></Panel>}
+      <TradingReport key={date ?? 'default'} report={report} markdown={data?.markdown} />
     </>}
   </div>
 }

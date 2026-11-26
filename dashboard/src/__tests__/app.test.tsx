@@ -2,8 +2,19 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, expect, it, vi } from 'vitest'
 import App, { canonicalLocation } from '../App'
 
+const researchFailure = vi.hoisted(() => ({ active: false }))
+vi.mock('../pages/Research', async importOriginal => {
+  const { default: Research } = await importOriginal<typeof import('../pages/Research')>()
+  return { default: () => {
+    if (researchFailure.active) throw new Error('intentional render error')
+    return <Research />
+  } }
+})
+
 afterEach(() => {
   cleanup()
+  researchFailure.active = false
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   localStorage.clear()
   document.documentElement.dataset.theme = 'dark'
@@ -37,7 +48,7 @@ it('persists theme and market color settings independently', async () => {
     read_only: false, orders_enabled: false, telegram_delivery_enabled: false, routes: ['/research'], phase_b_available: false,
   }))))
   render(<App />)
-  expect(await screen.findByText('Phase B 준비 중')).toBeTruthy()
+  expect(await screen.findByText('이 서버에서 읽기 전용 자료 API를 사용할 수 없습니다.')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: '라이트 테마로 전환' }))
   const pnlToggle = screen.getByRole('button', { name: /^KRX 적\/청/ })
   expect(pnlToggle.getAttribute('aria-pressed')).toBe('false')
@@ -78,4 +89,71 @@ it('navigates from the overview without reloading and preserves the selected exp
   } finally {
     scroll.mockRestore()
   }
+})
+
+function mockPhaseB(extra: Record<string, unknown> = {}) {
+  const routes = ['/', '/hermes', '/daytrade', '/experiments', '/research', '/swing', '/ops']
+  const endpoints: Record<string, unknown> = {
+    '/api/capabilities': { read_only: false, orders_enabled: false, telegram_delivery_enabled: false,
+      routes, phase_b_available: true },
+    ...extra,
+  }
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => Response.json(endpoints[path] ?? { present: false })))
+  vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+}
+
+it('contains a page render failure, allows retry and resets the boundary when navigating', async () => {
+  const reportId = 'UR-fixture'
+  mockPhaseB({
+    '/api/research/reports': { present: true, latest: { report_id: reportId }, reports: [{ report_id: reportId }] },
+    ['/api/research/reports/' + reportId]: { present: false, reason: 'REPORT_NOT_FOUND' },
+  })
+  window.history.replaceState(null, '', '/research')
+  researchFailure.active = true
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  const { container } = render(<App />)
+  const main = screen.getByRole('main')
+  const navigation = screen.getByRole('navigation', { name: '대시보드 메뉴' })
+  const fallback = within(main).getByRole('alert')
+  expect(fallback.textContent).toContain('화면을 표시하는 중 오류가 발생했습니다.')
+  expect(fallback.textContent).not.toContain('intentional render error')
+  expect(screen.getByRole('button', { name: '수동 새로고침' })).toBeTruthy()
+  expect(container.querySelector('.global-bar')).toBeTruthy()
+
+  researchFailure.active = false
+  fireEvent.click(within(main).getByRole('button', { name: '다시 시도' }))
+  expect(await within(main).findByRole('heading', { name: '통합 리서치 & 차트', level: 1 })).toBeTruthy()
+  expect(within(main).queryByRole('alert')).toBeNull()
+
+  const navigate = (name: string) => fireEvent.click(within(navigation).getByRole('link', { name }))
+  navigate('운영·포트폴리오')
+  researchFailure.active = true
+  navigate('통합 리서치 & 차트')
+  expect(await within(main).findByRole('alert')).toBeTruthy()
+
+  navigate('운영·포트폴리오')
+  expect(location.pathname).toBe('/ops')
+  expect(await within(main).findByRole('heading', { name: '운영·포트폴리오', level: 1 })).toBeTruthy()
+  expect(within(main).queryByRole('alert')).toBeNull()
+})
+
+it('labels aggregated evidence and keeps unknown provenance on a single swing report', async () => {
+  const reportId = 'SW-fixture'
+  mockPhaseB({
+    '/api/swing/reports': { present: true, latest: { report_id: reportId }, reports: [{ report_id: reportId }] },
+    ['/api/swing/reports/' + reportId]: { present: true, report: { report_id: reportId } },
+  })
+  window.history.replaceState(null, '', '/ops')
+  const { container } = render(<App />)
+  const header = within(container.querySelector('.global-bar')!)
+  expect(header.getByText('MULTI-TRACK')).toBeTruthy()
+  const navigation = await screen.findByRole('link', { name: '테마·스윙 & 성과' })
+  fireEvent.click(navigation)
+  await screen.findByText(reportId, { selector: 'span' })
+  expect(header.getByText('UNKNOWN')).toBeTruthy()
+  const tabs = screen.getByRole('navigation', { name: '스윙·성과 보기' })
+  fireEvent.click(within(tabs).getByRole('link', { name: '사후 성과 트래커' }))
+  expect(header.getByText('MULTI-TRACK')).toBeTruthy()
+  fireEvent.click(within(tabs).getByRole('link', { name: '스윙 보고서' }))
+  expect(header.getByText('UNKNOWN')).toBeTruthy()
 })

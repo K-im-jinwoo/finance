@@ -8,13 +8,16 @@ import threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 from .notifications import drafts
 from .rules import Policy
 from .store import Store
 from .live_accounts import LiveAccounts
 from .oracle_bridge import HermesLiveWorker
-from .daytrade_bridge import read_daytrade_report, simulate_sample_daytrade
+from .daytrade_bridge import list_daytrade_sessions, read_daytrade_report, read_daytrade_session, simulate_sample_daytrade
+from .ops_bridge import get_ops_overview
+from .research_bridge import get_research_chart, get_research_report, list_research_reports
+from .swing_bridge import get_performance, get_swing_report, list_swing_reports
 
 HTML_TYPE = "text/html; charset=utf-8"
 ASSET_TYPES = {
@@ -35,6 +38,45 @@ LEGACY_FILES = {
 }
 LEGACY_SESSION_PATHS = {"/", "/hermes", "/daytrade", "/daytrade.js"}
 MAX_POST_BYTES = 8192
+
+def dashboard_status(root, runner_errors=None):
+    artifacts = root / "artifacts"
+    def read_artifact(name):
+        value = json.loads((artifacts / name).read_text(encoding="utf-8-sig"))
+        if not isinstance(value, dict):
+            raise ValueError("verification artifact must be an object")
+        return value
+
+    def optional(name):
+        try:
+            return read_artifact(name)
+        except FileNotFoundError:
+            return None
+
+    audit = read_artifact("source-audit.json")
+    oracle = optional("oracle-data-coverage.json")
+    synthetic = oracle is not None and oracle.get("mode") == "SYNTHETIC"
+    return {
+        **({"mode": "SYNTHETIC"} if synthetic else {}),
+        "checked_at_kst": oracle["checked_at_kst"] if oracle else audit["checked_at_kst"],
+        "source_head": audit["source_head"],
+        "hashes_match": audit["all_snapshot_hashes_match"],
+        "data_status": "THREE_YEAR_INCOMPLETE_ORACLE_INVENTORY" if oracle else audit["real_three_year_replay"],
+        "production_db_accessed": oracle is not None and not synthetic,
+        "production_db_changed": False,
+        "oracle_inventory": oracle,
+        "actual_price_validation": optional("observed-price-calculation.json"),
+        "actual_financial_validation": optional("observed-financial-calculation.json"),
+        "runner_errors": {} if runner_errors is None else runner_errors,
+    }
+
+
+def single_query_value(query, name):
+    values = parse_qs(query, keep_blank_values=True, max_num_fields=16).get(name, [])
+    if len(values) > 1 or values == [""]:
+        raise ValueError("invalid query parameter")
+    return values[0] if values else None
+
 
 class DashboardServer(ThreadingHTTPServer):
     def __init__(self, root: Path, port=8765, hermes_live=False, direct_market=False, allow_open_fills=False):
@@ -111,7 +153,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.local_request():
             return self.response(403, {"error":"LOCAL_ORIGIN_REQUIRED"})
-        path = urlsplit(self.path).path
+        url = urlsplit(self.path)
+        path = url.path
         if path in self.routes:
             index = self.built_file("index.html")
             if index is not None:
@@ -124,14 +167,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/capabilities":
             if not self.authorized():
                 return self.response(401, {"error":"LOCAL_SESSION_REQUIRED"})
-            return self.response(200, {
-                "read_only": self.read_only,
-                "orders_enabled": False,
-                "telegram_delivery_enabled": False,
-                "routes": self.routes,
-                "phase_b_available": False,
-            })
-        return self.get_api(path)
+            return self.response(200, self.capabilities())
+        return self.get_api(path, url.query)
+
+    def capabilities(self):
+        return {
+            "read_only": self.read_only,
+            "orders_enabled": False,
+            "telegram_delivery_enabled": False,
+            "routes": self.routes,
+            "phase_b_available": not self.read_only,
+            "daytrade_sessions_available": True,
+            **({"fixture_mode": "SYNTHETIC"} if getattr(self.server, "synthetic_audit", False) else {}),
+        }
 
     def built_file(self, *parts: str) -> Path | None:
         try:
@@ -162,11 +210,52 @@ class Handler(BaseHTTPRequestHandler):
             self.server.sessions.add(session)
         return self.response(200, content, kind, session)
 
-    def get_api(self, path):
+    def phase_b_data(self, path, query):
+        root = self.server.root
+        if path == "/api/research/reports":
+            return list_research_reports(root)
+        match = re.fullmatch(r"/api/research/reports/([^/]+)", path)
+        if match:
+            return get_research_report(root, match[1])
+        match = re.fullmatch(r"/api/research/chart/([0-9]{6})", path)
+        if match:
+            report_id = single_query_value(query, "report_id")
+            if report_id is None:
+                raise ValueError("report_id is required")
+            return get_research_chart(root, match[1], report_id)
+        if path == "/api/swing/reports":
+            return list_swing_reports(root)
+        match = re.fullmatch(r"/api/swing/reports/([^/]+)", path)
+        if match:
+            return get_swing_report(root, match[1])
+        if path == "/api/performance":
+            return get_performance(root, single_query_value(query, "report_id"))
+        if path == "/api/ops/overview":
+            try:
+                status = dashboard_status(root, self.server.runner_errors)
+            except (OSError, TypeError, ValueError, KeyError):
+                status = {"present": False, "reason": "VERIFICATION_UNAVAILABLE"}
+            return get_ops_overview(root, status)
+        if path == "/api/daytrade/sessions":
+            return list_daytrade_sessions(root)
+        if path == "/api/daytrade/report":
+            date = single_query_value(query, "date")
+            if date is not None:
+                return read_daytrade_session(root, date)
+        return None
+
+    def get_api(self, path, query=""):
         if path == "/health":
             return self.response(200, {"status":"ok","orders_enabled":False,"telegram_delivery_enabled":False,"bind":"loopback"})
         if not self.authorized():
             return self.response(401,{"error":"LOCAL_SESSION_REQUIRED"})
+        try:
+            data = self.phase_b_data(path, query)
+        except ValueError:
+            return self.response(400, {"error": "INVALID_INPUT_OR_STATE"})
+        if data is not None:
+            invalid = data.get("reason") in {"INVALID_REPORT_ID", "INVALID_SYMBOL", "DAYTRADE_DATE_INVALID"}
+            return self.response(400 if invalid else 200, data)
         try:
             if path == "/api/daytrade/report":
                 try:
@@ -183,14 +272,7 @@ class Handler(BaseHTTPRequestHandler):
             if account_match:
                 return self.response(200,self.server.accounts.get_account(account_match[1]))
             if path == "/api/status":
-                audit = json.loads((self.server.root / "artifacts/source-audit.json").read_text(encoding="utf-8"))
-                oracle_path = self.server.root / "artifacts/oracle-data-coverage.json"
-                oracle = json.loads(oracle_path.read_text(encoding="utf-8-sig")) if oracle_path.exists() else None
-                calculation_path = self.server.root / "artifacts/observed-price-calculation.json"
-                calculation = json.loads(calculation_path.read_text(encoding="utf-8")) if calculation_path.exists() else None
-                financial_path = self.server.root / "artifacts/observed-financial-calculation.json"
-                financial = json.loads(financial_path.read_text(encoding="utf-8")) if financial_path.exists() else None
-                return self.response(200,{"checked_at_kst":oracle["checked_at_kst"] if oracle else audit["checked_at_kst"],"source_head":audit["source_head"],"hashes_match":audit["all_snapshot_hashes_match"],"data_status":"THREE_YEAR_INCOMPLETE_ORACLE_INVENTORY" if oracle else audit["real_three_year_replay"],"production_db_accessed":oracle is not None,"production_db_changed":False,"oracle_inventory":oracle,"actual_price_validation":calculation,"actual_financial_validation":financial,"runner_errors":self.server.runner_errors})
+                return self.response(200, dashboard_status(self.server.root, self.server.runner_errors))
             if path == "/api/experiments":
                 return self.response(200,self.server.store.list())
             match = re.fullmatch(r"/api/experiments/(E-[a-f0-9]{24})(/drafts)?",path)

@@ -1,3 +1,4 @@
+import type { PublicSettings } from './opsData'
 import type { ChartPoint } from '../components/Charts'
 import { finite } from '../utils/formatters'
 
@@ -43,7 +44,10 @@ export type DaytradeReport = {
   current_risk?: { phase: string; locks: string[]; entry_allowed: boolean }
   symbol_names?: Record<string, string>
 }
-export type DaytradeData = { present: boolean; sample_available: boolean; report: DaytradeReport | null; markdown?: string | null }
+export type DaytradeData = {
+  present: boolean; sample_available: boolean; report: DaytradeReport | null; markdown?: string | null
+  reason?: string; live_settings?: PublicSettings
+}
 
 export const SIGNAL_LIMIT = 30
 export const RISK_LIMIT = 15

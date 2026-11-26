@@ -3,7 +3,7 @@ import type { FormEvent, MouseEvent } from 'react'
 import { evidenceMode, postJson, useCapabilities, useEvidenceMode, useRefresh, useResource } from '../api/client'
 import { CostComparisonChart, EquityDrawdownChart } from '../components/Charts'
 import { Badge, Drawer, Empty, MetricGrid, Panel, Pnl, ResourceState, Table } from '../components/ui'
-import { kst, money } from '../utils/formatters'
+import { kst, money, numeric } from '../utils/formatters'
 import {
   comparisonCosts, decimal, equityPoints, experimentQuery, hasExperimentEvidence, observedReentrySignals,
   percentagePoints, resolveExperimentEvidence,
@@ -48,7 +48,6 @@ const experimentOption = (item: ExperimentSummary) => (
     {item.experiment_id.slice(0, 12)} · {item.cost_bps}bps · {label(item.state)}
   </option>
 )
-const count = (value?: number) => value == null ? '확인 불가' : value.toLocaleString('ko-KR')
 const percent = (value: number | null) => value === null ? '확인 불가' : value.toFixed(2) + '%'
 
 function StatusBadge({ status }: { status: string }) {
@@ -614,7 +613,11 @@ function OracleVerification() {
   const price = data?.actual_price_validation
   const financial = data?.actual_financial_validation
   const period = db?.ohlcv?.trade_date_range
-  const pricePeriod = period?.length === 2 && period.every(Boolean) ? period.join(' ~ ') : '확인 불가'
+  const pricePeriod = Array.isArray(period) && period.length === 2 && period.every(Boolean) ? period.join(' ~ ') : '확인 불가'
+  const priceRows = Array.isArray(price?.results) ? price.results.filter(row => typeof row?.symbol === 'string') : []
+  const checks = financial?.checks
+  const checkCount = checks && typeof checks === 'object' && !Array.isArray(checks) ? Object.keys(checks).length : null
+  const financialMatch = financial?.all_equal === true ? '일치' : financial?.all_equal === false ? '불일치' : '확인 불가'
 
   return <Panel title="Oracle 데이터 확보와 계산 검산">
     <details>
@@ -628,27 +631,30 @@ function OracleVerification() {
               {inventory?.read_only === true ? '읽기 전용 조회' : '조회 방식 확인 불가'} {kst(data.checked_at_kst)}
               {data.production_db_changed === false && ' · 운영 DB 변경 없음'}
             </p>
-            <p>가격 {count(db.ohlcv?.distinct_dates)}개 거래 날짜 · {count(db.ohlcv?.symbols)}종목 · {pricePeriod}</p>
-            <p>재무 {count(db.financial_snapshots?.symbols)}종목 · 당시 관측·정정 이력 미인증</p>
+            <p>가격 거래 날짜 {numeric(db.ohlcv?.distinct_dates, '일')} · {numeric(db.ohlcv?.symbols, '종목')} · {pricePeriod}</p>
+            <p>재무 {numeric(db.financial_snapshots?.symbols, '종목')} · 당시 관측·정정 이력 미인증</p>
           </section> : <Empty>Oracle 자료 위치 확인 대기</Empty>}
-          {price?.results?.length ? <section className="stack">
+          {priceRows.length > 0 && <section className="stack">
             <h3>관측 가격 검산</h3>
-            <p className="muted">기준 {kst(price.as_of)}</p>
+            <p className="muted">기준 {kst(price?.as_of)}</p>
             <Table label="관측 가격 검산" columns={['종목', '자료 기간', '거래 날짜', '독립 산식']}>
-              {price.results.map(row => <tr key={row.symbol}>
-                <th scope="row" className="mono">{row.symbol}</th>
-                <td>{row.start} ~ {row.end}</td>
-                <td className="mono">{row.distinct_trading_dates}일</td>
-                <td>{row.source_features_equal_independent_formulas
-                  ? row.calculation_dates_checked + '개 계산 날짜 · ' + row.fields_checked.length + '개 지표 일치'
-                  : '확인 불가'}</td>
-              </tr>)}
+              {priceRows.map(row => {
+                const fieldCount = Array.isArray(row.fields_checked) ? row.fields_checked.length : null
+                return <tr key={row.symbol}>
+                  <th scope="row" className="mono">{row.symbol}</th>
+                  <td>{row.start && row.end ? row.start + ' ~ ' + row.end : '확인 불가'}</td>
+                  <td className="mono">{numeric(row.distinct_trading_dates, '일')}</td>
+                  <td>{row.source_features_equal_independent_formulas === true
+                    ? '계산 날짜 ' + numeric(row.calculation_dates_checked, '개') + ' · 일치 지표 ' + numeric(fieldCount, '개')
+                    : row.source_features_equal_independent_formulas === false ? '불일치' : '확인 불가'}</td>
+                </tr>
+              })}
             </Table>
-          </section> : null}
+          </section>}
           {financial && <section className="stack">
             <h3>관측 재무 검산</h3>
-            <p>{financial.symbol} · {financial.division} · 연간/두 반기 3기간 · {Object.keys(financial.checks).length}개 대조 {financial.all_equal ? '일치' : '불일치'}</p>
-            <p>TTM 영업이익 <strong className="mono">{money(decimal(financial.values.ttm_operating_income))}</strong> · OCF는 원본 연간 기준</p>
+            <p>{financial.symbol ?? '종목 확인 불가'} · {financial.division ?? '구분 확인 불가'} · 연간/두 반기 3기간 · 대조 항목 {numeric(checkCount, '개')} · 일치 여부 {financialMatch}</p>
+            <p>TTM 영업이익 <strong className="mono">{money(decimal(financial.values?.ttm_operating_income))}</strong> · OCF는 원본 연간 기준</p>
             <p className="muted">관측 {kst(financial.observed_at)} · 과거 시점 인증 전</p>
           </section>}
           <p className="muted">실제 3년 시점별 자료는 미확보 상태입니다.</p>

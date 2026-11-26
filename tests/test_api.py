@@ -65,7 +65,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.request("POST", path, authorized=True)[0], 400)
         self.assertEqual(self.request("GET", path, authorized=True)[2], [])
 
-    def test_capabilities_require_a_session_and_declare_phase_a_routes(self):
+    def test_capabilities_require_a_session_and_declare_phase_b_routes(self):
         path = "/api/capabilities"
         self.assertEqual(self.request("GET", path)[0], 401)
         self.assertEqual(self.request("GET", path, authorized=True)[2], {
@@ -73,7 +73,8 @@ class ApiTests(unittest.TestCase):
             "orders_enabled": False,
             "telegram_delivery_enabled": False,
             "routes": ["/", "/hermes", "/daytrade", "/experiments", "/research", "/swing", "/ops"],
-            "phase_b_available": False,
+            "phase_b_available": True,
+            "daytrade_sessions_available": True,
         })
 
     def test_spa_routes_issue_session_cookie_and_fall_back_to_legacy(self):
@@ -92,7 +93,7 @@ class ApiTests(unittest.TestCase):
                 self.assertNotIn("unsafe-inline", headers["Content-Security-Policy"])
                 self.assertNotIn("Set-Cookie", self.request("GET", path, authorized=True)[1])
         self.assertEqual(self.request("GET", "/research/extra", authorized=True)[0], 404)
-        self.assertEqual(self.request("GET", "/api/research/reports", authorized=True)[0], 404)
+        self.assertEqual(self.request("GET", "/api/research/reports")[0], 401)
         index.unlink()
         for path, legacy in (("/", "index.html"), ("/hermes", "hermes.html"), ("/daytrade", "daytrade.html")):
             self.assertEqual(self.request("GET", path)[2], (web / legacy).read_bytes())

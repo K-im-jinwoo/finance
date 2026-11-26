@@ -276,6 +276,7 @@ function DaytradeHistory({ dates }: { dates: string[] }) {
       {loading ? '원장 집계 중…' : '최근 ' + recent.length + '개 원장 집계'}
     </button>
   }>
+    {!results && <p className="muted">최근 최대 5개 거래일 원장의 실현손익을 집계합니다.</p>}
     {results && <>
       <p role="status">{results.length}개 중 {realized.length}개 원장에서 실현손익을 확인했습니다.
         {complete && <> 누적 실현손익 <Pnl value={realized.reduce((sum, value) => sum + value, 0)} format={money} /></>}

@@ -101,21 +101,21 @@ export type VerificationStatus = {
     as_of?: string
     results?: {
       symbol: string
-      start: string
-      end: string
-      distinct_trading_dates: number
-      source_features_equal_independent_formulas: boolean
-      calculation_dates_checked: number
-      fields_checked: string[]
-    }[]
+      start?: string | null
+      end?: string | null
+      distinct_trading_dates?: number | null
+      source_features_equal_independent_formulas?: boolean | null
+      calculation_dates_checked?: number | null
+      fields_checked?: string[] | null
+    }[] | null
   } | null
   actual_financial_validation?: {
-    symbol: string
-    division: string
-    observed_at: string
-    checks: Record<string, boolean>
-    all_equal: boolean
-    values: { ttm_operating_income: DecimalValue }
+    symbol?: string | null
+    division?: string | null
+    observed_at?: string | null
+    checks?: Record<string, boolean> | null
+    all_equal?: boolean | null
+    values?: { ttm_operating_income?: DecimalValue } | null
   } | null
 }
 

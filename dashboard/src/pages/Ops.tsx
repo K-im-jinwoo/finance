@@ -1,4 +1,4 @@
-import { useResource } from '../api/client'
+import { useEvidenceMode, useResource } from '../api/client'
 import { unavailableReason } from '../api/phaseB'
 import { AppLink } from '../components/AppLink'
 import { Badge, Empty, Panel, Pnl, ResourceState, Table } from '../components/ui'
@@ -195,6 +195,7 @@ function DaytradeStatus({ value }: { value?: DaemonSummary }) {
 }
 
 export default function Ops() {
+  useEvidenceMode('MULTI-TRACK')
   const resource = useResource<OpsData>('/api/ops/overview')
   const data = resource.data
   return <div className="stack page-content">

@@ -17,6 +17,7 @@ import threading
 from bootstrap import ROOT
 from daytrade_dashboard import ReadOnlyHandler
 from research_dashboard.daytrade_bridge import simulate_sample_daytrade
+from research_dashboard.rules import Policy
 from research_dashboard.server import DashboardServer
 from stock_assistant.backtest import SWING_POLICY
 from stock_assistant.models import Decision, Holding, OHLCV, ScreeningResult, ThesisCard, ThesisStatus
@@ -180,23 +181,29 @@ def seed_operations(root, state, runtime):
         "checked_at_kst": now.isoformat(), "source_head": "a" * 40, "all_snapshot_hashes_match": True,
         "real_three_year_replay": "BLOCKED_NO_POINT_IN_TIME_DATASET",
     })
+    price_days = weekdays(SESSION, 246)
+    price_start = date(2026, 7, 1)
     write_json(artifacts / "oracle-data-coverage.json", {
         "checked_at_kst": now.isoformat(), "mode": "SYNTHETIC", "read_only": True,
         "point_in_time_certified": False, "tables": {
             "ohlcv": {"rows": 430, "symbols": 5, "distinct_dates": 246,
-                      "trade_date_range": [weekdays(SESSION, 246)[0].isoformat(), SESSION.isoformat()]},
+                      "trade_date_range": [price_days[0].isoformat(), SESSION.isoformat()]},
             "financial_snapshots": {"rows": 24, "symbols": 5},
         },
     })
     write_json(artifacts / "observed-price-calculation.json", {
         "as_of": AS_OF.isoformat(), "results": [{
-            "symbol": ISSUERS[0][0], "start": "2026-07-01", "end": SESSION.isoformat(),
-            "calculation_dates_checked": 60, "source_features_equal_independent_formulas": True,
+            "symbol": ISSUERS[0][0], "start": price_start.isoformat(), "end": SESSION.isoformat(),
+            "distinct_trading_dates": sum(day >= price_start for day in price_days),
+            "calculation_dates_checked": 60, "fields_checked": ["close", "sma20", "sma60", "return5"],
+            "source_features_equal_independent_formulas": True,
         }],
     })
     write_json(artifacts / "observed-financial-calculation.json", {
         "symbol": ISSUERS[0][0], "division": "CFS", "observed_at": AS_OF.isoformat(), "all_equal": True,
         "checks": {"stored_annual_income_equal": True, "stored_ttm_income_equal": True, "stored_receipt_links_equal": True},
+        "values": {"annual_operating_income": "3200000000", "current_cumulative_income": "1800000000",
+                   "previous_cumulative_income": "1500000000", "ttm_operating_income": "3500000000"},
     })
     write_json(state / "status.json", {
         "status": "OBSERVING", "at": now.isoformat(), "orders_enabled": False, "entry_blocked": False,
@@ -221,6 +228,21 @@ def seed_daytrade(runtime, state):
     read_only_latest.mkdir(parents=True)
     shutil.copy2(latest, read_only_latest / latest.name)
     shutil.copy2(latest, runtime / latest.name)
+
+
+def seed_experiments(server):
+    fixture = server.root / "datasets/validation.json"
+    fixture.parent.mkdir()
+    shutil.copyfile(ROOT / "datasets/validation.json", fixture)
+    dataset = json.loads(fixture.read_text(encoding="utf-8"))
+    if dataset.get("mode") != "SYNTHETIC":
+        raise ValueError("experiment audit requires a synthetic dataset")
+    for cost in ("10", "60", "30"):
+        experiment = server.store.create(dataset, Policy(round_trip_bps=cost))
+        server.store.apply(experiment, "start")
+        result = server.store.apply(experiment, limit=len(dataset["events"]))
+        if result["state"]["status"] != "COMPLETED":
+            raise RuntimeError("experiment audit fixture did not complete")
 
 
 def main():
@@ -249,6 +271,11 @@ def main():
         seed_daytrade(runtime, state)
 
         full = cleanup.enter_context(DashboardServer(root, port=args.port))
+        seed_experiments(full)
+        experiment_worker = threading.Thread(target=full.run_worker, daemon=True)
+        experiment_worker.start()
+        cleanup.callback(experiment_worker.join)
+        cleanup.callback(full.stopping.set)
         readonly = cleanup.enter_context(ThreadingHTTPServer(("127.0.0.1", args.readonly_port), ReadOnlyHandler))
         readonly.root, readonly.state_root = root, state
         readonly.sessions, readonly.daytrade_lock = set(), threading.Lock()

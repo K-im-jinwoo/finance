@@ -134,6 +134,7 @@ it('loads cumulative realized amounts on demand without counting unavailable ses
     </CapabilitiesProvider>
   </PollProvider>)
   const load = await screen.findByRole('button', { name: '최근 2개 원장 집계' })
+  expect(screen.getByText('최근 최대 5개 거래일 원장의 실현손익을 집계합니다.')).toBeTruthy()
   expect(api.mock.calls.map(([path]) => path)).not.toContain('/api/daytrade/report?date=2026-11-24')
   fireEvent.click(load)
   const table = await screen.findByRole('table', { name: '일자별 단타 성과' })

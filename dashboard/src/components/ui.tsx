@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, X } from 'lucide-react'
-import { useEffect, useId, useRef } from 'react'
+import { Component, useEffect, useId, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { numeric } from '../utils/formatters'
 
@@ -18,6 +18,24 @@ export function Panel({ title, children, actions }: { title: ReactNode; children
     </header>
     <div className="panel-content stack">{children}</div>
   </section>
+}
+
+export class PageErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children
+    return <Panel title="화면을 불러오지 못했습니다">
+      <p className="notice notice-danger" role="alert">화면을 표시하는 중 오류가 발생했습니다.</p>
+      <div className="cluster">
+        <button type="button" onClick={() => this.setState({ failed: false })}>다시 시도</button>
+      </div>
+    </Panel>
+  }
 }
 
 export function Empty({ children }: { children: ReactNode }) {

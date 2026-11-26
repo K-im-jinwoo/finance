@@ -177,7 +177,7 @@ export default function Swing() {
   const detail = useResource<Presence & { report?: SwingReport }>(!performance && selected
     ? '/api/swing/reports/' + encodeURIComponent(selected) : null)
   const report = detail.data?.report
-  useEvidenceMode(report ? evidenceMode(report.mode) : null)
+  useEvidenceMode(performance ? 'MULTI-TRACK' : report?.mode)
 
   function tabLink(next: boolean) {
     const params = new URLSearchParams(query)

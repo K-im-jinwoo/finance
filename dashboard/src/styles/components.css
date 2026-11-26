@@ -341,7 +341,7 @@ table td.mono, table td > .mono { white-space: nowrap; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metric-grid > .metric:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .metric-value { font-size: 20px; }
-  .table-sort { min-height: 44px; }
+  .table-sort { min-width: 44px; min-height: 44px; }
   .report-text { font-size: 16px; }
 }
 @media (max-width: 430px) {

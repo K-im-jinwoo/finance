@@ -37,12 +37,12 @@ const summary = (experiment: Experiment): ExperimentSummary => ({
   mode: experiment.coverage.mode,
 })
 
-function mockApi(experiments: Experiment[], action?: (path: string, init: RequestInit) => Response) {
+function mockApi(experiments: Experiment[], action?: (path: string, init: RequestInit) => Response, status: unknown = {}) {
   const fetchMock = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
     const path = String(request)
     if (init?.method === 'POST' && action) return action(path, init)
     if (path === '/api/experiments') return Response.json(experiments.map(summary))
-    if (path === '/api/status') return Response.json({})
+    if (path === '/api/status') return Response.json(status)
     if (path.endsWith('/drafts')) return Response.json([])
     const found = experiments.find(experiment => path === '/api/experiments/' + experiment.experiment_id)
     if (found) return Response.json(found)
@@ -156,4 +156,31 @@ it('marks the active experiment view and updates the query when switching views'
   expect(within(tabs).getByRole('link', { name: '단일 실험' }).hasAttribute('aria-current')).toBe(false)
   expect(new URLSearchParams(location.search).get('view')).toBe('costs')
   await screen.findByRole('table', { name: '비용별 핵심 지표' })
+})
+
+it.each([
+  { name: 'omitted', checks: undefined }, { name: 'null', checks: null },
+  { name: 'array', checks: [] }, { name: 'scalar', checks: 'invalid' },
+])('renders partial Oracle verification with $name checks', async ({ checks }) => {
+  mockApi([fixture(exp30, '30')], undefined, {
+    actual_price_validation: { results: [
+      { symbol: '900001', start: at, end: nextDay, calculation_dates_checked: 0, source_features_equal_independent_formulas: true },
+      { symbol: '900002', distinct_trading_dates: 0, source_features_equal_independent_formulas: true, fields_checked: [] },
+    ] },
+    actual_financial_validation: { symbol: '900001', division: 'CFS', checks },
+  })
+  open('experiment=' + exp30)
+  fireEvent.click(screen.getByText('자료 범위와 검산 결과'))
+
+  const table = await screen.findByRole('table', { name: '관측 가격 검산' })
+  const partial = within(table).getByRole('rowheader', { name: '900001' }).closest('tr')!
+  const zero = within(table).getByRole('rowheader', { name: '900002' }).closest('tr')!
+  expect(within(partial).getByText('확인 불가')).toBeTruthy()
+  expect(within(partial).getByText('계산 날짜 0개 · 일치 지표 확인 불가')).toBeTruthy()
+  expect(within(zero).getByText('0일')).toBeTruthy()
+  expect(within(zero).getByText('계산 날짜 확인 불가 · 일치 지표 0개')).toBeTruthy()
+  const financial = screen.getByRole('heading', { name: '관측 재무 검산' }).closest('section')!
+  expect(within(financial).getByText(/대조 항목 확인 불가/)).toBeTruthy()
+  expect(within(financial).getByText('확인 불가', { selector: 'strong' })).toBeTruthy()
+  expect(financial.textContent).not.toMatch(/undefined|null|불일치/)
 })

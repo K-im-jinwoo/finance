@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { CapabilitiesProvider, EvidenceProvider, PollProvider, evidenceMode, usePolling, useResource } from './api/client'
 import type { Capabilities, PollInterval } from './api/client'
 import { AppLink, AppNavigation } from './components/AppLink'
-import { Badge, Drawer, ResourceState } from './components/ui'
+import { Badge, Drawer, PageErrorBoundary, ResourceState } from './components/ui'
 import Daytrade from './pages/Daytrade'
 import Experiments from './pages/Experiments'
 import Hermes from './pages/Hermes'
@@ -72,7 +72,8 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
   const pageAllowed = !capability || capability.routes.includes(path)
   const phaseBUnavailable = phaseBRoutes.has(path) && capability?.phase_b_available === false
   const Page = phaseBUnavailable ? null : active?.page
-  const mode = readOnly ? 'READ_ONLY' : path === '/' ? 'MULTI-TRACK' : evidenceMode(evidence)
+  const multiTrack = path === '/' || evidence === 'MULTI-TRACK'
+  const mode = readOnly ? 'READ_ONLY' : multiTrack ? 'MULTI-TRACK' : evidenceMode(evidence)
   const pnlLabel = pnl === 'krx' ? 'KRX 적/청' : '글로벌 녹/적'
   const nextPnlLabel = pnl === 'krx' ? '글로벌 녹/적' : 'KRX 적/청'
 
@@ -143,7 +144,7 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
             <main id="dashboard-main" ref={main} tabIndex={-1} className="page">
               <ResourceState loading={loading} error={error} />
               {!pageAllowed && <><h1>지원하지 않는 화면</h1><p>이 서버는 당일 단타 읽기 전용 화면을 제공합니다.</p><AppLink className="action-link" href="/daytrade">당일 단타 열기</AppLink></>}
-              {pageAllowed && Page && <Page />}
+              {pageAllowed && Page && <PageErrorBoundary key={path}><Page /></PageErrorBoundary>}
               {pageAllowed && !Page && <>
                 <h1>{active?.label ?? '페이지를 찾을 수 없습니다'}</h1>
                 {phaseBUnavailable && <p className="notice">이 서버에서 읽기 전용 자료 API를 사용할 수 없습니다.</p>}

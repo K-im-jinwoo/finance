@@ -6,6 +6,22 @@ $taskPreviousBytecode = $env:PYTHONDONTWRITEBYTECODE
 $taskPreviousStockPython = $env:STOCK_PYTHON
 try {
     $env:PYTHONDONTWRITEBYTECODE = '1'
+    Push-Location -LiteralPath (Join-Path $taskRoot 'dashboard')
+    try {
+        if (-not (Test-Path -LiteralPath 'node_modules/.bin/vite.cmd')) {
+            & npm.cmd ci --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw 'Dashboard dependency installation failed.' }
+        }
+        & npm.cmd run typecheck
+        if ($LASTEXITCODE -ne 0) { throw 'Dashboard TypeScript validation failed.' }
+        & npm.cmd test
+        if ($LASTEXITCODE -ne 0) { throw 'Dashboard Vitest verification failed.' }
+        & npm.cmd run build
+        if ($LASTEXITCODE -ne 0) { throw 'Dashboard Vite build failed.' }
+    }
+    finally {
+        Pop-Location
+    }
     & $Python scripts/verify_engine_integration.py
     if ($LASTEXITCODE -ne 0) { throw 'Canonical engine comparison failed.' }
     & $Python scripts/verify_local.py

@@ -21,7 +21,8 @@ def make_bundle(root, output):
     files = []
     for relative in ('engine/src', 'src', 'web', 'scripts', 'engine/deploy'):
         files.extend(p for p in (root/relative).rglob('*') if p.is_file()
-            and '__pycache__' not in p.parts and p.suffix not in {'.pyc', '.sqlite3', '.db', '.log', '.pem', '.key'}
+            and '__pycache__' not in p.parts and 'node_modules' not in p.relative_to(root).parts
+            and p.suffix not in {'.pyc', '.sqlite3', '.db', '.log', '.pem', '.key'}
             and not p.name.startswith('.env'))
     manifest = {}
     snapshot = output.with_suffix('.sqlite3')

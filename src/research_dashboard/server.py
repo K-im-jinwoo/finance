@@ -8,13 +8,33 @@ import threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from .notifications import drafts
 from .rules import Policy
 from .store import Store
 from .live_accounts import LiveAccounts
 from .oracle_bridge import HermesLiveWorker
 from .daytrade_bridge import read_daytrade_report, simulate_sample_daytrade
+
+HTML_TYPE = "text/html; charset=utf-8"
+ASSET_TYPES = {
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+}
+LEGACY_FILES = {
+    "/": ("index.html", HTML_TYPE),
+    "/hermes": ("hermes.html", HTML_TYPE),
+    "/daytrade": ("daytrade.html", HTML_TYPE),
+    "/app.js": ("app.js", ASSET_TYPES[".js"]),
+    "/live.js": ("live.js", ASSET_TYPES[".js"]),
+    "/daytrade.js": ("daytrade.js", ASSET_TYPES[".js"]),
+    "/style.css": ("style.css", ASSET_TYPES[".css"]),
+}
+LEGACY_SESSION_PATHS = {"/", "/hermes", "/daytrade", "/daytrade.js"}
+MAX_POST_BYTES = 8192
 
 class DashboardServer(ThreadingHTTPServer):
     def __init__(self, root: Path, port=8765, hermes_live=False, direct_market=False, allow_open_fills=False):
@@ -49,6 +69,10 @@ class DashboardServer(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server: DashboardServer
+    routes = ("/", "/hermes", "/daytrade", "/experiments", "/research", "/swing", "/ops")
+    legacy_paths = LEGACY_FILES.keys()
+    read_only = False
+
     def setup(self):
         super().setup()
         self.connection.settimeout(5)
@@ -73,6 +97,9 @@ class Handler(BaseHTTPRequestHandler):
         port = self.server.server_port
         return self.headers.get("Host") in {f"127.0.0.1:{port}", f"localhost:{port}"}
 
+    def local_request(self):
+        return self.allowed_host() and self.headers.get("Sec-Fetch-Site") != "cross-site"
+
     def authorized(self):
         cookie = SimpleCookie()
         try:
@@ -82,17 +109,60 @@ class Handler(BaseHTTPRequestHandler):
             return False
 
     def do_GET(self):
-        if not self.allowed_host() or self.headers.get("Sec-Fetch-Site") == "cross-site":
+        if not self.local_request():
             return self.response(403, {"error":"LOCAL_ORIGIN_REQUIRED"})
         path = urlsplit(self.path).path
-        if path in {"/", "/hermes", "/daytrade", "/app.js", "/live.js", "/daytrade.js", "/style.css"}:
-            files = {"/":("index.html","text/html; charset=utf-8"),"/hermes":("hermes.html","text/html; charset=utf-8"),"/daytrade":("daytrade.html","text/html; charset=utf-8"),"/app.js":("app.js","text/javascript; charset=utf-8"),"/live.js":("live.js","text/javascript; charset=utf-8"),"/daytrade.js":("daytrade.js","text/javascript; charset=utf-8"),"/style.css":("style.css","text/css; charset=utf-8")}
-            name, kind = files[path]
-            session = None
-            if path in {"/","/hermes","/daytrade","/daytrade.js"} and not self.authorized():
-                session = secrets.token_urlsafe(32)
-                self.server.sessions.add(session)
-            return self.response(200, (self.server.root / "web" / name).read_bytes(), kind, session)
+        if path in self.routes:
+            index = self.built_file("index.html")
+            if index is not None:
+                return self.static_response(index, HTML_TYPE, issue_session=True)
+        if path == "/assets" or path.startswith("/assets/"):
+            return self.get_asset(path.removeprefix("/assets/"))
+        if path in self.legacy_paths:
+            name, kind = LEGACY_FILES[path]
+            return self.static_response(self.server.root / "web" / name, kind, path in LEGACY_SESSION_PATHS)
+        if path == "/api/capabilities":
+            if not self.authorized():
+                return self.response(401, {"error":"LOCAL_SESSION_REQUIRED"})
+            return self.response(200, {
+                "read_only": self.read_only,
+                "orders_enabled": False,
+                "telegram_delivery_enabled": False,
+                "routes": self.routes,
+                "phase_b_available": False,
+            })
+        return self.get_api(path)
+
+    def built_file(self, *parts: str) -> Path | None:
+        try:
+            # The deployment root can itself be the trusted current-release link.
+            candidate = self.server.root.resolve().joinpath("web", "dist", *parts)
+            if candidate.resolve(strict=True) == candidate and candidate.is_file():
+                return candidate
+        except (OSError, RuntimeError):
+            return None
+        return None
+
+    def get_asset(self, name):
+        # Vite emits flat filenames. Decode once before checking the name and suffix.
+        name = unquote(name)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+            kind = ASSET_TYPES.get(Path(name).suffix)
+            if kind and self.built_file("index.html") is not None:
+                asset = self.built_file("assets", name)
+                if asset is not None:
+                    return self.static_response(asset, kind)
+        return self.response(404, {"error":"NOT_FOUND"})
+
+    def static_response(self, file, kind, issue_session=False):
+        content = file.read_bytes()
+        session = None
+        if issue_session and not self.authorized():
+            session = secrets.token_urlsafe(32)
+            self.server.sessions.add(session)
+        return self.response(200, content, kind, session)
+
+    def get_api(self, path):
         if path == "/health":
             return self.response(200, {"status":"ok","orders_enabled":False,"telegram_delivery_enabled":False,"bind":"loopback"})
         if not self.authorized():
@@ -131,29 +201,31 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError:
             return self.response(404,{"error":"NOT_FOUND"})
 
+    def reject_post(self, error):
+        # Consume only a bounded rejected body so Windows delivers the response.
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if 0 <= length <= MAX_POST_BYTES:
+                self.rfile.read(length)
+        except (ValueError, OSError):
+            pass
+        return self.response(403, {"error": error})
+
     def do_POST(self):
-        port = self.server.server_port
-        origins = {f"http://127.0.0.1:{port}",f"http://localhost:{port}"}
-        if not self.allowed_host() or not self.authorized() or self.headers.get("Origin") not in origins or self.headers.get("X-Paper-Action") != "1":
-            # Consume only a bounded rejected body so Windows does not reset the
-            # connection before delivering the 403 response. No parsing or writes.
-            try:
-                rejected_length = int(self.headers.get("Content-Length", "0"))
-                if 0 <= rejected_length <= 8192:
-                    self.rfile.read(rejected_length)
-            except (ValueError, OSError):
-                pass
-            return self.response(403,{"error":"SESSION_AND_SAME_ORIGIN_REQUIRED"})
+        origin = f"http://{self.headers.get('Host')}"
+        if (not self.local_request() or not self.authorized() or self.headers.get("Origin") != origin
+                or self.headers.get("X-Paper-Action") != "1"):
+            return self.reject_post("SESSION_AND_SAME_ORIGIN_REQUIRED")
         try:
             length = int(self.headers.get("Content-Length","0"))
-            if length < 0 or length > 8192:
+            if length < 0 or length > MAX_POST_BYTES:
                 return self.response(413,{"error":"BODY_TOO_LARGE"})
-            body = json.loads(self.rfile.read(length) or b"{}")
+            body = json.loads(self.rfile.read(length))
             if not isinstance(body,dict):
                 raise ValueError("object required")
             path = urlsplit(self.path).path
             if path == "/api/daytrade/simulate-sample":
-                if body or length == 0:
+                if body:
                     raise ValueError("sample action requires an explicit empty object")
                 try:
                     with self.server.daytrade_lock:

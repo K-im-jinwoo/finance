@@ -1,0 +1,81 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, expect, it, vi } from 'vitest'
+import App, { canonicalLocation } from '../App'
+
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+  localStorage.clear()
+  document.documentElement.dataset.theme = 'dark'
+  document.documentElement.dataset.pnl = 'krx'
+  window.history.replaceState(null, '', '/')
+})
+
+it('canonicalizes legacy links without changing the query or fragment', () => {
+  const query = '?experiment=E-test&event=A%2B1&trade=t&report=r&x=x&x=y'
+  expect(canonicalLocation(new URL('http://127.0.0.1/' + query + '#anchor'))).toBe('/experiments' + query + '#anchor')
+  expect(canonicalLocation(new URL('http://127.0.0.1/hermes?account=abc'))).toBe('/hermes?account=abc')
+})
+
+it('hides other tracks and writes no paper action when the server is read-only', async () => {
+  window.history.replaceState(null, '', '/daytrade')
+  const api = vi.fn(async (path: string) => new Response(JSON.stringify(path === '/api/capabilities'
+    ? { read_only: true, orders_enabled: false, telegram_delivery_enabled: false, routes: ['/daytrade'], phase_b_available: false }
+    : { present: false, report: null, sample_available: true })))
+  vi.stubGlobal('fetch', api)
+  render(<App />)
+  expect(await screen.findByText('READ_ONLY')).toBeTruthy()
+  expect(screen.queryByRole('link', { name: '통합 홈' })).toBeNull()
+  expect(screen.queryByRole('link', { name: '계산 검증 실험' })).toBeNull()
+  expect(screen.queryByRole('button', { name: '오프라인 샘플 실행' })).toBeNull()
+  expect(api.mock.calls.map(([path]) => path).sort()).toEqual(['/api/capabilities', '/api/daytrade/report'])
+})
+
+it('persists theme and market color settings independently', async () => {
+  window.history.replaceState(null, '', '/research')
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+    read_only: false, orders_enabled: false, telegram_delivery_enabled: false, routes: ['/research'], phase_b_available: false,
+  }))))
+  render(<App />)
+  expect(await screen.findByText('Phase B 준비 중')).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '라이트 테마로 전환' }))
+  const pnlToggle = screen.getByRole('button', { name: /^KRX 적\/청/ })
+  expect(pnlToggle.getAttribute('aria-pressed')).toBe('false')
+  fireEvent.click(pnlToggle)
+  expect(screen.getByRole('button', { name: /^글로벌 녹\/적/ }).getAttribute('aria-pressed')).toBe('true')
+  await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'))
+  expect(document.documentElement.dataset.pnl).toBe('global')
+  expect(localStorage.getItem('finance.theme')).toBe('light')
+  expect(localStorage.getItem('finance.pnl')).toBe('global')
+})
+
+it('navigates from the overview without reloading and preserves the selected experiment query', async () => {
+  const id = 'E-300000000000000000000000'
+  const responses: Record<string, unknown> = {
+    '/api/capabilities': { read_only: false, orders_enabled: false, telegram_delivery_enabled: false,
+      routes: ['/', '/hermes', '/daytrade', '/experiments', '/research', '/swing', '/ops'], phase_b_available: false },
+    '/api/paper-accounts': { accounts: [], source: {} },
+    '/api/daytrade/report': { present: false, report: null, sample_available: false },
+    '/api/experiments': [{ experiment_id: id, cost_bps: '30', mode: 'SYNTHETIC', state: 'READY' }],
+    '/api/status': { data_status: 'BLOCKED_NO_POINT_IN_TIME_DATASET' },
+  }
+  const api = vi.fn(async (path: string) => path in responses
+    ? Response.json(responses[path]) : Response.json({ error: 'NOT_FOUND' }, { status: 404 }))
+  vi.stubGlobal('fetch', api)
+  const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+  try {
+    const { container } = render(<App />)
+    expect(within(container.querySelector('.global-bar')!).getByText('MULTI-TRACK')).toBeTruthy()
+    const link = screen.getByRole('link', { name: '실험 보기' })
+    await waitFor(() => expect(link.getAttribute('href')).toBe('/experiments?experiment=' + id))
+    expect(fireEvent.click(link)).toBe(false)
+    expect(await screen.findByRole('heading', { name: '계산 검증 실험', level: 1 })).toBeTruthy()
+    expect(location.pathname + location.search).toBe('/experiments?experiment=' + id)
+    const menus = screen.getByRole('navigation', { name: '대시보드 메뉴' })
+    fireEvent.click(within(menus).getByRole('link', { name: '계산 검증 실험' }))
+    expect(location.search).toBe('?experiment=' + id)
+    expect(api.mock.calls.filter(([path]) => path === '/api/capabilities')).toHaveLength(1)
+  } finally {
+    scroll.mockRestore()
+  }
+})

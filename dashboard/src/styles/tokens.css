@@ -1,0 +1,83 @@
+:root {
+  --font-ui: "IBM Plex Sans KR", sans-serif;
+  --font-mono: "Fira Code", "IBM Plex Sans KR", monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --sidebar-width: 236px;
+  --status-height: 48px;
+  --motion: 150ms ease-out;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-canvas: #080C14;
+  --bg-surface: #0F1623;
+  --bg-elevated: #162033;
+  --border-subtle: #223047;
+  --border-strong: #334868;
+  --text-primary: #E8EEF7;
+  --text-secondary: #9BB0C9;
+  --text-muted: #748AA6;
+  --accent-primary: #10B981;
+  --accent-on-primary: #042119;
+  --status-ok: #34D399;
+  --status-ok-bg: #0D2C25;
+  --status-warn: #FBBF24;
+  --status-warn-bg: #2E240E;
+  --status-danger: #F87171;
+  --status-danger-bg: #33151A;
+  --status-unknown: #94A3B8;
+  --status-unknown-bg: #1A2436;
+  --pnl-up: #FB7185;
+  --pnl-down: #60A5FA;
+  --chart-10: #61CFAC;
+  --chart-30: #85B8FF;
+  --chart-60: #ECB469;
+  --scrim: rgb(8 12 20 / 78%);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-canvas: #F4F6F3;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #EDF1EC;
+  --border-subtle: #D7E0D9;
+  --border-strong: #B7C6BC;
+  --text-primary: #122623;
+  --text-secondary: #4A5E5A;
+  --text-muted: #637571;
+  --accent-primary: #0F766E;
+  --accent-on-primary: #FFFFFF;
+  --status-ok: #0F766E;
+  --status-ok-bg: #E4F3EF;
+  --status-warn: #9A6300;
+  --status-warn-bg: #FBF2DC;
+  --status-danger: #B91C1C;
+  --status-danger-bg: #FCE8E8;
+  --status-unknown: #475569;
+  --status-unknown-bg: #E9EEF3;
+  --pnl-up: #DC2626;
+  --pnl-down: #2563EB;
+  --chart-10: #08745A;
+  --chart-30: #225FB6;
+  --chart-60: #8F5309;
+  --scrim: rgb(16 32 27 / 55%);
+}
+
+:root[data-theme="dark"][data-pnl="global"] {
+  --pnl-up: #34D399;
+  --pnl-down: #F87171;
+}
+
+:root[data-theme="light"][data-pnl="global"] {
+  --pnl-up: #0F766E;
+  --pnl-down: #B91C1C;
+}
+
+:root { --pnl-flat: var(--text-secondary); }

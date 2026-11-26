@@ -1,5 +1,5 @@
 """Explicit live transports. Secrets remain in memory and never enter diagnostics."""
-from contextlib import closing
+from contextlib import closing, suppress
 import json
 import os
 from pathlib import Path
@@ -11,6 +11,9 @@ import urllib.request
 
 from .http import HttpResult
 from ..telegram_routing import BotChannel, resolve_telegram_route, telegram_bot_id, with_channel_header
+
+
+TELEGRAM_TIMEOUT_SECONDS = 5.0
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -70,7 +73,11 @@ class ReadOnlyTransport:
 
 
 class TelegramSender:
-    def __init__(self, token, recipient=None, *, bot_channel=BotChannel.DAYTRADE, env=None, opener=None):
+    def __init__(self, token, recipient=None, *, bot_channel=BotChannel.DAYTRADE, env=None, opener=None,
+                 timeout=TELEGRAM_TIMEOUT_SECONDS):
+        if type(timeout) not in (int, float) or not 0 < timeout < float('inf'):
+            raise ValueError('TELEGRAM_TIMEOUT_MUST_BE_POSITIVE_AND_FINITE')
+        self.timeout = timeout
         self.token = token
         self.route = resolve_telegram_route(bot_channel, os.environ if env is None else env, default_chat_id=recipient)
         self.opener = opener or urllib.request.build_opener(NoRedirect())
@@ -85,7 +92,7 @@ class TelegramSender:
             body = json.dumps(payload).encode()
             request = urllib.request.Request('https://api.telegram.org/bot' + self.token + '/sendMessage',
                 data=body, headers={'Content-Type': 'application/json'}, method='POST')
-            with self.opener.open(request, timeout=1.5) as response:
+            with self.opener.open(request, timeout=self.timeout) as response:
                 status = response.status
                 raw = response.read(1_000_001)
                 if status != 200 or len(raw) > 1_000_000:
@@ -94,6 +101,11 @@ class TelegramSender:
                 result = value.get('result', {})
                 if value.get('ok') is True and type(result.get('message_id')) is int and str(result.get('chat', {}).get('id')) == self.route.chat_id:
                     return {'status': 'SENT', 'http_status': 200}
+        except urllib.error.HTTPError as error:
+            code = error.code
+            status = code if isinstance(code, int) and 100 <= code <= 599 else None
+            with suppress(Exception):
+                error.close()
         except Exception:
             pass
         return {'status': 'FAILED', 'http_status': status}

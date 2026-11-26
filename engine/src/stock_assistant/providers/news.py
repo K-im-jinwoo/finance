@@ -11,7 +11,7 @@ from collections.abc import Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ..models import Evidence
-from .http import AuthenticationError, RateLimitError, UpstreamSchemaError, get_json
+from .http import AuthenticationError, UpstreamSchemaError, get_json
 
 
 _TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -64,6 +64,7 @@ def normalize_news_items(items: list[dict[str, Any]], *, observed_at: datetime) 
 
 
 NAVER_NEWS_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
+REQUEST_INTERVAL_SECONDS = 1.0
 DEFAULT_DISCOVERY_QUERIES = ("특징주", "공급계약", "흑자전환", "허가 승인", "정책 수혜")
 
 
@@ -138,7 +139,7 @@ class NaverNewsClient:
 
     def _request(self, *, query: str, display: int, start: int):
         if self._last_request_end is not None:
-            wait = 0.25 - (self._monotonic() - self._last_request_end)
+            wait = REQUEST_INTERVAL_SECONDS - (self._monotonic() - self._last_request_end)
             if wait > 0:
                 self._sleep(wait)
         try:
@@ -148,7 +149,7 @@ class NaverNewsClient:
                 headers={"X-NCP-APIGW-API-KEY-ID": self._client_id, "X-NCP-APIGW-API-KEY": self._client_secret},
                 timeout_seconds=10,
             )
-        except (RateLimitError, AuthenticationError):
+        except AuthenticationError:
             self._budget.halt_provider(at=self._clock())
             raise
         finally:

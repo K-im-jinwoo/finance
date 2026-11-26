@@ -1,5 +1,6 @@
 """Service scope and shutdown checks using injected transports only."""
 from contextlib import closing
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
+from urllib.error import HTTPError, URLError
 from unittest.mock import MagicMock, patch
 
 from stock_assistant.daytrade.service_runtime import ReadOnlyTransport, TelegramSender, telegram_sender
@@ -23,10 +25,38 @@ class RuntimeTests(unittest.TestCase):
                 transport(path, {})
 
     def test_failed_telegram_transport_returns_safe_metadata(self):
-        class Opener:
-            def open(self, *_args, **_kwargs): raise RuntimeError('secret-token')
-        self.assertEqual(TelegramSender('secret-token', '123', opener=Opener())('paper fill'),
-                         {'status': 'FAILED', 'http_status': None})
+        for error in (TimeoutError('secret-token'), URLError('secret-token'), RuntimeError('secret-token')):
+            with self.subTest(error=type(error)):
+                opener = MagicMock()
+                opener.open.side_effect = error
+                sender = TelegramSender('secret-token', '123', env={}, opener=opener)
+                self.assertEqual(sender('paper fill'), {'status': 'FAILED', 'http_status': None})
+
+    def test_telegram_open_uses_default_or_custom_timeout(self):
+        for options, expected_timeout in (({}, 5.0), ({'timeout': 3.0}, 3.0)):
+            with self.subTest(options=options):
+                opener = MagicMock()
+                opener.open.side_effect = TimeoutError()
+                sender = TelegramSender('fixture', '123', env={}, opener=opener, **options)
+                sender('paper fill')
+                opener.open.assert_called_once()
+                self.assertEqual(opener.open.call_args.kwargs['timeout'], expected_timeout)
+
+    def test_telegram_rejects_invalid_timeout(self):
+        for timeout in (0, -1, 'invalid', None, True, float('nan'), float('inf')):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                TelegramSender('fixture', '123', env={}, opener=MagicMock(), timeout=timeout)
+
+    def test_telegram_http_error_exposes_only_valid_status(self):
+        for code, expected in ((400, 400), (403, 403), (429, 429), (99, None), (600, None), ('403', None)):
+            with self.subTest(code=code):
+                body = BytesIO(b'private response body')
+                opener = MagicMock()
+                opener.open.side_effect = HTTPError('https://api.telegram.org/botsecret-token/sendMessage',
+                                                   code, 'private error', {}, body)
+                sender = TelegramSender('secret-token', '123', env={}, opener=opener)
+                self.assertEqual(sender('paper fill'), {'status': 'FAILED', 'http_status': expected})
+                self.assertTrue(body.closed)
 
     def test_telegram_routes_each_axis_and_falls_back_with_its_header(self):
         class Opener:

@@ -7,10 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.error import HTTPError
 from unittest.mock import Mock, patch
 
 from stock_assistant.news_cost import FREE_STATEMENT, NewsApiBudget, NewsCostBlocked, require_free_policy
-from stock_assistant.providers.http import JsonResponse, NetworkError, RateLimitError
+from stock_assistant.providers.http import AuthenticationError, JsonResponse, NetworkError, RateLimitError, get_json
 from stock_assistant.providers.news import NaverNewsClient
 
 NOW = datetime(2026, 10, 2, 3, tzinfo=timezone.utc)
@@ -51,7 +52,7 @@ class NewsBudgetTests(unittest.TestCase):
 
     def client(self, fetch):
         return NaverNewsClient('fixture-id', 'fixture-secret', fetch_json=fetch,
-                               budget=self.guard, clock=lambda: NOW)
+                               budget=self.guard, clock=lambda: NOW, sleeper=Mock())
 
     def test_legacy_ledger_separates_swing_and_default_cooldowns_but_shares_totals(self):
         self.initialize(10, 30)
@@ -149,16 +150,50 @@ class NewsBudgetTests(unittest.TestCase):
         for _ in range(3):
             client.archive_page(query='fixture', start=1)
         self.assertEqual(fetch.call_count, 3)
-        self.assertEqual([call.args for call in sleep.call_args_list], [(0.25,), (0.25,)])
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1.0,), (1.0,)])
 
-    def test_provider_quota_rejection_halts_later_attempts_for_month(self):
+    def test_provider_auth_rejection_halts_all_scopes_for_month(self):
+        for status in (401, 403):
+            with self.subTest(status=status):
+                path = Path(self.temp.name) / f'auth-{status}.sqlite3'
+                NewsApiBudget.initialize(path, at=NOW - timedelta(hours=2), used_today=0, used_month=0)
+                guard = NewsApiBudget(path, free_check=self.free)
+                opener = Mock(side_effect=HTTPError('https://example.test', status, 'fixture', {}, None))
+                def fetch(*args, **kwargs):
+                    return get_json(*args, **kwargs, opener=opener)
+                client = NaverNewsClient('fixture', 'fixture', fetch_json=fetch, budget=guard,
+                                         clock=lambda: NOW)
+                with self.assertRaisesRegex(AuthenticationError, f'HTTP {status}'):
+                    client.collect(observed_at=NOW, queries=('fixture',))
+                opener.assert_called_once()
+                with closing(sqlite3.connect(path)) as db:
+                    self.assertEqual(db.execute('SELECT halted_month FROM news_api_budget').fetchone(),
+                                     ('2026-10',))
+                with self.assertRaisesRegex(NewsCostBlocked, 'NEWS_PROVIDER_QUOTA_BLOCKED'):
+                    guard.reserve(1, at=NOW + timedelta(days=1), scope='SWING')
+
+    def test_rate_limit_stops_swing_batch_but_allows_new_batch_after_cooldown(self):
         self.initialize()
-        fetch = Mock(side_effect=RateLimitError('429 fixture'))
+        response = JsonResponse(200, {'total': 0, 'start': 1, 'items': []})
+        fetch = Mock(side_effect=[RateLimitError('429 fixture'), response])
+        now = NOW
+        client = NaverNewsClient('fixture', 'fixture', fetch_json=fetch, budget=self.guard,
+                                 budget_scope='SWING', clock=lambda: now, sleeper=Mock())
+        client.archive_batch(15)
         with self.assertRaises(RateLimitError):
-            self.client(fetch).collect(observed_at=NOW)
-        with self.assertRaisesRegex(NewsCostBlocked, 'NEWS_PROVIDER_QUOTA_BLOCKED'):
-            self.guard.reserve(5, at=NOW + timedelta(days=1))
-        self.assertEqual(fetch.call_count, 1)
+            client.archive_page(query='fixture', start=1)
+        self.assertEqual(self.counts(), (15, 15))
+        now += timedelta(minutes=59)
+        with self.assertRaisesRegex(NewsCostBlocked, 'NEWS_REFRESH_COOLDOWN'):
+            client.archive_batch(1)
+        fetch.assert_called_once()
+        with closing(sqlite3.connect(self.path)) as db:
+            self.assertEqual(db.execute('SELECT halted_month FROM news_api_budget').fetchone(), ('',))
+        now += timedelta(minutes=1)
+        client.archive_batch(1)
+        self.assertEqual(client.archive_page(query='fixture', start=1).raw_count, 0)
+        self.assertEqual(self.counts(), (16, 16))
+        self.assertEqual(fetch.call_count, 2)
 
     def test_parallel_connections_cannot_both_reserve_remaining_budget(self):
         self.initialize(DAY_CAP - 5, MONTH_CAP - 5)

@@ -1,5 +1,7 @@
 import { ArrowUpRight } from 'lucide-react'
-import { evidenceMode, useResource } from '../api/client'
+import { evidenceMode, useCapabilities, useResource } from '../api/client'
+import type { ReportList } from '../api/phaseB'
+import type { OpsData } from './opsData'
 import { AppLink } from '../components/AppLink'
 import { Badge, Pnl, ResourceState } from '../components/ui'
 import { finite, koreanUnit, kst, percent } from '../utils/formatters'
@@ -29,6 +31,14 @@ function ratio(value: unknown) {
 }
 
 export default function Overview() {
+  const capability = useCapabilities()
+  const phaseB = capability?.phase_b_available !== false
+  const research = useResource<ReportList>(phaseB ? '/api/research/reports' : null)
+  const swing = useResource<ReportList>(phaseB ? '/api/swing/reports' : null)
+  const ops = useResource<OpsData>(phaseB ? '/api/ops/overview' : null)
+  const researchReport = research.data?.latest
+  const swingReport = swing.data?.latest
+  const verification = ops.data?.verification
   const accounts = useResource<AccountList>('/api/paper-accounts')
   const account = useResource<HermesAccount>(accounts.data?.accounts[0]
     ? '/api/paper-accounts/' + encodeURIComponent(accounts.data.accounts[0]) : null)
@@ -51,7 +61,7 @@ export default function Overview() {
   const warningInputs = [status, daytrade, accounts, account]
   const warningsPending = warningInputs.some(resource => resource.loading)
   const warningsUnverified = warningInputs.some(resource => resource.error !== null)
-  const dataStatus = status.data?.data_status
+  const dataStatus = verification?.data_status ?? status.data?.data_status
   const warnings = [
     stale ? 'Hermes 지연 시세 ' + stale + '종목' : null,
     locks.length ? '단타 활성 잠금 ' + locks.join(' · ') : null,
@@ -61,7 +71,7 @@ export default function Overview() {
   ].filter(Boolean)
 
   return <div className="stack page-content">
-    <header className="page-heading"><h1>통합 홈</h1><p>모의계좌, 당일 단타, 계산 검증의 최근 기록을 확인합니다.</p></header>
+    <header className="page-heading"><h1>통합 홈</h1><p>모의계좌, 당일 단타, 계산 검증과 리서치의 최근 기록을 확인합니다.</p></header>
     <section className="status-band cluster" aria-label="활성 경고 및 데이터 신선도">
       <strong>활성 경고</strong>
       {warnings.map(warning => <Badge key={warning} tone="warn">{warning}</Badge>)}
@@ -108,12 +118,24 @@ export default function Overview() {
         </div>
       </article>
       <article className="overview-card">
-        <header className="section-header"><h2>통합 리서치·스윙</h2><Badge tone="warn">Phase B</Badge></header>
+        <header className="section-header"><h2>통합 리서치·스윙</h2><AppLink className="action-link" href="/ops">운영 상태</AppLink></header>
         <div className="overview-card-content stack">
-          <p>리서치 보고서와 스윙 성과 연결을 준비 중입니다.</p>
-          <div className="cluster"><AppLink className="action-link" href="/research">리서치 준비 상태</AppLink><AppLink className="action-link" href="/swing">스윙 준비 상태</AppLink></div>
-          <dl className="data-pairs"><dt>Oracle 커버리지</dt><dd>{status.data?.data_status ?? '확인 불가'}</dd>
-            <dt>자료 기준</dt><dd className="mono">{kst(status.data?.checked_at_kst)}</dd></dl>
+          <ResourceState loading={research.loading || swing.loading || ops.loading} error={research.error ?? swing.error ?? ops.error} />
+          <div className="cluster">
+            <AppLink className="action-link" href={researchReport ? '/research?report=' + encodeURIComponent(researchReport.report_id) : '/research'}>리서치 보고서</AppLink>
+            <AppLink className="action-link" href={swingReport ? '/swing?report=' + encodeURIComponent(swingReport.report_id) : '/swing'}>스윙 보고서</AppLink>
+          </div>
+          <dl className="data-pairs">
+            <dt>최근 리서치</dt><dd className="cluster"><span className="mono">{researchReport?.report_id ?? '저장 자료 확인 불가'}</span>
+              {researchReport?.mode && <Badge>{evidenceMode(researchReport.mode)}</Badge>}</dd>
+            <dt>매수 추천</dt><dd>{researchReport?.decision_counts?.BUY_RECOMMENDATION == null ? '확인 불가'
+              : researchReport.decision_counts.BUY_RECOMMENDATION + '건'}</dd>
+            <dt>최근 스윙</dt><dd className="cluster"><span className="mono">{swingReport?.report_id ?? '저장 자료 확인 불가'}</span>
+              {swingReport?.mode && <Badge>{evidenceMode(swingReport.mode)}</Badge>}</dd>
+            <dt>스윙 후보</dt><dd>{swingReport?.candidate_count == null ? '확인 불가' : swingReport.candidate_count + '건'}</dd>
+            <dt>Oracle 커버리지</dt><dd>{dataStatus ?? '확인 불가'}</dd>
+            <dt>자료 기준</dt><dd className="mono">{kst(verification?.checked_at_kst ?? status.data?.checked_at_kst)}</dd>
+          </dl>
         </div>
       </article>
     </div>

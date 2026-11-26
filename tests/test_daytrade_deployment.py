@@ -61,13 +61,17 @@ class DeploymentTests(unittest.TestCase):
                         "telegram_delivery_enabled": False,
                         "routes": ["/daytrade"],
                         "phase_b_available": False,
+                        "daytrade_sessions_available": True,
                     })
-                for route in ("/", "/hermes", "/experiments", "/research", "/swing", "/ops", "/api/paper-accounts"):
+                for route in ("/", "/hermes", "/experiments", "/research", "/swing", "/ops", "/api/paper-accounts",
+                              "/api/ops/overview"):
                     with self.subTest(route=route), self.assertRaises(urllib.error.HTTPError) as error:
                         urllib.request.urlopen(urllib.request.Request(base + route, headers=headers))
                     self.assertEqual(error.exception.code, 404)
                     error.exception.close()
                 for route, request_headers, code in (("/api/capabilities", {}, 401),
+                                                        ("/api/daytrade/sessions", {}, 401),
+                                                        ("/api/daytrade/report?date=2026-11-17", {}, 401),
                                                         ("/assets/bundle.js", {"Host": "example.invalid"}, 403),
                                                         ("/daytrade", {"Sec-Fetch-Site": "cross-site"}, 403)):
                     with self.subTest(route=route), self.assertRaises(urllib.error.HTTPError) as error:
@@ -137,6 +141,21 @@ class DeploymentTests(unittest.TestCase):
                     result = json.load(response)
                 self.assertTrue(result['report']['paper_ready'])
                 self.assertFalse(result['report']['orders_enabled'])
+                headers = {'Cookie': 'paper_session=test-session'}
+                sessions_url = url.replace('/report', '/sessions')
+                with urllib.request.urlopen(urllib.request.Request(sessions_url, headers=headers)) as response:
+                    self.assertEqual(json.load(response), {
+                        'present': True, 'sessions': ['2026-11-17'], 'latest': '2026-11-17',
+                    })
+                with urllib.request.urlopen(urllib.request.Request(url + '?date=2026-11-17', headers=headers)) as response:
+                    self.assertEqual(json.load(response)['report'], result['report'])
+                with urllib.request.urlopen(urllib.request.Request(url + '?date=2026-11-18', headers=headers)) as response:
+                    self.assertEqual(json.load(response)['reason'], 'DAYTRADE_SESSION_UNAVAILABLE')
+                for query in ('?date=..%2F2026-11-17', '?date=', '?date=2026-11-17&date=2026-11-17'):
+                    with self.subTest(query=query), self.assertRaises(urllib.error.HTTPError) as error:
+                        urllib.request.urlopen(urllib.request.Request(url + query, headers=headers))
+                    self.assertEqual(error.exception.code, 400)
+                    error.exception.close()
                 with self.assertRaises(urllib.error.HTTPError) as error:
                     urllib.request.urlopen(urllib.request.Request(url, data=b'{}', method='POST'))
                 self.assertEqual(error.exception.code, 403)

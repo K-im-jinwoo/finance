@@ -28,3 +28,21 @@ it('uses the persisted experiment marks and Hermes counters without assuming mis
   expect(within(run).getByText('확인 불가')).toBeTruthy()
   expect(within(run).queryByText('+10%')).toBeNull()
 })
+
+it('shows stored research and swing summaries and connects to operations', async () => {
+  const responses: Record<string, unknown> = {
+    '/api/paper-accounts': { accounts: [], source: {} }, '/api/experiments': [],
+    '/api/daytrade/report': { present: false, report: null }, '/api/status': { data_status: 'BLOCKED_NO_POINT_IN_TIME_DATASET' },
+    '/api/research/reports': { present: true, latest: { report_id: 'UR-snapshot', candidate_count: 9,
+      decision_counts: { BUY_RECOMMENDATION: 3 } } },
+    '/api/swing/reports': { present: true, latest: { report_id: 'SW-snapshot', candidate_count: 7 } },
+    '/api/ops/overview': { present: true, verification: { data_status: 'CHECKED' } },
+  }
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => Response.json(responses[path])))
+  render(<PollProvider defaultInterval={0}><Overview /></PollProvider>)
+  expect(await screen.findByText('UR-snapshot')).toBeTruthy()
+  expect(await screen.findByText('SW-snapshot')).toBeTruthy()
+  expect(screen.getByRole('link', { name: '리서치 보고서' }).getAttribute('href')).toBe('/research?report=UR-snapshot')
+  expect(screen.getByRole('link', { name: '스윙 보고서' }).getAttribute('href')).toBe('/swing?report=SW-snapshot')
+  expect(screen.getByRole('link', { name: '운영 상태' }).getAttribute('href')).toBe('/ops')
+})

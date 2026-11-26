@@ -37,7 +37,7 @@ it('persists theme and market color settings independently', async () => {
     read_only: false, orders_enabled: false, telegram_delivery_enabled: false, routes: ['/research'], phase_b_available: false,
   }))))
   render(<App />)
-  expect(await screen.findByText('Phase B 준비 중')).toBeTruthy()
+  expect(await screen.findByText('이 서버에서 읽기 전용 자료 API를 사용할 수 없습니다.')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: '라이트 테마로 전환' }))
   const pnlToggle = screen.getByRole('button', { name: /^KRX 적\/청/ })
   expect(pnlToggle.getAttribute('aria-pressed')).toBe('false')

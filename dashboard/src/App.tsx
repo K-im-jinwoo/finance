@@ -8,22 +8,21 @@ import Daytrade from './pages/Daytrade'
 import Experiments from './pages/Experiments'
 import Hermes from './pages/Hermes'
 import Overview from './pages/Overview'
+import Research from './pages/Research'
+import Swing from './pages/Swing'
+import Ops from './pages/Ops'
 import { kst } from './utils/formatters'
 
 const routes = [
   { path: '/', label: '통합 홈', compact: '홈', icon: House, page: Overview },
   { path: '/hermes', label: 'Hermes 모의계좌', compact: 'Hermes', icon: Activity, page: Hermes },
   { path: '/daytrade', label: '당일 단타', compact: '단타', icon: CandlestickChart, page: Daytrade },
-  { path: '/experiments', label: '계산 검증 실험', compact: '실험', icon: FlaskConical, page: null },
-  { path: '/research', label: '통합 리서치 & 차트', compact: '리서치', icon: Search, page: null },
-  { path: '/swing', label: '테마·스윙 & 성과', compact: '스윙', icon: TrendingUp, page: null },
-  { path: '/ops', label: '운영·포트폴리오', compact: '운영', icon: Settings, page: null },
+  { path: '/experiments', label: '계산 검증 실험', compact: '실험', icon: FlaskConical, page: Experiments },
+  { path: '/research', label: '통합 리서치 & 차트', compact: '리서치', icon: Search, page: Research },
+  { path: '/swing', label: '테마·스윙 & 성과', compact: '스윙', icon: TrendingUp, page: Swing },
+  { path: '/ops', label: '운영·포트폴리오', compact: '운영', icon: Settings, page: Ops },
 ]
-const planned: Record<string, string> = {
-  '/research': '통합 리서치 보고서, 판정별 종목 목록과 일봉 차트를 연결할 예정입니다.',
-  '/swing': '테마 촉매, 스윙 후보와 5·20·60거래일 사후 성과를 연결할 예정입니다.',
-  '/ops': '수동 보유, 뉴스 API 예산과 Oracle 데이터 커버리지를 연결할 예정입니다.',
-}
+const phaseBRoutes = new Set(['/research', '/swing', '/ops'])
 
 export function canonicalLocation(url: URL) {
   if (url.pathname === '/' && url.searchParams.has('experiment')) return '/experiments' + url.search + url.hash
@@ -71,7 +70,8 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
   const readOnly = capability?.read_only === true
   const allowedRoutes = capability ? routes.filter(route => capability.routes.includes(route.path)) : []
   const pageAllowed = !capability || capability.routes.includes(path)
-  const Page = path === '/experiments' ? Experiments : active?.page
+  const phaseBUnavailable = phaseBRoutes.has(path) && capability?.phase_b_available === false
+  const Page = phaseBUnavailable ? null : active?.page
   const mode = readOnly ? 'READ_ONLY' : path === '/' ? 'MULTI-TRACK' : evidenceMode(evidence)
   const pnlLabel = pnl === 'krx' ? 'KRX 적/청' : '글로벌 녹/적'
   const nextPnlLabel = pnl === 'krx' ? '글로벌 녹/적' : 'KRX 적/청'
@@ -122,6 +122,7 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
                 <span className="mobile-brand">Finance</span>
                 <Badge tone="ok">실주문 차단 <span className="badge-extra">(PAPER ONLY)</span></Badge>
                 <Badge>{mode}</Badge>
+                {capability?.fixture_mode === 'SYNTHETIC' && <Badge tone="warn">감사용 합성 데이터</Badge>}
                 {readOnly && evidenceMode(evidence) !== 'UNKNOWN' && <Badge>{evidenceMode(evidence)}</Badge>}
               </div>
               <div className="cluster global-tools">
@@ -145,7 +146,7 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
               {pageAllowed && Page && <Page />}
               {pageAllowed && !Page && <>
                 <h1>{active?.label ?? '페이지를 찾을 수 없습니다'}</h1>
-                {active && <div className="notice stack"><Badge tone="warn">Phase B 준비 중</Badge><p>{planned[path]}</p></div>}
+                {phaseBUnavailable && <p className="notice">이 서버에서 읽기 전용 자료 API를 사용할 수 없습니다.</p>}
                 {!active && <AppLink className="action-link" href="/">통합 홈으로 이동</AppLink>}
               </>}
             </main>

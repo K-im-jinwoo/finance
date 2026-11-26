@@ -351,3 +351,8 @@ table td.mono, table td > .mono { white-space: nowrap; }
   .metric-value .pnl { align-items: baseline; }
   .metric-value .pnl > span { min-width: 0; word-break: keep-all; }
 }
+
+
+.ops-gauge { gap: var(--space-2); }
+.ops-gauge progress { inline-size: 100%; block-size: 0.75rem; accent-color: var(--accent-primary); }
+.settings-pair { display: contents; }

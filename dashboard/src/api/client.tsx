@@ -7,6 +7,8 @@ export type Capabilities = {
   telegram_delivery_enabled: false
   routes: string[]
   phase_b_available: boolean
+  daytrade_sessions_available?: boolean
+  fixture_mode?: 'SYNTHETIC'
 }
 
 export type PollInterval = 5 | 30 | 0

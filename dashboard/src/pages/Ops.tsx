@@ -4,7 +4,7 @@ import { AppLink } from '../components/AppLink'
 import { Badge, Empty, Panel, Pnl, ResourceState, Skeleton, Table } from '../components/ui'
 import { compactDate, finite, kst, money, monthDay, numeric, percent } from '../utils/formatters'
 import { evidenceText, labelForCode } from '../utils/labels'
-import type { DaemonSummary, Holdings, NewsBudget, OpsData, OpsVerification } from './opsData'
+import type { DaemonSummary, Holdings, NewsBudget, OpsData, OpsVerification, SymbolNames } from './opsData'
 
 const labels: Record<string, string> = {
   DRAFT: '초안', APPROVED: '승인', ACTIVE: '유효', REVIEW_REQUIRED: '재검토 필요', INVALIDATED: '무효화',
@@ -35,21 +35,26 @@ function DetailsList({ title, items }: { title: string; items?: string[] }) {
   </ul></section> : null
 }
 
-function Portfolio({ value }: { value?: Holdings }) {
+function symbolLabel(symbol: string, names: SymbolNames) {
+  const name = names[symbol]?.trim()
+  return name ? name + ' ' + symbol : symbol
+}
+
+function Portfolio({ value, names }: { value?: Holdings; names: SymbolNames }) {
   return <Panel title="보유 현황">
     {!value?.present
       ? <Empty>{unavailableReason(value?.reason, '확인할 수 있는 로컬 보유 자료가 없습니다.')}</Empty>
       : <>
 
         {value.positions?.length ? <Table label="브로커 합산 보유" columns={['종목', '합산 수량', '가중평균 취득가', '브로커']}>
-          {value.positions.map(row => <tr key={row.symbol}><th scope="row" className="mono">{row.symbol}</th>
+          {value.positions.map(row => <tr key={row.symbol}><th scope="row">{symbolLabel(row.symbol, names)}</th>
             <td className="mono">{numeric(row.quantity, '주')}</td><td className="mono">{money(row.average_price)}</td>
             <td>{row.brokers.join(' · ') || '확인 불가'}</td></tr>)}
         </Table> : <Empty>등록된 보유 종목 0개</Empty>}
         {!!value.items?.length && <details><summary>브로커별 원본 보유 ({value.items.length}건)</summary>
           <Table label="브로커별 원본 보유" columns={['브로커', '종목', '수량', '평균 취득가', '취득일']}>
             {value.items.map(row => <tr key={row.broker + ':' + row.symbol}>
-              <th scope="row">{row.broker}</th><td className="mono">{row.symbol}</td>
+              <th scope="row">{row.broker}</th><td>{symbolLabel(row.symbol, names)}</td>
               <td className="mono">{numeric(row.quantity, '주')}</td><td className="mono">{money(row.average_price)}</td>
               <td className="mono">{row.acquired_on ?? '확인 불가'}</td></tr>)}
           </Table>
@@ -57,7 +62,7 @@ function Portfolio({ value }: { value?: Holdings }) {
         {!!value.theses?.length && <section className="stack">
           <h3>투자 논리</h3>
           {value.theses.map(row => <details key={row.thesis_id}>
-            <summary>{row.symbol} · {statusLabel(row.status)}</summary>
+            <summary>{symbolLabel(row.symbol, names)} · {statusLabel(row.status)}</summary>
             <p className="muted">{kst(row.created_at)}</p>
             <DetailsList title="확인한 사실" items={row.facts} />
             <DetailsList title="가정" items={row.assumptions} />
@@ -68,7 +73,7 @@ function Portfolio({ value }: { value?: Holdings }) {
         {!!value.reviews?.length && <section className="stack">
           <h3>보유 검토</h3><ul className="evidence-list">
             {value.reviews.map(row => <li key={row.symbol} className="stack">
-              <div className="cluster"><strong className="mono">{row.symbol}</strong>
+              <div className="cluster"><strong>{symbolLabel(row.symbol, names)}</strong>
                 <Badge>{row.present === false ? '검토 보류' : statusLabel(row.thesis_status)}</Badge>
                 {row.current_price != null && <span className="mono">{money(row.current_price)}</span>}
                 {row.return_rate != null && <Pnl value={portfolioReturn(row.return_rate)} format={percent} />}
@@ -173,7 +178,9 @@ function DaytradeStatus({ value }: { value?: DaemonSummary }) {
   </Panel>
 }
 
-function SystemDetails({ daytrade, verification }: { daytrade?: DaemonSummary; verification?: OpsVerification }) {
+function SystemDetails({ daytrade, verification, names }: {
+  daytrade?: DaemonSummary; verification?: OpsVerification; names: SymbolNames
+}) {
   const prices = verification?.actual_price_validation?.results
   const financial = verification?.actual_financial_validation
   if (!daytrade?.present && !prices?.length && !financial) return null
@@ -192,11 +199,11 @@ function SystemDetails({ daytrade, verification }: { daytrade?: DaemonSummary; v
         </dl>
       </>}
       {prices?.length ? <Table label="보관 가격 검산" columns={['종목', '자료 기간', '계산 기준일', '독립 계산 일치']}>
-        {prices.map((entry, index) => <tr key={index}><th scope="row" className="mono">{entry.symbol}</th>
+        {prices.map((entry, index) => <tr key={index}><th scope="row">{symbolLabel(entry.symbol, names)}</th>
           <td className="amount">{entry.start} ~ {entry.end}</td><td>{numeric(entry.calculation_dates_checked, '일')}</td>
           <td>{yesNo(entry.source_features_equal_independent_formulas, '일치', '불일치')}</td></tr>)}
       </Table> : null}
-      {financial && <details><summary>재무 검산 {financial.symbol} · {yesNo(financial.all_equal, '일치', '불일치')}</summary>
+      {financial && <details><summary>재무 검산 {financial.symbol && symbolLabel(financial.symbol, names)} · {yesNo(financial.all_equal, '일치', '불일치')}</summary>
         <p className="muted">{kst(financial.observed_at)} · {labelForCode(financial.division)}</p>
         <Table label="재무 검산 항목" columns={['검산 항목', '일치 여부']}>
           {Object.entries(financial.checks ?? {}).map(([name, match]) => <tr key={name}>
@@ -210,6 +217,7 @@ function SystemDetails({ daytrade, verification }: { daytrade?: DaemonSummary; v
 
 export default function Ops() {
   const { data, loading, error } = useResource<OpsData>('/api/ops/overview')
+  const names = { ...data?.holdings?.symbol_names, ...data?.symbol_names }
   return <div className="stack page-content ops-page">
     <header className="page-heading"><h1>운영·포트폴리오</h1></header>
     <ResourceState loading={false} error={error} />
@@ -217,9 +225,9 @@ export default function Ops() {
     {data && <>
       {!data.present && <p className="notice">{unavailableReason(data.reason, '조회할 로컬 운영 자료가 없습니다.')}</p>}
       <DaytradeStatus value={data.daytrade} />
-      <div className="workspace-grid ops-grid"><Portfolio value={data.holdings} /><NewsUsage value={data.news_budget} /></div>
+      <div className="workspace-grid ops-grid"><Portfolio value={data.holdings} names={names} /><NewsUsage value={data.news_budget} /></div>
       <Verification value={data.verification} />
-      <SystemDetails daytrade={data.daytrade} verification={data.verification} />
+      <SystemDetails daytrade={data.daytrade} verification={data.verification} names={names} />
     </>}
   </div>
 }

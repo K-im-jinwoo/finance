@@ -334,16 +334,34 @@ def _verification_summary(status):
     return result or absent("VERIFICATION_UNAVAILABLE")
 
 
+def _symbol_names(root, symbols):
+    if not symbols:
+        return {}
+    try:
+        repository = ReadOnlyResearchRepository(stock_database_path(root))
+        return repository.security_names(list(symbols))
+    except (*STATE_ERRORS, AttributeError):
+        return {}
+
+
 def get_ops_overview(root, status, *, now=None):
     now = datetime.now(timezone.utc) if now is None else now
     holdings = _holdings(root, now)
     news = _news_budget(root, now)
     daytrade = _daytrade_status(root, now)
     verification = _verification_summary(status)
+    holding_symbols = {row["symbol"] for row in holdings["items"]}
+    price_rows = verification.get("actual_price_validation", {}).get("results", [])
+    symbols = holding_symbols | {row["symbol"] for row in price_rows}
+    if financial := verification.get("actual_financial_validation"):
+        symbols.add(financial["symbol"])
+    symbol_names = _symbol_names(root, symbols)
+    holdings["symbol_names"] = {symbol: name for symbol, name in symbol_names.items() if symbol in holding_symbols}
     present = holdings["present"] or news["present"] or daytrade["present"] or verification.get("present") is not False
     return {
         **({"present": True} if present else absent("OPS_SOURCES_UNAVAILABLE")),
         "holdings": holdings,
+        "symbol_names": symbol_names,
         "news_budget": news,
         "daytrade": daytrade,
         "verification": verification,

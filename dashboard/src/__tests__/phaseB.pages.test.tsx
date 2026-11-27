@@ -94,6 +94,35 @@ it('renders native news gauges, aggregated holdings, recorded validation and dae
   expect(view.container.querySelector('[style]')).toBeNull()
 })
 
+it('displays saved names alongside codes in holdings and verification, with a code-only fallback', async () => {
+  const holding = { symbol: '900101', quantity: '13', average_price: '50700' }
+  useApi({ '/api/ops/overview': {
+    present: true,
+    holdings: { present: true, symbol_names: { '900101': '합성 반도체' },
+      items: [{ ...holding, broker: '합성 브로커' }],
+      positions: [{ ...holding, brokers: ['합성 브로커'] },
+        { ...holding, symbol: '900102', brokers: ['합성 브로커'] }],
+      theses: [{ symbol: '900101', thesis_id: 'TEST', status: 'APPROVED', facts: [] }],
+      reviews: [{ symbol: '900101', present: false }],
+    },
+    symbol_names: { '900103': '합성 전력', '900104': '합성 소재' },
+    verification: { present: true, actual_price_validation: { results: [
+      { symbol: '900103', start: '2026-07-01', end: '2026-11-13' },
+    ] }, actual_financial_validation: { symbol: '900104', all_equal: true } },
+  } })
+  render(<PollProvider defaultInterval={0}><Ops /></PollProvider>)
+  const aggregate = await screen.findByRole('table', { name: '브로커 합산 보유' })
+  expect(within(aggregate).getByRole('rowheader', { name: '합성 반도체 900101' })).toBeTruthy()
+  expect(within(aggregate).getByRole('rowheader', { name: '900102' })).toBeTruthy()
+  const raw = screen.getByRole('table', { name: '브로커별 원본 보유' })
+  expect(within(raw).getByText('합성 반도체 900101')).toBeTruthy()
+  expect(screen.getByText('합성 반도체 900101 · 승인', { selector: 'summary' })).toBeTruthy()
+  expect(screen.getByText('합성 반도체 900101', { selector: 'strong' })).toBeTruthy()
+  const prices = screen.getByRole('table', { name: '보관 가격 검산' })
+  expect(within(prices).getByRole('rowheader', { name: '합성 전력 900103' })).toBeTruthy()
+  expect(screen.getByText('재무 검산 합성 소재 900104 · 일치', { selector: 'summary' })).toBeTruthy()
+})
+
 it('shows a local source absence without inventing holdings or budget values', async () => {
   useApi({ '/api/ops/overview': { present: false, holdings: { present: false, reason: 'DATABASE_MISSING' } } })
   render(<PollProvider defaultInterval={0}><Ops /></PollProvider>)

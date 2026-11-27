@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { CapabilitiesProvider, PollProvider, usePolling, useResource } from './api/client'
 import type { Capabilities, PollInterval } from './api/client'
 import { AppLink, AppNavigation } from './components/AppLink'
-import { Badge, Drawer, PageErrorBoundary, ResourceState } from './components/ui'
+import { Badge, Drawer, PageErrorBoundary, ResourceState, Select } from './components/ui'
 import Daytrade from './pages/Daytrade'
 import Experiments from './pages/Experiments'
 import LongTerm from './pages/LongTerm'
@@ -123,9 +123,9 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
             <div className="cluster global-tools">
               <span className="last-check mono" aria-live="off">{checkedAt ? kst(checkedAt) : '확인 대기'}</span>
               <label className="visually-hidden" htmlFor="poll-interval">자동 새로고침 주기</label>
-              <select id="poll-interval" value={interval} onChange={event => setInterval(Number(event.target.value) as PollInterval)}>
+              <Select id="poll-interval" value={interval} onChange={event => setInterval(Number(event.target.value) as PollInterval)}>
                 <option value={5}>5초</option><option value={30}>30초</option><option value={0}>일시정지</option>
-              </select>
+              </Select>
               <button className="icon-button" aria-label="수동 새로고침" onClick={refresh}><RefreshCw size={18} /></button>
               <button aria-label={pnlLabel + ' (' + nextPnlLabel + '으로 전환)'} aria-pressed={pnl === 'global'}
                 onClick={() => setPnl(pnl === 'krx' ? 'global' : 'krx')}>
@@ -155,9 +155,9 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
         {menu && <Drawer title="대시보드 메뉴" onClose={() => setMenu(false)}>
           <nav className="primary-nav" aria-label="전체 메뉴">{navItems(allowedRoutes)}</nav>
           <label className="mobile-poll">자동 새로고침 주기
-            <select value={interval} onChange={event => setInterval(Number(event.target.value) as PollInterval)}>
+            <Select value={interval} onChange={event => setInterval(Number(event.target.value) as PollInterval)}>
               <option value={5}>5초</option><option value={30}>30초</option><option value={0}>일시정지</option>
-            </select>
+            </Select>
           </label>
           <p className="sidebar-note">모의투자 전용</p>
         </Drawer>}

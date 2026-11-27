@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { postJson, useCapabilities, useEvidenceMode, useRefresh, useResource } from '../api/client'
 import { EquityDrawdownChart } from '../components/Charts'
-import { Badge, Empty, MetricGrid, Panel, Pnl, ResourceState, Table } from '../components/ui'
+import { Badge, Empty, MetricGrid, Panel, Pnl, ResourceState, Table, Select } from '../components/ui'
 import { finite, kst, money, percent } from '../utils/formatters'
 import {
   equityPoints, matchingReports, paperPercent, selectedReport,
@@ -307,13 +307,13 @@ function ReportExplorer({ reports, reportKey, onChange }: {
           </label>
           <label className="stack" htmlFor="hermes-report-select">
             보고서 선택
-            <select id="hermes-report-select" value={chosen?.key ?? ''} onChange={event => onChange(event.target.value)}>
+            <Select id="hermes-report-select" value={chosen?.key ?? ''} onChange={event => onChange(event.target.value)}>
               <option value="" disabled>보고서를 선택하세요</option>
               {chosen && !visible.includes(chosen) && <option value={chosen.key}>{chosen.report_id ?? chosen.key} · 현재 선택</option>}
               {visible.map(report => <option key={report.key} value={report.key}>
                 {report.report_id ?? report.key} · {kst(report.published_at)}
               </option>)}
-            </select>
+            </Select>
           </label>
           {reportKey !== null && <button type="button" onClick={() => onChange(null)}>최신 보고서 보기</button>}
         </div>
@@ -444,12 +444,12 @@ export default function Hermes() {
         </div>
         <label className="stack" htmlFor="hermes-account">
           모의계좌 선택
-          <select id="hermes-account" value={accountId ?? ''} disabled={!ids?.length}
+          <Select id="hermes-account" value={accountId ?? ''} disabled={!ids?.length}
             onChange={event => setQuery(writeQuery('account', event.target.value))}>
             {accountId === null && <option value="">모의계좌 없음</option>}
             {accountId !== null && !knownAccount && <option value={accountId} disabled>요청한 계좌</option>}
             {ids?.map(id => <option key={id} value={id}>{id}</option>)}
-          </select>
+          </Select>
         </label>
       </header>
       <ResourceState loading={accounts.loading || resource.loading || archive.loading} error={accounts.error || resource.error || archive.error} />

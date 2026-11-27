@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, MouseEvent } from 'react'
 import { postJson, useCapabilities, useRefresh, useResource } from '../api/client'
 import { CostComparisonChart, EquityDrawdownChart } from '../components/Charts'
-import { Badge, Drawer, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table } from '../components/ui'
+import { Badge, Drawer, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table, Select } from '../components/ui'
 import { evidenceLabel, evidenceText, labelForCode, readableLog } from '../utils/labels'
 import { kst, money, numeric } from '../utils/formatters'
 import {
@@ -178,19 +178,19 @@ export default function Experiments() {
       <div className="toolbar">
         <label className="cluster">
           실험
-          <select value={selected ?? ''} onChange={event => selectExperiment(event.target.value)} disabled={pending !== null}>
+          <Select value={selected ?? ''} onChange={event => selectExperiment(event.target.value)} disabled={pending !== null}>
             {!selectedSummary && <option value={selected ?? ''} disabled>{selected ? '선택한 실험' : '실험 선택'}</option>}
             {list.data?.map(experimentOption)}
-          </select>
+          </Select>
         </label>
         {canWrite && <form className="cluster" onSubmit={create}>
           <label className="cluster">
             새 실험 왕복 비용
-            <select value={cost} onChange={event => setCost(Number(event.target.value) as ExperimentCost)} disabled={pending !== null}>
+            <Select value={cost} onChange={event => setCost(Number(event.target.value) as ExperimentCost)} disabled={pending !== null}>
               <option value={30}>30bps · 기본 가정</option>
               <option value={10}>10bps · 민감도 가정</option>
               <option value={60}>60bps · 민감도 가정</option>
-            </select>
+            </Select>
           </label>
           <button className="primary-button" type="submit" disabled={pending !== null}>
             {pending === 'create' ? '실험 생성 중…' : '별도 검증 실험 생성'}
@@ -280,11 +280,11 @@ function CostComparison({ options, base, params, onSelect }: {
       <div className="cluster">
         {slots.map(({ bps, matches, selectedId, selected }) => <label className="cluster" key={bps}>
           <span className="mono">{bps}bps</span>
-          <select value={selectedId} onChange={event => onSelect(bps, event.target.value)} aria-label={bps + 'bps 비교 실험'}>
+          <Select value={selectedId} onChange={event => onSelect(bps, event.target.value)} aria-label={bps + 'bps 비교 실험'}>
             <option value="">{matches.length ? '비교 제외' : '같은 데이터셋의 실험 없음'}</option>
             {!selected && selectedId && <option value={selectedId} disabled>현재 데이터셋에서 찾을 수 없음</option>}
             {matches.map(experimentOption)}
-          </select>
+          </Select>
         </label>)}
       </div>
       {new Set(selectedCursors).size > 1 && <p className="notice">실험별 진행 시점이 다릅니다. 표에 각 실험의 최신 시점과 진행 상태를 표시합니다.</p>}
@@ -534,13 +534,13 @@ function Observations({ state, detailLink }: { state: Experiment['state']; detai
 
   return <Panel title="판단 로그" actions={<label className="cluster">
     판단 사유
-    <select value={filter} onChange={event => setFilter(event.target.value)}>
+    <Select value={filter} onChange={event => setFilter(event.target.value)}>
       <option value="">전체</option>
       <option value="deferred">보류·대기</option>
       <option value="cancelled">취소</option>
       <option value="reentry">재진입 관련 기록</option>
       {reasons.map(reason => <option key={reason} value={reason}>{observationLabel(reason)}</option>)}
-    </select>
+    </Select>
   </label>}>
     {filtered.length ? <Table label="실험 판단 로그" columns={['시각 KST', '종목', '상태', '사유', '원본 판정', '보고서']}>
       {filtered.map((item, index) => {

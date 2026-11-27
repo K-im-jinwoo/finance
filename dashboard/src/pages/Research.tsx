@@ -4,7 +4,7 @@ import { unavailableReason } from '../api/phaseB'
 import type { Presence, ReportList, ReportSummary } from '../api/phaseB'
 import { CandlestickChart } from '../components/CandlestickChart'
 import type { CandleBar } from '../components/CandlestickChart'
-import { Badge, Drawer, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, Table } from '../components/ui'
+import { Badge, Drawer, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, Table, Select } from '../components/ui'
 import { finite, kst, money, numeric } from '../utils/formatters'
 import { evidenceText, labelForCode, reportName } from '../utils/labels'
 import { useRouteQuery } from '../utils/routeQuery'
@@ -227,11 +227,11 @@ function Evaluations({ report, reports, symbol, setSymbol }: {
       <label className="research-field">종목 검색
         <input type="search" value={search} onChange={event => { setSearch(event.target.value); setPage(0) }} placeholder="종목명 또는 코드" />
       </label>
-      <label className="research-field">판정
-        <select value={verdict} onChange={event => { setVerdict(event.target.value); setPage(0) }}>
+      <label className="research-field research-verdict-field">판정
+        <Select value={verdict} onChange={event => { setVerdict(event.target.value); setPage(0) }}>
           <option value="">전체 판정</option>
           {Object.entries(verdicts).map(([code, item]) => <option key={code} value={code}>{item.label}</option>)}
-        </select>
+        </Select>
       </label>
     </div>
     <p className="muted research-result" role="status">{numeric(matches.length)}종목 / 전체 {numeric(rows.length)}종목</p>
@@ -285,14 +285,14 @@ export default function Research() {
       {list.loading && <Skeleton label="리서치 보고서 목록 불러오는 중" />}
       {list.data && !list.data.present && <Empty>{researchUnavailable(list.data.reason, '저장된 통합 리서치 보고서가 없습니다.')}</Empty>}
       {list.data?.present && <>
-        <label className="research-field">리서치 보고서
-          <select value={selection} onChange={event => updateQuery({ report: event.target.value, symbol: null })}>
+        <label className="research-field research-report-field">리서치 보고서
+          <Select value={selection} onChange={event => updateQuery({ report: event.target.value, symbol: null })}>
             <option value="">{latest ? '최신 · ' + reportName(latest, 'research', reports) : '저장된 보고서 없음'}</option>
             {selection && !reports.some(item => item.report_id === selection) && <option value={selection} title={selection}>{report ? reportName(report, 'research', reports) : '선택한 보고서'}</option>}
             {reports.map(item => <option key={item.report_id} value={item.report_id} title={item.report_id}>
               {reportName(item, 'research', reports)}
             </option>)}
-          </select>
+          </Select>
         </label>
         <ResourceState loading={false} error={detail.error} />
         {detail.loading && <Skeleton label="선택한 리서치 보고서 불러오는 중" />}

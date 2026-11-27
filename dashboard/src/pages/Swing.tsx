@@ -1,7 +1,7 @@
 import { useResource } from '../api/client'
 import { unavailableReason } from '../api/phaseB'
 import type { Presence, ReportList, ReportSummary } from '../api/phaseB'
-import { Badge, Empty, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table } from '../components/ui'
+import { Badge, Empty, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table, Select } from '../components/ui'
 import { finite, kst, numeric, percent } from '../utils/formatters'
 import { evidenceLabel, evidenceText, labelForCode, reportName } from '../utils/labels'
 import { useRouteQuery } from '../utils/routeQuery'
@@ -128,17 +128,17 @@ function PerformanceTab({ swingReports }: { swingReports: ReportSummary[] }) {
     <Panel title="사후 성과 원장">
       <div className="toolbar">
         <label>보고서
-          <select value={reportId} onChange={event => updateQuery({ performance_report: event.target.value })}>
+          <Select value={reportId} onChange={event => updateQuery({ performance_report: event.target.value })}>
             <option value="">저장된 전체 보고서</option>
             {reportId && !reportIds.includes(reportId) && <option value={reportId} title={reportId}>{performanceReportName(reportId)}</option>}
             {reportIds.map(id => <option key={id} value={id} title={id}>{performanceReportName(id)}</option>)}
-          </select>
+          </Select>
         </label>
         <label>평가 기간
-          <select value={horizon} onChange={event => updateQuery({ horizon: event.target.value })}>
+          <Select value={horizon} onChange={event => updateQuery({ horizon: event.target.value })}>
             <option value="">전체 거래일</option>
             {horizons.map(days => <option key={days} value={days}>{days}거래일</option>)}
-          </select>
+          </Select>
         </label>
       </div>
       <ResourceState loading={resource.loading} error={resource.error ?? all.error} />
@@ -212,19 +212,19 @@ export default function Swing() {
       {(list.loading || detail.loading) && <Skeleton label="스윙 보고서 불러오는 중" />}
       {list.data?.present && <div className="toolbar">
         <label>스윙 보고서
-          <select value={selected} onChange={event => updateQuery({ report: event.target.value })}>
+          <Select value={selected} onChange={event => updateQuery({ report: event.target.value })}>
             {!selected && <option value="">저장된 보고서 없음</option>}
             {selected && !list.data.reports?.some(row => row.report_id === selected) && <option value={selected} title={selected}>{report ? reportName(report, 'swing', reports) : '선택한 보고서'}</option>}
             {list.data.reports?.map(row => <option key={row.report_id} value={row.report_id} title={row.report_id}>
               {reportName(row, 'swing', reports)}
             </option>)}
-          </select>
+          </Select>
         </label>
         <label>촉매 분류
-          <select value={category} onChange={event => updateQuery({ catalyst: event.target.value })}>
+          <Select value={category} onChange={event => updateQuery({ catalyst: event.target.value })}>
             <option value="">전체</option>
             {Object.entries(categories).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select>
+          </Select>
         </label>
       </div>}
       {list.data && !list.data.present && <Empty>{unavailableReason(list.data.reason, '저장된 스윙 보고서가 없습니다.')}</Empty>}

@@ -1,6 +1,6 @@
-import { ArrowDown, ArrowUp, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, X } from 'lucide-react'
 import { Component, useEffect, useId, useRef } from 'react'
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 import { money, numeric, summaryMoney } from '../utils/formatters'
 
 type Tone = 'ok' | 'warn' | 'danger' | 'unknown'
@@ -17,6 +17,13 @@ export function Skeleton({ label = '자료 불러오는 중' }: { label?: string
 
 export function SummaryMoney({ value, signed = false }: { value: unknown; signed?: boolean }) {
   return <span className="amount" title={money(value, signed)}>{summaryMoney(value, signed)}</span>
+}
+
+export function Select(props: ComponentProps<'select'>) {
+  return <span className="select-control">
+    <select {...props} />
+    <ChevronDown className="select-chevron" size={14} aria-hidden="true" focusable="false" />
+  </span>
 }
 
 export function Panel({ title, children, actions }: { title: ReactNode; children: ReactNode; actions?: ReactNode }) {

@@ -64,6 +64,8 @@
 .global-context, .global-tools { flex-wrap: nowrap; }
 .global-tools { justify-content: flex-end; flex: 0 0 auto; font-size: 14px; }
 .compact-label { display: none; }
+#poll-interval, .mobile-poll select { min-inline-size: 78px; field-sizing: content; }
+.mobile-poll .select-control { justify-self: start; }
 .global-tools button { white-space: nowrap; }
 .last-check { color: var(--text-meta); font-size: 12px; }
 .mobile-brand, .mobile-tabs { display: none; }
@@ -343,7 +345,7 @@ table .mono, table .amount, table .report-name, table time { white-space: nowrap
   html { scroll-padding-block-end: 64px; }
   .global-bar { gap: var(--space-1); padding-inline: var(--space-3); }
   .global-context, .global-tools { gap: var(--space-1); }
-  .global-tools .last-check, .global-tools select, .pnl-label { display: none; }
+  .global-tools .last-check, .global-tools .select-control, .pnl-label { display: none; }
   .compact-label { display: inline; }
   .global-context .badge { padding-inline: 7px; font-size: 12px; }
   .page { padding-inline: var(--space-4); padding-block-start: var(--space-4); }

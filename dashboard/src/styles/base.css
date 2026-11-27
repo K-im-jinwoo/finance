@@ -18,15 +18,42 @@ a { color: var(--accent-text); text-underline-offset: 0.18em; }
 a:hover { color: var(--text-primary); }
 button, input, select, summary { font: inherit; }
 button, select, input {
-  min-height: 34px;
+  min-height: var(--control-height);
   max-width: 100%;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-control);
-  background-color: var(--bg-elevated);
+  background-color: var(--bg-surface);
   color: var(--text-primary);
 }
-button, select { white-space: nowrap; padding: var(--space-1) var(--space-3); }
-input { min-width: 0; padding: var(--space-1) var(--space-2); }
+button { white-space: nowrap; padding: var(--space-1) var(--space-3); }
+input { min-width: 0; padding: var(--space-1) var(--space-3); }
+input::placeholder { color: var(--text-secondary); opacity: 1; }
+.select-control {
+  display: inline-grid;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  vertical-align: middle;
+}
+.select-chevron {
+  grid-area: 1 / 1;
+  place-self: center end;
+  margin-inline-end: 11px;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+.select-control > select {
+  appearance: none;
+  grid-area: 1 / 1;
+  block-size: var(--control-height);
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding-block: 0;
+  padding-inline: var(--space-3) 34px;
+  line-height: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+select option, select optgroup { background-color: var(--bg-surface); color: var(--text-primary); }
 button, select, summary { cursor: pointer; }
 button {
   display: inline-flex;
@@ -35,8 +62,11 @@ button {
   gap: var(--space-1);
   transition: background-color var(--motion), border-color var(--motion), color var(--motion);
 }
-button:hover:not(:disabled), button[aria-pressed="true"] { border-color: var(--accent-primary); }
-button:disabled { cursor: not-allowed; opacity: 0.6; }
+select, input { transition: background-color var(--motion), border-color var(--motion); }
+:where(button, select, input:not([type="range"])):enabled:hover { border-color: var(--control-border-hover); }
+:where(select, input:not([type="range"])):enabled:hover { background-color: var(--bg-subtle); }
+button[aria-pressed="true"], :where(select, input:not([type="range"])):focus-visible { border-color: var(--accent-primary); }
+:where(button, select, input):disabled { cursor: not-allowed; opacity: 0.6; }
 :focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 main:focus { outline: none; }
 summary { padding: var(--space-2) 0; font-weight: 600; }
@@ -82,8 +112,12 @@ code, pre, .mono { font-family: var(--font-ui); font-variant-numeric: tabular-nu
 }
 @media (max-width: 1023px) {
   body, input, select { font-size: 16px; }
-  button, select, input, summary { min-height: 44px; }
-  summary { align-content: center; }
+  :root { --control-height: 44px; }
+  summary { min-height: 44px; align-content: center; }
+}
+@media (forced-colors: active) {
+  .select-control > select { appearance: auto; padding-inline-end: var(--space-3); }
+  .select-chevron { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

@@ -5,7 +5,7 @@ import { unavailableReason } from '../api/phaseB'
 import type { Presence } from '../api/phaseB'
 import { useRouteQuery } from '../utils/routeQuery'
 import { EquityDrawdownChart } from '../components/Charts'
-import { Badge, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table } from '../components/ui'
+import { Badge, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table, Select } from '../components/ui'
 import { finite, kst, money, numeric, percent, spreadText, summaryMoney, turnoverText } from '../utils/formatters'
 import { evidenceLabel, labelForCode, readableLog } from '../utils/labels'
 import { equityPoints, labelFor, newest, reasonsFor, RISK_LIMIT, SIGNAL_LIMIT, symbolLabel } from './daytradeData'
@@ -168,9 +168,9 @@ function Signals({ report, names }: { report: DaytradeReport; names: Record<stri
       labelFor(value) + ' ' + signals.filter(signal => signal.action === value).length + '건').join(' · ')}.
       조건 충족률과 수익 확률은 별개입니다.</p>
     <div className="toolbar">
-      <label>신호 종류 <select value={action} onChange={event => setAction(event.target.value)}>
+      <label>신호 종류 <Select value={action} onChange={event => setAction(event.target.value)}>
         <option value="">전체</option><option value="BUY">매수</option><option value="SELL">매도</option><option value="HOLD">대기</option>
-      </select></label>
+      </Select></label>
       <label>종목 검색 <input type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
     </div>
     <History rows={filtered.map(signal => ({
@@ -348,11 +348,11 @@ export default function Daytrade() {
       <div><h1>당일 단타</h1><p>KRX+NXT 통합 시세 · 비용 반영 모의계좌</p></div>
       <div className="toolbar">
         {sessionsSupported && (dates.length > 0 || date !== null) && <label>거래일
-          <select value={date ?? ''} onChange={event => updateQuery({ date: event.target.value })}>
+          <Select value={date ?? ''} onChange={event => updateQuery({ date: event.target.value })}>
             <option value="">기본 원장</option>
             {date !== null && !dates.includes(date) && <option value={date}>현재 선택 · {validSelection ? date : '잘못된 날짜'}</option>}
             {dates.map(day => <option key={day}>{day}</option>)}
-          </select>
+          </Select>
         </label>}
         {date === null && capability?.read_only === false && data?.sample_available && !data.present &&
           <button className="primary-button" onClick={() => void startSample()} disabled={busy}>

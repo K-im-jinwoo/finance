@@ -2,16 +2,16 @@
   display: grid;
   gap: var(--space-1);
   min-width: 0;
-  max-width: 42rem;
   color: var(--text-secondary);
 }
 
-.research-field :is(input, select) { width: 100%; }
+.research-field input { width: 100%; }
+.research-report-field { width: min(100%, 340px); }
+.research-verdict-field { min-width: min(140px, 100%); max-width: 220px; }
 .research-filters {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 320px) minmax(140px, 220px);
   gap: var(--space-3);
-  max-width: 42rem;
 }
 
 .research-result { font-size: 14px; }
@@ -40,4 +40,5 @@
 
 @media (max-width: 580px) {
   .research-filters { grid-template-columns: minmax(0, 1fr); }
+  .research-report-field { width: 100%; }
 }

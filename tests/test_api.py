@@ -72,7 +72,7 @@ class ApiTests(unittest.TestCase):
             "read_only": False,
             "orders_enabled": False,
             "telegram_delivery_enabled": False,
-            "routes": ["/", "/hermes", "/daytrade", "/experiments", "/research", "/swing", "/ops"],
+            "routes": ["/", "/longterm", "/daytrade", "/experiments", "/research", "/swing", "/ops"],
             "phase_b_available": True,
             "daytrade_sessions_available": True,
         })

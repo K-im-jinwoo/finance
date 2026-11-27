@@ -6,24 +6,16 @@ import { AppLink } from '../components/AppLink'
 import { Badge, Pnl, ResourceState } from '../components/ui'
 import { finite, koreanUnit, kst, percent } from '../utils/formatters'
 import type { DaytradeData } from './daytradeData'
+import { LongTermStatus, ratioPercent } from './LongTerm'
+import type { LongTermOverview } from './LongTerm'
 
-type AccountList = { accounts: string[]; source: { state?: string; mode?: string } }
-type HermesAccount = {
-  current_assets: string | null
-  current_return: string | null
-  coverage: { mode?: string }
-  metrics: { pending_trades: number }
-  reports: { selected: { name: string; symbol: string } | null }[]
-  position_quotes: Record<string, { freshness?: string }>
-  watch_quotes: Record<string, { freshness?: string }>
-}
 type Experiment = { experiment_id: string; cost_bps: string | number; mode: string }
 type ExperimentDetail = {
   experiment_id: string; cursor: number; total_events: number
   metrics: { max_drawdown?: string | null }
   state: { status?: string; equity: { return: string | null }[] }
 }
-type SourceStatus = { data_status: string; checked_at_kst?: string; oracle_inventory?: unknown; runner_errors?: string[] }
+type SourceStatus = { data_status: string; checked_at_kst?: string; oracle_inventory?: unknown; runner_errors?: Record<string, string> }
 
 function ratio(value: unknown) {
   const number = finite(value)
@@ -39,39 +31,36 @@ export default function Overview() {
   const researchReport = research.data?.latest
   const swingReport = swing.data?.latest
   const verification = ops.data?.verification
-  const accounts = useResource<AccountList>('/api/paper-accounts')
-  const account = useResource<HermesAccount>(accounts.data?.accounts[0]
-    ? '/api/paper-accounts/' + encodeURIComponent(accounts.data.accounts[0]) : null)
+  const account = useResource<LongTermOverview>('/api/longterm/overview')
+  const experimentsEnabled = capability?.read_only === false && capability.routes.includes('/experiments')
   const daytrade = useResource<DaytradeData>('/api/daytrade/report')
-  const experiments = useResource<Experiment[]>('/api/experiments')
+  const experiments = useResource<Experiment[]>(experimentsEnabled ? '/api/experiments' : null)
   const latest = experiments.data?.find(item => Number(item.cost_bps) === 30)
   const experiment = useResource<ExperimentDetail>(latest ? '/api/experiments/' + encodeURIComponent(latest.experiment_id) : null)
-  const status = useResource<SourceStatus>('/api/status')
+  const status = useResource<SourceStatus>(experimentsEnabled ? '/api/status' : null)
   const day = daytrade.data?.report
-  const hermes = account.data
+  const longterm = account.data
   const run = experiment.data
-  const recommendation = hermes?.reports[0]?.selected
+  const recommendation = longterm?.latest_report?.recommendation
   const states = Object.values(day?.sessions ?? {})
   const locks = day?.current_risk?.locks ?? []
   const positions = Object.keys(day?.positions ?? {}).length
-  const stale = new Set([
-    ...Object.entries(hermes?.watch_quotes ?? {}),
-    ...Object.entries(hermes?.position_quotes ?? {}),
-  ].filter(([, quote]) => quote.freshness === 'STALE').map(([symbol]) => symbol)).size
-  const warningInputs = [status, daytrade, accounts, account]
+  const runnerErrors = Object.keys(status.data?.runner_errors ?? {}).length
+  const warningInputs = [status, daytrade, account, ops]
   const warningsPending = warningInputs.some(resource => resource.loading)
   const warningsUnverified = warningInputs.some(resource => resource.error !== null)
   const dataStatus = verification?.data_status ?? status.data?.data_status
   const warnings = [
-    stale ? 'Hermes 지연 시세 ' + stale + '종목' : null,
+    longterm?.risk_exit_count ? '장기 계좌 리스크 청산 대기 ' + longterm.risk_exit_count + '건' : null,
+    longterm?.missing_close_count ? '장기 계좌 종가 누락 ' + longterm.missing_close_count + '종목' : null,
     locks.length ? '단타 활성 잠금 ' + locks.join(' · ') : null,
     positions ? '미청산 보유 ' + positions + '종목' : null,
     dataStatus && /INCOMPLETE|BLOCKED/.test(dataStatus) ? 'Oracle 3년 검산 자료 미확보' : null,
-    status.data?.runner_errors?.length ? '실험 실행 오류 ' + status.data.runner_errors.length + '건' : null,
+    runnerErrors ? '실험 실행 오류 ' + runnerErrors + '건' : null,
   ].filter(Boolean)
 
   return <div className="stack page-content">
-    <header className="page-heading"><h1>통합 홈</h1><p>모의계좌, 당일 단타, 계산 검증과 리서치의 최근 기록을 확인합니다.</p></header>
+    <header className="page-heading"><h1>통합 홈</h1><p>장기 모의계좌, 당일 단타, 리서치의 최근 기록을 확인합니다.</p></header>
     <section className="status-band cluster" aria-label="활성 경고 및 데이터 신선도">
       <strong>활성 경고</strong>
       {warnings.map(warning => <Badge key={warning} tone="warn">{warning}</Badge>)}
@@ -81,15 +70,18 @@ export default function Overview() {
     </section>
     <div className="workspace-grid">
       <article className="overview-card">
-        <header className="section-header"><h2>Hermes 모의계좌</h2><AppLink className="action-link" href="/hermes">계좌 보기 <ArrowUpRight size={15} /></AppLink></header>
-        <ResourceState loading={accounts.loading || account.loading} error={accounts.error ?? account.error} />
+        <header className="section-header"><h2>장기 모의계좌</h2><AppLink className="action-link" href="/longterm">계좌 보기 <ArrowUpRight size={15} /></AppLink></header>
+        <ResourceState loading={account.loading} error={account.error} />
         <div className="overview-card-content stack">
-          <div className="cluster"><Badge tone={accounts.data?.source.state === 'CONNECTED' ? 'ok' : 'unknown'}>{accounts.data?.source.state ?? 'UNKNOWN'}</Badge>
-            <Badge>{evidenceMode(hermes?.coverage.mode)}</Badge></div>
-          <dl className="data-pairs"><dt>최근 1순위</dt><dd>{recommendation ? recommendation.name + ' (' + recommendation.symbol + ')' : '확인 불가'}</dd>
-            <dt>총자산</dt><dd className="mono">{koreanUnit(hermes?.current_assets)}</dd><dt>수익률</dt>
-            <dd><Pnl value={ratio(hermes?.current_return)} format={percent} /></dd>
-            <dt>체결 대기</dt><dd>{hermes?.metrics.pending_trades == null ? '확인 불가' : hermes.metrics.pending_trades + '건'}</dd>
+          <div className="cluster"><LongTermStatus status={longterm?.status} />
+            {longterm?.latest_report?.mode && <Badge>{evidenceMode(longterm.latest_report.mode)}</Badge>}</div>
+          <dl className="data-pairs">
+            <dt>최근 1순위</dt><dd>{recommendation ? recommendation.name + ' (' + recommendation.symbol + ')'
+              : longterm?.latest_report ? '매수 추천 없음' : '확인 불가'}</dd>
+            <dt>총자산</dt><dd className="mono">{koreanUnit(longterm?.metrics?.total_assets)}</dd>
+            <dt>누적 수익률</dt><dd><Pnl value={ratioPercent(longterm?.metrics?.return)} format={percent} /></dd>
+            <dt>보유 종목</dt><dd className="mono">{longterm ? longterm.position_count + '종목' : '확인 불가'}</dd>
+            <dt>체결 대기</dt><dd className="mono">{longterm ? longterm.pending_count + '건' : '확인 불가'}</dd>
           </dl>
         </div>
       </article>
@@ -106,7 +98,7 @@ export default function Overview() {
           </dl>
         </div>
       </article>
-      <article className="overview-card">
+      {experimentsEnabled && <article className="overview-card">
         <header className="section-header"><h2>계산 검증 실험</h2><AppLink className="action-link" href={latest ? '/experiments?experiment=' + encodeURIComponent(latest.experiment_id) : '/experiments'}>실험 보기 <ArrowUpRight size={15} /></AppLink></header>
         <ResourceState loading={experiments.loading || experiment.loading} error={experiments.error ?? experiment.error} />
         <div className="overview-card-content stack">
@@ -116,7 +108,7 @@ export default function Overview() {
             <dt>MDD</dt><dd><Pnl value={ratio(run?.metrics.max_drawdown)} format={percent} /></dd>
             <dt>처리 진행</dt><dd className="mono">{run ? run.cursor + ' / ' + run.total_events : '확인 불가'}</dd></dl>
         </div>
-      </article>
+      </article>}
       <article className="overview-card">
         <header className="section-header"><h2>통합 리서치·스윙</h2><AppLink className="action-link" href="/ops">운영 상태</AppLink></header>
         <div className="overview-card-content stack">

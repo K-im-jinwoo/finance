@@ -13,6 +13,8 @@ from .notifications import drafts
 from .rules import Policy
 from .store import Store
 from .live_accounts import LiveAccounts
+from .longterm_ledger import LongTermAccounts
+from .phase_b_db import DB_ERRORS
 from .oracle_bridge import HermesLiveWorker
 from .daytrade_bridge import list_daytrade_sessions, read_daytrade_report, read_daytrade_session, simulate_sample_daytrade
 from .ops_bridge import get_ops_overview
@@ -38,6 +40,9 @@ LEGACY_FILES = {
 }
 LEGACY_SESSION_PATHS = {"/", "/hermes", "/daytrade", "/daytrade.js"}
 MAX_POST_BYTES = 8192
+LONGTERM_READS = {"/api/longterm/overview": "overview", "/api/longterm/account": "account"}
+LONGTERM_ACTIONS = {"/api/longterm/account/init": "initialize", "/api/longterm/refresh": "refresh",
+                    "/api/longterm/account/pause": "pause", "/api/longterm/account/resume": "resume"}
 
 def dashboard_status(root, runner_errors=None):
     artifacts = root / "artifacts"
@@ -79,8 +84,9 @@ def single_query_value(query, name):
 
 
 class DashboardServer(ThreadingHTTPServer):
-    def __init__(self, root: Path, port=8765, hermes_live=False, direct_market=False, allow_open_fills=False):
+    def __init__(self, root: Path, port=8765, hermes_live=False, direct_market=False, allow_open_fills=False, *, synthetic=False):
         self.root = root
+        self.longterm = LongTermAccounts(root, synthetic=synthetic)
         self.store = Store(root / ".runtime/paper.sqlite3")
         self.sessions = set()
         self.stopping = threading.Event()
@@ -111,9 +117,10 @@ class DashboardServer(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server: DashboardServer
-    routes = ("/", "/hermes", "/daytrade", "/experiments", "/research", "/swing", "/ops")
+    routes = ("/", "/longterm", "/daytrade", "/experiments", "/research", "/swing", "/ops")
     legacy_paths = LEGACY_FILES.keys()
     read_only = False
+    phase_b_available = None
 
     def setup(self):
         super().setup()
@@ -155,7 +162,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.response(403, {"error":"LOCAL_ORIGIN_REQUIRED"})
         url = urlsplit(self.path)
         path = url.path
-        if path in self.routes:
+        if path == "/favicon.ico":
+            return self.response(204, b"", "image/x-icon")
+        if path in self.routes or (path == "/hermes" and "/longterm" in self.routes):
             index = self.built_file("index.html")
             if index is not None:
                 return self.static_response(index, HTML_TYPE, issue_session=True)
@@ -176,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
             "orders_enabled": False,
             "telegram_delivery_enabled": False,
             "routes": self.routes,
-            "phase_b_available": not self.read_only,
+            "phase_b_available": self.phase_b_available if self.phase_b_available is not None else not self.read_only,
             "daytrade_sessions_available": True,
             **({"fixture_mode": "SYNTHETIC"} if getattr(self.server, "synthetic_audit", False) else {}),
         }
@@ -244,11 +253,19 @@ class Handler(BaseHTTPRequestHandler):
                 return read_daytrade_session(root, date)
         return None
 
+    def latest_daytrade_report(self):
+        return read_daytrade_report(self.server.root)
+
     def get_api(self, path, query=""):
         if path == "/health":
             return self.response(200, {"status":"ok","orders_enabled":False,"telegram_delivery_enabled":False,"bind":"loopback"})
         if not self.authorized():
             return self.response(401,{"error":"LOCAL_SESSION_REQUIRED"})
+        if action := LONGTERM_READS.get(path):
+            try:
+                return self.response(200, getattr(self.server.longterm, action)())
+            except DB_ERRORS:
+                return self.response(503, {"error": "LONGTERM_LEDGER_UNAVAILABLE"})
         try:
             data = self.phase_b_data(path, query)
         except ValueError:
@@ -260,10 +277,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/daytrade/report":
                 try:
                     with self.server.daytrade_lock:
-                        result = read_daytrade_report(self.server.root)
+                        result = self.latest_daytrade_report()
                     return self.response(200, result)
                 except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
                     return self.response(503, {"error":"DAYTRADE_REPORT_UNAVAILABLE"})
+            if self.read_only:
+                return self.response(404, {"error": "NOT_FOUND"})
             if path == "/api/paper-accounts":
                 return self.response(200,{"accounts":self.server.accounts.account_ids(),"source":self.server.live_worker.status if self.server.live_worker else {"state":"DISCONNECTED","mode":"NOT_STARTED"}})
             if path == "/api/hermes/reports":
@@ -306,6 +325,15 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body,dict):
                 raise ValueError("object required")
             path = urlsplit(self.path).path
+            if action := LONGTERM_ACTIONS.get(path):
+                if body:
+                    raise ValueError("long-term action takes no settings")
+                try:
+                    account = self.server.longterm
+                    result = account.control(action) if action in {"pause", "resume"} else getattr(account, action)()
+                except (OSError, sqlite3.Error):
+                    return self.response(503, {"error": "LONGTERM_SOURCE_UNAVAILABLE"})
+                return self.response(200, result)
             if path == "/api/daytrade/simulate-sample":
                 if body:
                     raise ValueError("sample action requires an explicit empty object")

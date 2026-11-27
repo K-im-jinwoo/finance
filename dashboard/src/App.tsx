@@ -6,7 +6,7 @@ import { AppLink, AppNavigation } from './components/AppLink'
 import { Badge, Drawer, PageErrorBoundary, ResourceState } from './components/ui'
 import Daytrade from './pages/Daytrade'
 import Experiments from './pages/Experiments'
-import Hermes from './pages/Hermes'
+import LongTerm from './pages/LongTerm'
 import Overview from './pages/Overview'
 import Research from './pages/Research'
 import Swing from './pages/Swing'
@@ -15,7 +15,7 @@ import { kst } from './utils/formatters'
 
 const routes = [
   { path: '/', label: '통합 홈', compact: '홈', icon: House, page: Overview },
-  { path: '/hermes', label: 'Hermes 모의계좌', compact: 'Hermes', icon: Activity, page: Hermes },
+  { path: '/longterm', label: '장기 모의계좌', compact: '장기', icon: Activity, page: LongTerm },
   { path: '/daytrade', label: '당일 단타', compact: '단타', icon: CandlestickChart, page: Daytrade },
   { path: '/experiments', label: '계산 검증 실험', compact: '실험', icon: FlaskConical, page: Experiments },
   { path: '/research', label: '통합 리서치 & 차트', compact: '리서치', icon: Search, page: Research },
@@ -25,6 +25,7 @@ const routes = [
 const phaseBRoutes = new Set(['/research', '/swing', '/ops'])
 
 export function canonicalLocation(url: URL) {
+  if (url.pathname === '/hermes') return '/longterm' + url.search + url.hash
   if (url.pathname === '/' && url.searchParams.has('experiment')) return '/experiments' + url.search + url.hash
   return url.pathname + url.search + url.hash
 }
@@ -68,8 +69,9 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
 
   const active = routes.find(route => route.path === path)
   const readOnly = capability?.read_only === true
-  const allowedRoutes = capability ? routes.filter(route => capability.routes.includes(route.path)) : []
-  const pageAllowed = !capability || capability.routes.includes(path)
+  const allowedRoutes = capability
+    ? routes.filter(route => capability.routes.includes(route.path) && !(readOnly && route.path === '/experiments')) : []
+  const pageAllowed = !capability || allowedRoutes.some(route => route.path === path)
   const phaseBUnavailable = phaseBRoutes.has(path) && capability?.phase_b_available === false
   const Page = phaseBUnavailable ? null : active?.page
   const multiTrack = path === '/' || evidence === 'MULTI-TRACK'
@@ -143,7 +145,7 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
             </header>
             <main id="dashboard-main" ref={main} tabIndex={-1} className="page">
               <ResourceState loading={loading} error={error} />
-              {!pageAllowed && <><h1>지원하지 않는 화면</h1><p>이 서버는 당일 단타 읽기 전용 화면을 제공합니다.</p><AppLink className="action-link" href="/daytrade">당일 단타 열기</AppLink></>}
+              {!pageAllowed && <><h1>지원하지 않는 화면</h1><p>이 서버에서 이 화면을 열 수 없습니다.</p><AppLink className="action-link" href="/daytrade">당일 단타 열기</AppLink></>}
               {pageAllowed && Page && <PageErrorBoundary key={path}><Page /></PageErrorBoundary>}
               {pageAllowed && !Page && <>
                 <h1>{active?.label ?? '페이지를 찾을 수 없습니다'}</h1>
@@ -153,7 +155,7 @@ function Workspace({ path, openPath }: { path: string; openPath: (href: string) 
             </main>
           </div>
           {allowedRoutes.length > 1 && <nav className="mobile-tabs" aria-label="주요 화면">
-            {navItems(allowedRoutes.filter(route => ['/', '/hermes', '/daytrade', '/research'].includes(route.path)), true)}
+            {navItems(allowedRoutes.filter(route => ['/', '/longterm', '/daytrade', '/research'].includes(route.path)), true)}
             <button onClick={() => setMenu(true)} aria-expanded={menu}><Menu size={19} aria-hidden="true" />더보기</button>
           </nav>}
           {menu && <Drawer title="대시보드 메뉴" onClose={() => setMenu(false)}>

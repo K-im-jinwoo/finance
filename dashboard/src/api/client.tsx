@@ -16,6 +16,8 @@ export type PollInterval = 5 | 30 | 0
 const errors: Record<string, string> = {
   LOCAL_SESSION_REQUIRED: '로컬 세션이 없거나 만료됐습니다. 페이지를 다시 열어 주세요.',
   SESSION_AND_SAME_ORIGIN_REQUIRED: '세션과 요청 출처를 확인할 수 없습니다. 페이지를 다시 열어 주세요.',
+  LONGTERM_LEDGER_UNAVAILABLE: '장기 모의계좌 원장을 읽을 수 없습니다.',
+  LONGTERM_SOURCE_UNAVAILABLE: '장기 모의계좌 원장 또는 입력 자료를 열 수 없습니다.',
   NOT_FOUND: '요청한 기록을 찾을 수 없습니다.',
   BODY_TOO_LARGE: '요청이 허용된 크기를 넘었습니다.',
   INVALID_INPUT_OR_STATE: '입력 또는 현재 상태에서는 이 작업을 실행할 수 없습니다.',

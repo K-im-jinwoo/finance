@@ -120,6 +120,15 @@ it('opens a report-bound drawer with recorded evidence and a keyboard-selectable
   expect(document.activeElement).toBe(trigger)
 })
 
+it('opens the exact report and candlestick from a symbol deep link', async () => {
+  window.history.replaceState(null, '', '/research?report=' + latest + '&symbol=005930')
+  open()
+  const dialog = await screen.findByRole('dialog', { name: '삼성전자 005930' })
+  expect(await within(dialog).findByRole('slider', { name: '차트 거래일' })).toBeTruthy()
+  fireEvent.click(within(dialog).getByRole('button', { name: '상세 닫기' }))
+  expect(location.search).toBe('?report=' + latest)
+})
+
 it('distinguishes missing report storage and a missing chart for a present report', async () => {
   const { unmount } = open({ missing: true })
   expect(await screen.findByText('연결할 로컬 데이터베이스 파일이 없습니다.')).toBeTruthy()

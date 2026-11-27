@@ -1,0 +1,10 @@
+[Unit]
+Description=Update the long-term paper ledger after the Korean market and research refresh
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 20:00:00 Asia/Seoul
+Persistent=true
+Unit=longterm-paper.service
+
+[Install]
+WantedBy=timers.target

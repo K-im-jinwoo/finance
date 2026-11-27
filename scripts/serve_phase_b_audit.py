@@ -5,7 +5,6 @@ import argparse
 from contextlib import ExitStack, closing
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -15,8 +14,9 @@ from tempfile import TemporaryDirectory
 import threading
 
 from bootstrap import ROOT
-from daytrade_dashboard import ReadOnlyHandler
+from oracle_dashboard import OracleDashboardServer
 from research_dashboard.daytrade_bridge import simulate_sample_daytrade
+from research_dashboard.longterm_ledger import LongTermAccounts
 from research_dashboard.rules import Policy
 from research_dashboard.server import DashboardServer
 from stock_assistant.backtest import SWING_POLICY
@@ -33,6 +33,8 @@ AS_OF = datetime.combine(SESSION, time(9), UTC)
 UR = "UR-" + "a" * 24
 SW = "SW-" + "c" * 24
 REGULAR = "R-20261113T0900Z-AB12CD34"
+LONGTERM_START = SESSION - timedelta(days=8)
+LONGTERM_UR = "UR-" + "d" * 24
 ISSUERS = (
     ("900101", "합성 반도체", "BUY_RECOMMENDATION"),
     ("900102", "합성 모빌리티", "WATCH"),
@@ -66,10 +68,12 @@ def seed_reports(store):
         as_of = datetime.combine(day, time(9), UTC)
         evaluations = []
         for index, (symbol, name, verdict) in enumerate(ISSUERS):
+            if day != SESSION and verdict == "EXCLUDED":
+                verdict = "VERIFY_PENDING"
             evaluations.append({
-                "symbol": symbol, "name": name, "action_decision": verdict,
+                "symbol": symbol, "name": name, "rank": index + 1, "action_decision": verdict,
                 "financial_score": str(88 - index * 9), "news_score": str(74 - index * 11),
-                "risk_penalty": str(index * 3), "total_score": str(Decimal("83.8") - index * Decimal("12.6")),
+                "risk_penalty": "3" if day == SESSION and index == 1 else "0", "total_score": str(Decimal("83.8") - index * Decimal("12.6")),
                 "financial_breakdown": {
                     "profit": {"points": 15 - index, "maximum": 20, "status": "SCORED", "reason": "합성 영업이익 추세"},
                     "cash_flow": {"points": 13 - index, "maximum": 15, "status": "SCORED", "reason": "합성 영업현금흐름"},
@@ -89,7 +93,8 @@ def seed_reports(store):
             "report_id": identifier, "contract": "UNIFIED_RESEARCH_V1", "policy_version": "UNIFIED_RESEARCH_V1",
             "mode": "SYNTHETIC", "as_of": as_of.isoformat(), "expected_price_session": day.isoformat(),
             "candidates": evaluations[:1], "evaluations": evaluations,
-            "decision_counts": {verdict: 1 for _, _, verdict in ISSUERS},
+            "decision_counts": {verdict: sum(row["action_decision"] == verdict for row in evaluations)
+                                for verdict in {row["action_decision"] for row in evaluations}},
         }, observed_at=as_of)
 
     candidates = []
@@ -142,6 +147,8 @@ def seed_stock(runtime):
     for offset, (symbol, _, _) in enumerate(ISSUERS):
         bars = []
         for index, day in enumerate(dates if offset == 0 else dates[-46:]):
+            if offset == 2 and day == SESSION:
+                continue
             close = Decimal(43_000 + offset * 4_000 + index * 51 + (index % 17 - 8) * 216)
             opening = close + (-270 if index % 3 else 310)
             bars.append(OHLCV(
@@ -164,6 +171,27 @@ def seed_stock(runtime):
     ])
     seed_reports(store)
     seed_performance(repository)
+    return store
+
+
+def seed_longterm(root, store):
+    as_of = datetime.combine(LONGTERM_START, time(9), UTC)
+    candidates = [
+        {"symbol": symbol, "name": name, "rank": rank, "action_decision": "BUY_RECOMMENDATION", "risk_penalty": "0"}
+        for rank, (symbol, name, _) in enumerate(ISSUERS[:4], 1)
+    ]
+    store.put("unified_report", "ALL", {
+        "report_id": LONGTERM_UR, "contract": "UNIFIED_RESEARCH_V1", "policy_version": "UNIFIED_RESEARCH_V1",
+        "mode": "SYNTHETIC", "as_of": as_of.isoformat(), "expected_price_session": LONGTERM_START.isoformat(),
+        "candidates": candidates, "evaluations": candidates, "decision_counts": {"BUY_RECOMMENDATION": len(candidates)},
+    }, observed_at=as_of)
+    ledger = LongTermAccounts(root, synthetic=True)
+    ledger.initialize(now=as_of)
+    account = ledger.refresh(now=AS_OF)
+    if not (len(account["fills"]) == 4 and account["position_count"] == 4
+            and account["risk_exit_count"] == 2 and account["missing_close_count"] == 1
+            and len(account["equity"]) >= 5):
+        raise RuntimeError("long-term audit ledger did not produce the expected scenarios")
 
 
 def seed_operations(root, state, runtime):
@@ -249,7 +277,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=63055)
     parser.add_argument("--readonly-port", type=int, default=63056)
-    parser.add_argument("--seconds", type=int, default=1800)
+    parser.add_argument("--seconds", type=int, default=3600)
     args = parser.parse_args()
     if not 1 <= args.seconds <= 86_400:
         parser.error("--seconds must be between 1 and 86400")
@@ -264,21 +292,20 @@ def main():
         os.environ.update(STOCK_DATABASE_PATH=str(runtime / "stock-assistant.sqlite3"),
                           STOCK_UNIFIED_RESEARCH_DATABASE=str(runtime / "unified-research-inputs.sqlite3"),
                           STOCK_NEWS_USAGE_FILE=str(runtime / "news-api-usage.sqlite3"),
-                          DAYTRADE_STATE_ROOT=str(state), DAYTRADE_TOKEN_CACHE="")
+                          DAYTRADE_STATE_ROOT=str(state), DAYTRADE_TOKEN_CACHE="",
+                          LONGTERM_LEDGER_PATH=str(runtime / "longterm-paper.sqlite3"))
         shutil.copytree(dist, root / "web/dist")
-        seed_stock(runtime)
+        seed_longterm(root, seed_stock(runtime))
         seed_operations(root, state, runtime)
         seed_daytrade(runtime, state)
 
-        full = cleanup.enter_context(DashboardServer(root, port=args.port))
+        full = cleanup.enter_context(DashboardServer(root, port=args.port, synthetic=True))
         seed_experiments(full)
         experiment_worker = threading.Thread(target=full.run_worker, daemon=True)
         experiment_worker.start()
         cleanup.callback(experiment_worker.join)
         cleanup.callback(full.stopping.set)
-        readonly = cleanup.enter_context(ThreadingHTTPServer(("127.0.0.1", args.readonly_port), ReadOnlyHandler))
-        readonly.root, readonly.state_root = root, state
-        readonly.sessions, readonly.daytrade_lock = set(), threading.Lock()
+        readonly = cleanup.enter_context(OracleDashboardServer(root, port=args.readonly_port))
         for server in (full, readonly):
             server.synthetic_audit = True
             worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -288,6 +315,7 @@ def main():
         print(json.dumps({
             "mode": "SYNTHETIC", "seconds": args.seconds, "port": full.server_port,
             "read_only_port": readonly.server_port, "research_report": UR, "swing_report": SW,
+            "longterm_entry_report": LONGTERM_UR,
             "daytrade_dates": [day.isoformat() for day in weekdays(SESSION, 3)],
         }), flush=True)
         try:

@@ -1,0 +1,16 @@
+[Unit]
+Description=Update the long-term paper ledger from saved research and KRX closes
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/srv/finance-dashboard/current
+Environment=STOCK_DATABASE_PATH=/srv/stock-assistant/state/stock-assistant.sqlite3
+Environment=STOCK_UNIFIED_RESEARCH_DATABASE=/srv/stock-assistant/state/unified-research-inputs.sqlite3
+Environment=LONGTERM_LEDGER_PATH=/srv/finance-dashboard/state/longterm-paper.sqlite3
+ExecStart=/usr/bin/python3 -B /srv/finance-dashboard/current/scripts/run_longterm_paper.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/finance-dashboard/state
+UMask=0077

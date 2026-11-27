@@ -1,0 +1,22 @@
+[Unit]
+Description=Finance integrated read-only dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/srv/finance-dashboard/current
+Environment=STOCK_DATABASE_PATH=/srv/stock-assistant/state/stock-assistant.sqlite3
+Environment=STOCK_UNIFIED_RESEARCH_DATABASE=/srv/stock-assistant/state/unified-research-inputs.sqlite3
+Environment=DAYTRADE_STATE_ROOT=/srv/daytrade/state
+Environment=LONGTERM_LEDGER_PATH=/srv/finance-dashboard/state/longterm-paper.sqlite3
+ExecStart=/usr/bin/python3 -B /srv/finance-dashboard/current/scripts/oracle_dashboard.py --port 8765
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

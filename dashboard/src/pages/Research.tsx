@@ -194,10 +194,11 @@ const sortValue: ((row: Evaluation) => string | number | null)[] = [
   row => setups[row.price?.strategy ?? ''] ?? row.price?.strategy ?? null, row => row.pending_checks?.length ?? null,
 ]
 
-function Evaluations({ report }: { report: Report }) {
+function Evaluations({ report, symbol, setSymbol }: {
+  report: Report; symbol: string | null; setSymbol: (symbol: string | null) => void
+}) {
   const [verdict, setVerdict] = useState('')
   const [search, setSearch] = useState('')
-  const [symbol, setSymbol] = useState<string | null>(null)
   const [sort, setSort] = useState<{ column: number; direction: 'ascending' | 'descending' } | null>(null)
   const [page, setPage] = useState(0)
   const rows = useMemo(() => {
@@ -284,7 +285,7 @@ export default function Research() {
       {list.data && !list.data.present && <Empty>{researchUnavailable(list.data.reason, '저장된 통합 리서치 보고서가 없습니다.')}</Empty>}
       {list.data?.present && <>
         <label className="research-field">UR 보고서
-          <select value={selection} onChange={event => updateQuery({ report: event.target.value })}>
+          <select value={selection} onChange={event => updateQuery({ report: event.target.value, symbol: null })}>
             <option value="">{latest ? `최신 · ${kst(latest.as_of)} · ${latest.report_id}` : '저장된 보고서 없음'}</option>
             {selection && !reports.some(item => item.report_id === selection) && <option value={selection}>{selection}</option>}
             {reports.map(item => <option key={item.report_id} value={item.report_id}>
@@ -302,6 +303,7 @@ export default function Research() {
         </p>}
       </>}
     </Panel>
-    {report && <Evaluations key={report.report_id} report={report} />}
+    {report && <Evaluations key={report.report_id} report={report} symbol={query.get('symbol')}
+      setSymbol={symbol => updateQuery({ symbol })} />}
   </div>
 }

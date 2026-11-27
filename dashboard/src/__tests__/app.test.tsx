@@ -25,7 +25,7 @@ afterEach(() => {
 it('canonicalizes legacy links without changing the query or fragment', () => {
   const query = '?experiment=E-test&event=A%2B1&trade=t&report=r&x=x&x=y'
   expect(canonicalLocation(new URL('http://127.0.0.1/' + query + '#anchor'))).toBe('/experiments' + query + '#anchor')
-  expect(canonicalLocation(new URL('http://127.0.0.1/hermes?account=abc'))).toBe('/hermes?account=abc')
+  expect(canonicalLocation(new URL('http://127.0.0.1/hermes?account=abc'))).toBe('/longterm?account=abc')
 })
 
 it('hides other tracks and writes no paper action when the server is read-only', async () => {
@@ -64,8 +64,8 @@ it('navigates from the overview without reloading and preserves the selected exp
   const id = 'E-300000000000000000000000'
   const responses: Record<string, unknown> = {
     '/api/capabilities': { read_only: false, orders_enabled: false, telegram_delivery_enabled: false,
-      routes: ['/', '/hermes', '/daytrade', '/experiments', '/research', '/swing', '/ops'], phase_b_available: false },
-    '/api/paper-accounts': { accounts: [], source: {} },
+      routes: ['/', '/longterm', '/daytrade', '/experiments', '/research', '/swing', '/ops'], phase_b_available: false },
+    '/api/longterm/overview': { status: 'NO_ACCOUNT' },
     '/api/daytrade/report': { present: false, report: null, sample_available: false },
     '/api/experiments': [{ experiment_id: id, cost_bps: '30', mode: 'SYNTHETIC', state: 'READY' }],
     '/api/status': { data_status: 'BLOCKED_NO_POINT_IN_TIME_DATASET' },
@@ -77,7 +77,7 @@ it('navigates from the overview without reloading and preserves the selected exp
   try {
     const { container } = render(<App />)
     expect(within(container.querySelector('.global-bar')!).getByText('MULTI-TRACK')).toBeTruthy()
-    const link = screen.getByRole('link', { name: '실험 보기' })
+    const link = await screen.findByRole('link', { name: '실험 보기' })
     await waitFor(() => expect(link.getAttribute('href')).toBe('/experiments?experiment=' + id))
     expect(fireEvent.click(link)).toBe(false)
     expect(await screen.findByRole('heading', { name: '계산 검증 실험', level: 1 })).toBeTruthy()
@@ -92,7 +92,7 @@ it('navigates from the overview without reloading and preserves the selected exp
 })
 
 function mockPhaseB(extra: Record<string, unknown> = {}) {
-  const routes = ['/', '/hermes', '/daytrade', '/experiments', '/research', '/swing', '/ops']
+  const routes = ['/', '/longterm', '/daytrade', '/experiments', '/research', '/swing', '/ops']
   const endpoints: Record<string, unknown> = {
     '/api/capabilities': { read_only: false, orders_enabled: false, telegram_delivery_enabled: false,
       routes, phase_b_available: true },

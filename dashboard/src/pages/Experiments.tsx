@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, MouseEvent } from 'react'
-import { evidenceMode, postJson, useCapabilities, useEvidenceMode, useRefresh, useResource } from '../api/client'
+import { postJson, useCapabilities, useRefresh, useResource } from '../api/client'
 import { CostComparisonChart, EquityDrawdownChart } from '../components/Charts'
-import { Badge, Drawer, Empty, MetricGrid, Panel, Pnl, ResourceState, Table } from '../components/ui'
+import { Badge, Drawer, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table } from '../components/ui'
+import { evidenceLabel, evidenceText, labelForCode, readableLog } from '../utils/labels'
 import { kst, money, numeric } from '../utils/formatters'
 import {
   comparisonCosts, decimal, equityPoints, experimentQuery, hasExperimentEvidence, observedReentrySignals,
   percentagePoints, resolveExperimentEvidence,
 } from './experimentModel'
 import type {
-  AlertDraft, DetailQuery, Experiment, ExperimentCost, ExperimentSummary,
+  AlertDraft, DetailQuery, Experiment, ExperimentCost, ExperimentEvent, ExperimentSummary,
   Observation, VerificationStatus,
 } from './experimentModel'
 
@@ -24,8 +25,8 @@ const labels: Record<string, string> = {
   INVALIDATION: '무효화 확인',
   EVENING_SUMMARY: '거래일 저녁 요약',
   ERROR: '오류',
-  SYNTHETIC: '합성 자료',
-  OBSERVED: '관측 자료 검증',
+  SYNTHETIC: '가상 검증',
+  OBSERVED: '실제 시세',
 }
 const actionStates = { start: 'READY', pause: 'RUNNING', resume: 'PAUSED' } as const
 const actionLabels = { start: '실험 시작', pause: '일시중지', resume: '재개' } as const
@@ -42,10 +43,10 @@ const basePath = '/api/experiments'
 const missingExperiment = '선택한 실험을 찾을 수 없습니다. 과거 링크를 최신 실험으로 대체하지 않습니다.'
 const missingDetail = '해당 실험에 상세 기록이 없습니다. 최신 보고서로 대체하지 않습니다.'
 const kstDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' })
-const label = (value: string) => labels[value] ?? value
+const label = (value: string) => labels[value] ?? labelForCode(value)
 const experimentOption = (item: ExperimentSummary) => (
-  <option key={item.experiment_id} value={item.experiment_id}>
-    {item.experiment_id.slice(0, 12)} · {item.cost_bps}bps · {label(item.state)}
+  <option key={item.experiment_id} value={item.experiment_id} title={item.experiment_id}>
+    {evidenceLabel(item.mode) ?? '저장된 실험'} · {item.cost_bps}bps · {label(item.state)}
   </option>
 )
 const percent = (value: number | null) => value === null ? '확인 불가' : value.toFixed(2) + '%'
@@ -112,7 +113,6 @@ export default function Experiments() {
   const result = awaitingActionRead ? applied : fetched
   const selectedSummary = list.data?.find(item => item.experiment_id === selected)
   const canWrite = capabilities?.read_only === false
-  useEvidenceMode(evidenceMode(result?.coverage.mode ?? selectedSummary?.mode))
   useEffect(() => {
     if (defaultId && explicitlySelected === null) {
       write(experimentQuery(params, { experiment: defaultId }))
@@ -179,7 +179,7 @@ export default function Experiments() {
         <label className="cluster">
           실험
           <select value={selected ?? ''} onChange={event => selectExperiment(event.target.value)} disabled={pending !== null}>
-            {!selectedSummary && <option value={selected ?? ''} disabled>{selected ? selected.slice(0, 12) : '실험 선택'}</option>}
+            {!selectedSummary && <option value={selected ?? ''} disabled>{selected ? '선택한 실험' : '실험 선택'}</option>}
             {list.data?.map(experimentOption)}
           </select>
         </label>
@@ -197,7 +197,8 @@ export default function Experiments() {
           </button>
         </form>}
       </div>
-      <ResourceState loading={list.loading} error={list.error} />
+      <ResourceState loading={false} error={list.error} />
+      {list.loading && <Skeleton label="검증 실험 목록 불러오는 중" />}
       {actionError && <p role="alert" className="notice">{actionError}</p>}
       <nav className="cluster experiment-tabs" aria-label="검증 실험 보기">
         <a {...link(experimentQuery(params, { view: null }, true))} aria-current={!comparing ? 'page' : undefined}>단일 실험</a>
@@ -217,7 +218,8 @@ export default function Experiments() {
         </>
       ) : (
         <>
-          <ResourceState loading={experiment.loading} error={experimentError} />
+          <ResourceState loading={false} error={experimentError} />
+          {experiment.loading && <Skeleton label="검증 실험 기록 불러오는 중" />}
           {!selected && !list.loading && !list.error && !malformedSelection && <Empty>생성된 검증 실험이 없습니다.</Empty>}
           {result && <SingleExperiment
             key={result.experiment_id}
@@ -274,7 +276,7 @@ function CostComparison({ options, base, params, onSelect }: {
 
   return <Panel title="왕복 거래비용 비교">
     <div className="stack">
-      {base && <p className="muted">선택한 실험과 같은 데이터셋에서 비교합니다. <Badge>{base.mode}</Badge></p>}
+      {base && <p className="muted">선택한 실험과 같은 데이터셋에서 비교합니다. {evidenceLabel(base.mode) && <Badge>{evidenceLabel(base.mode)}</Badge>}</p>}
       <div className="cluster">
         {slots.map(({ bps, matches, selectedId, selected }) => <label className="cluster" key={bps}>
           <span className="mono">{bps}bps</span>
@@ -333,13 +335,12 @@ function SingleExperiment({ result, detailLink, canWrite, pending, onAction }: {
   return <div className="stack">
     <div className="cluster">
       <StatusBadge status={state.status} />
-      <Badge>{coverage.mode}</Badge>
       <span className="muted">{label(coverage.mode)} · 왕복 {policy.round_trip_bps}bps</span>
       <span className="mono">{result.cursor}/{result.total_events} 시점</span>
       <span>기준 {kst(state.clock)}</span>
     </div>
     <MetricGrid metrics={[
-      { label: '총자산', value: money(decimal(last?.total_assets)), detail: '현금 ' + money(decimal(state.cash)) },
+      { label: '총자산', value: <SummaryMoney value={decimal(last?.total_assets)} />, detail: '현금 ' + money(decimal(state.cash)) },
       { label: '계좌 수익률', value: <Pnl value={percentagePoints(last?.return)} format={percent} /> },
       { label: '최대낙폭', value: <Pnl value={percentagePoints(metrics.max_drawdown)} format={percent} />, detail: '평가 관측시점 기준' },
       { label: '가상 체결', value: state.trades.length + '건', detail: '완료 보유 ' + metrics.completed_round_trips + ' · 열린 보유 ' + metrics.open_positions },
@@ -384,7 +385,7 @@ function SingleExperiment({ result, detailLink, canWrite, pending, onAction }: {
     <Panel title="가상 체결 원장">
       {state.trades.length ? <Table label="가상 체결 원장" columns={['체결시각 KST', '종목', '구분', '수량', '가격', '비용', '상세']}>
         {state.trades.map(trade => <tr key={trade.trade_id}>
-          <td className="mono">{kst(trade.filled_at)}</td>
+          <td className="mono">{kst(trade.filled_at, true)}</td>
           <th scope="row" className="mono">{trade.symbol}</th>
           <td>{label(trade.side)}</td>
           <td className="mono">{trade.quantity}주</td>
@@ -400,7 +401,7 @@ function SingleExperiment({ result, detailLink, canWrite, pending, onAction }: {
         {state.reports.slice().reverse().map(report => <li key={report.report_id}>
           <a {...detailLink({ report: report.report_id })} className="stack">
             <strong className="mono">{kst(report.at)}</strong>
-            <span className="muted">{report.candidates.map(candidate => candidate.symbol + ' · ' + candidate.decision + ' / ' + candidate.review_tier).join(' | ')}</span>
+            <span className="muted">{report.candidates.map(candidate => candidate.symbol + ' · ' + labelForCode(candidate.decision) + ' / ' + labelForCode(candidate.review_tier)).join(' | ')}</span>
           </a>
         </li>)}
       </ul> : <Empty>보고서가 없습니다.</Empty>}
@@ -419,7 +420,20 @@ function SingleExperiment({ result, detailLink, canWrite, pending, onAction }: {
     <Panel title="데이터 범위와 실험 설정">
       <details>
         <summary>데이터셋 · 적용 정책 · 원장 지표 · 체결 대기</summary>
-        <pre className="report-text">{JSON.stringify({ coverage, policy, metrics, pending: state.pending }, null, 2)}</pre>
+        <dl className="data-pairs">
+          <dt>검증 자료</dt><dd>{evidenceLabel(coverage.mode) ?? '확인 불가'}</dd>
+          <dt>자료 시작 시각</dt><dd>{kst(coverage.supported_start)}</dd>
+          <dt>자료 종료 시각</dt><dd>{kst(coverage.supported_end)}</dd>
+          <dt>기본 자금</dt><dd className="amount">{money(decimal(policy.initial_cash))}</dd>
+          <dt>왕복 거래비용</dt><dd>{numeric(policy.round_trip_bps, 'bps')}</dd>
+          <dt>평가 누락</dt><dd>{numeric(metrics.valuation_missing_count, '건')}</dd>
+          <dt>체결 대기</dt><dd>{numeric(Object.keys(state.pending).length, '건')}</dd>
+        </dl>
+        {Object.keys(state.pending).length > 0 && <Table label="실험 체결 대기" columns={['종목', '매매', '대기 시작 시각']}>
+          {Object.entries(state.pending).map(([symbol, order]) => <tr key={symbol}>
+            <th scope="row">{symbol}</th><td>{labelForCode(order.side)}</td><td className="amount">{kst(order.created_at)}</td>
+          </tr>)}
+        </Table>}
       </details>
     </Panel>
   </div>
@@ -436,11 +450,11 @@ function PositionChecks({ state }: { state: Experiment['state'] }) {
           <th scope="row" className="mono">{symbol}</th>
           <td className="mono">{position.quantity}주</td>
           <td className="mono">{money(decimal(position.entry_price))}</td>
-          <td>{position.original_decision}</td>
+          <td>{labelForCode(position.original_decision)}</td>
           <td><div className="cluster">
             {state.checks[symbol]?.length
               ? state.checks[symbol].map(check => <CheckBadge key={check.code} check={check} />)
-              : <Badge>UNKNOWN · 확인 불가</Badge>}
+              : <span className="muted">확인 불가</span>}
           </div></td>
         </tr>)}
       </Table> : <Empty>보유 종목이 없습니다.</Empty>}
@@ -450,8 +464,8 @@ function PositionChecks({ state }: { state: Experiment['state'] }) {
           {checkedSymbols.flatMap(([symbol, checks]) => checks.map(check => <tr key={symbol + check.code}>
             <th scope="row" className="mono">{symbol}</th>
             <td><CheckBadge check={check} /></td>
-            <td>{kst(check.available_at)}</td>
-            <td>{check.evidence_id ?? check.reason ?? '확인 불가'}</td>
+            <td className="amount">{kst(check.available_at)}</td>
+            <td title={check.evidence_id}>{check.reason ? evidenceText(check.reason) : check.evidence_id ? '근거 기록 있음' : '확인 불가'}</td>
           </tr>))}
         </Table>
       </details>}
@@ -460,9 +474,9 @@ function PositionChecks({ state }: { state: Experiment['state'] }) {
         <Table label="원장 무효화 기록" columns={['종목', '무효화 시각 KST', '기록된 원인', '근거']}>
           {invalidations.flatMap(([symbol, record]) => record.causes.map(check => <tr key={symbol + check.code}>
             <th scope="row" className="mono">{symbol}</th>
-            <td>{kst(record.at)}</td>
+            <td className="amount">{kst(record.at)}</td>
             <td><CheckBadge check={check} /></td>
-            <td>{check.evidence_id ?? check.reason ?? '확인 불가'}</td>
+            <td title={check.evidence_id}>{check.reason ? evidenceText(check.reason) : check.evidence_id ? '근거 기록 있음' : '확인 불가'}</td>
           </tr>))}
         </Table>
       </details>}
@@ -474,7 +488,7 @@ function PositionChecks({ state }: { state: Experiment['state'] }) {
 function CheckBadge({ check }: { check: Experiment['state']['checks'][string][number] }) {
   const tone = check.status === 'VALID' ? 'ok' : check.status === 'INVALID' ? 'danger'
     : check.status === 'REVIEW_REQUIRED' ? 'warn' : 'unknown'
-  return <Badge tone={tone}>{check.code} · {check.status}</Badge>
+  return <Badge tone={tone}>{labelForCode(check.code, '무효화 점검')} · {labelForCode(check.status)}</Badge>
 }
 
 const observationLabels: Record<string, string> = {
@@ -501,7 +515,7 @@ function Observations({ state, detailLink }: { state: Experiment['state']; detai
   const [filter, setFilter] = useState('')
   const observations = state.observations ?? []
   const reasons = [...new Set(observations.flatMap(item => item.reason ? [item.reason] : []))]
-  const observationLabel = (value: string) => observationLabels[value] ?? value
+  const observationLabel = (value: string) => observationLabels[value] ?? labelForCode(value)
   const completedReentries = observedReentrySignals(state.outbox)
 
   function isReentry(item: Observation) {
@@ -536,7 +550,7 @@ function Observations({ state, detailLink }: { state: Experiment['state']; detai
           <th scope="row" className="mono">{item.symbol}</th>
           <td>{observationLabel(item.state)}</td>
           <td>{item.reason ? observationLabel(item.reason) : isReentry(item) ? '재진입 주문' : '—'}</td>
-          <td>{[item.original_decision, item.original_review_tier].filter(Boolean).join(' / ') || '—'}</td>
+          <td>{[item.original_decision, item.original_review_tier].filter(Boolean).map(code => labelForCode(code)).join(' / ') || '—'}</td>
           <td>{report ? <a className="action-link" {...detailLink({ report })}>원본 보고서</a> : '—'}</td>
         </tr>
       })}
@@ -562,9 +576,32 @@ function DraftItem({ draft, detailLink }: { draft: AlertDraft; detailLink: Detai
     </div>
     <details>
       <summary>초안 원문</summary>
-      <pre className="report-text">{draft.text}</pre>
+      <pre className="report-text">{readableLog(draft.text)}</pre>
     </details>
   </div>
+}
+
+function RecordedEventDetail({ event }: { event: ExperimentEvent }) {
+  const detail = event.detail
+  if (event.kind === 'INVALIDATION' && Array.isArray(detail)) {
+    const checks = detail.filter((check): check is Experiment['state']['checks'][string][number] =>
+      check && typeof check.code === 'string' && typeof check.status === 'string')
+    return checks.length > 0 && <Table label="무효화 판정 근거" columns={['점검', '자료 확인 시각', '근거']}>
+      {checks.map(check => <tr key={check.code}>
+        <th scope="row"><CheckBadge check={check} /></th>
+        <td className="amount">{kst(check.available_at)}</td>
+        <td title={check.evidence_id}>{evidenceText(check.reason, check.evidence_id ? '근거 기록 있음' : '확인 불가')}</td>
+      </tr>)}
+    </Table>
+  }
+  if (event.kind !== 'EVENING_SUMMARY' || !detail || typeof detail !== 'object') return null
+  const summary = detail as { equity?: { total_assets?: string; cash?: string }; total_cost?: string; pending?: number }
+  return <dl className="data-pairs">
+    <dt>총자산</dt><dd className="amount">{money(summary.equity?.total_assets)}</dd>
+    <dt>현금</dt><dd className="amount">{money(summary.equity?.cash)}</dd>
+    <dt>총비용</dt><dd className="amount">{money(summary.total_cost)}</dd>
+    <dt>체결 대기</dt><dd>{numeric(summary.pending, '건')}</dd>
+  </dl>
 }
 
 function EvidenceDrawer({ params, result, loading, error, onClose }: {
@@ -585,22 +622,24 @@ function EvidenceDrawer({ params, result, loading, error, onClose }: {
         <h3>가상 체결</h3>
         <div className="cluster"><Badge>{label(trade.side)}</Badge><strong className="mono">{trade.symbol} · {trade.quantity}주</strong></div>
         <p>{money(decimal(trade.price))} · 체결비용 {money(decimal(trade.fee))}</p>
-        <p className="muted">신호 {kst(trade.signal_at)} → 체결 {kst(trade.filled_at)}</p>
+        <p className="muted">신호 {kst(trade.signal_at)} → 체결 {kst(trade.filled_at, true)}</p>
       </section>}
       {event && <section className="stack">
         <h3>기준일 이벤트</h3>
         <p>{label(event.kind)} · {kst(event.at)}{event.symbol ? ' · ' + event.symbol : ''}</p>
+        <RecordedEventDetail event={event} />
       </section>}
       {report && <section className="stack">
         <h3>원본 보고서</h3>
-        <p className="mono">{report.report_id}</p>
+
         <p className="muted">보고서 생성 {kst(report.at)} · 원본 판정 보존</p>
-        <pre className="report-text">{JSON.stringify(report, null, 2)}</pre>
+        {report.candidates.length > 0 && <Table label="저장된 종목 판정" columns={['종목', '판정', '검토 단계']}>
+          {report.candidates.map(candidate => <tr key={candidate.symbol}>
+            <th scope="row">{candidate.symbol}</th><td>{labelForCode(candidate.decision)}</td>
+            <td>{labelForCode(candidate.review_tier)}</td>
+          </tr>)}
+        </Table>}
       </section>}
-      {(trade || event) && <details>
-        <summary>전체 근거와 시점 기록</summary>
-        <pre className="report-text">{JSON.stringify({ experiment: result?.experiment_id, trade, event, report }, null, 2)}</pre>
-      </details>}
     </div> : loading ? <ResourceState loading={true} error={null} /> : !error && <Empty>{missingDetail}</Empty>}
   </Drawer>
 }
@@ -653,7 +692,7 @@ function OracleVerification() {
           </section>}
           {financial && <section className="stack">
             <h3>관측 재무 검산</h3>
-            <p>{financial.symbol ?? '종목 확인 불가'} · {financial.division ?? '구분 확인 불가'} · 연간/두 반기 3기간 · 대조 항목 {numeric(checkCount, '개')} · 일치 여부 {financialMatch}</p>
+            <p>{financial.symbol ?? '종목 확인 불가'} · {labelForCode(financial.division, '구분 확인 불가')} · 연간/두 반기 3기간 · 대조 항목 {numeric(checkCount, '개')} · 일치 여부 {financialMatch}</p>
             <p>TTM 영업이익 <strong className="mono">{money(decimal(financial.values?.ttm_operating_income))}</strong> · OCF는 원본 연간 기준</p>
             <p className="muted">관측 {kst(financial.observed_at)} · 과거 시점 인증 전</p>
           </section>}

@@ -1,12 +1,22 @@
 import { ArrowDown, ArrowUp, X } from 'lucide-react'
 import { Component, useEffect, useId, useRef } from 'react'
 import type { ReactNode } from 'react'
-import { numeric } from '../utils/formatters'
+import { money, numeric, summaryMoney } from '../utils/formatters'
 
 type Tone = 'ok' | 'warn' | 'danger' | 'unknown'
 
 export function Badge({ children, tone = 'unknown' }: { children: ReactNode; tone?: Tone }) {
   return <span className={'badge badge-' + tone}>{children}</span>
+}
+
+export function Skeleton({ label = '자료 불러오는 중' }: { label?: string }) {
+  return <div className="stack skeleton-list" role="status" aria-label={label}>
+    <span aria-hidden="true" /><span aria-hidden="true" /><span aria-hidden="true" />
+  </div>
+}
+
+export function SummaryMoney({ value, signed = false }: { value: unknown; signed?: boolean }) {
+  return <span className="amount" title={money(value, signed)}>{summaryMoney(value, signed)}</span>
 }
 
 export function Panel({ title, children, actions }: { title: ReactNode; children: ReactNode; actions?: ReactNode }) {
@@ -44,9 +54,7 @@ export function Empty({ children }: { children: ReactNode }) {
 
 export function ResourceState({ loading, error }: { loading: boolean; error: string | null }) {
   if (!loading && !error) return null
-  return <p className={error ? 'notice notice-danger' : 'muted'} role="status">
-    {error ?? '기록을 불러오는 중입니다…'}
-  </p>
+  return error ? <p className="notice notice-danger" role="status">{error}</p> : <Skeleton />
 }
 
 export function Pnl({ value, format = numeric, signedText }: {
@@ -60,7 +68,7 @@ export function Pnl({ value, format = numeric, signedText }: {
   const Icon = positive ? ArrowUp : ArrowDown
   const text = signedText ?? ((positive ? '+' : negative ? '-' : '') + format(Math.abs(value)))
   const tone = positive ? 'up' : negative ? 'down' : 'flat'
-  return <span className={'pnl pnl-' + tone}>
+  return <span className={'pnl pnl-' + tone} title={format === summaryMoney ? money(value, true) : undefined}>
     {(positive || negative) && <Icon size={15} aria-hidden="true" />}
     <span>{text}</span>
   </span>

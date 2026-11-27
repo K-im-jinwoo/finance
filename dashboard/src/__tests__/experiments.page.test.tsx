@@ -140,7 +140,7 @@ it('creates an experiment with the selected fee assumption and selects it in the
   expect(create.classList.contains('primary-button')).toBe(true)
   fireEvent.click(create)
 
-  await screen.findByText(/합성 자료 · 왕복 60bps/)
+  await screen.findByText(/가상 검증 · 왕복 60bps/)
   expect(new URLSearchParams(location.search).get('experiment')).toBe(exp60)
   expect(action).toHaveBeenCalledWith('/api/experiments', expect.objectContaining({ method: 'POST', body: '{"cost_bps":"60"}' }))
 })

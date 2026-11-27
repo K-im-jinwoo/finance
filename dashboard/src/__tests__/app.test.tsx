@@ -35,7 +35,8 @@ it('hides other tracks and writes no paper action when the server is read-only',
     : { present: false, report: null, sample_available: true })))
   vi.stubGlobal('fetch', api)
   render(<App />)
-  expect(await screen.findByText('READ_ONLY')).toBeTruthy()
+  expect(await screen.findByRole('heading', { name: '당일 단타', level: 1 })).toBeTruthy()
+  expect(screen.queryByText('READ_ONLY')).toBeNull()
   expect(screen.queryByRole('link', { name: '통합 홈' })).toBeNull()
   expect(screen.queryByRole('link', { name: '계산 검증 실험' })).toBeNull()
   expect(screen.queryByRole('button', { name: '오프라인 샘플 실행' })).toBeNull()
@@ -49,14 +50,15 @@ it('persists theme and market color settings independently', async () => {
   }))))
   render(<App />)
   expect(await screen.findByText('이 서버에서 읽기 전용 자료 API를 사용할 수 없습니다.')).toBeTruthy()
-  fireEvent.click(screen.getByRole('button', { name: '라이트 테마로 전환' }))
+  expect(document.documentElement.dataset.theme).toBe('light')
+  fireEvent.click(screen.getByRole('button', { name: '다크 테마로 전환' }))
   const pnlToggle = screen.getByRole('button', { name: /^KRX 적\/청/ })
   expect(pnlToggle.getAttribute('aria-pressed')).toBe('false')
   fireEvent.click(pnlToggle)
   expect(screen.getByRole('button', { name: /^글로벌 녹\/적/ }).getAttribute('aria-pressed')).toBe('true')
-  await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'))
+  await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'))
   expect(document.documentElement.dataset.pnl).toBe('global')
-  expect(localStorage.getItem('finance.theme')).toBe('light')
+  expect(localStorage.getItem('finance.theme')).toBe('dark')
   expect(localStorage.getItem('finance.pnl')).toBe('global')
 })
 
@@ -76,7 +78,7 @@ it('navigates from the overview without reloading and preserves the selected exp
   const scroll = vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
   try {
     const { container } = render(<App />)
-    expect(within(container.querySelector('.global-bar')!).getByText('MULTI-TRACK')).toBeTruthy()
+    expect(within(container.querySelector('.global-bar')!).queryByText('MULTI-TRACK')).toBeNull()
     const link = await screen.findByRole('link', { name: '실험 보기' })
     await waitFor(() => expect(link.getAttribute('href')).toBe('/experiments?experiment=' + id))
     expect(fireEvent.click(link)).toBe(false)
@@ -137,23 +139,26 @@ it('contains a page render failure, allows retry and resets the boundary when na
   expect(within(main).queryByRole('alert')).toBeNull()
 })
 
-it('labels aggregated evidence and keeps unknown provenance on a single swing report', async () => {
+it('shows only one synthetic-data chip and keeps internal evidence codes out of the header', async () => {
   const reportId = 'SW-fixture'
   mockPhaseB({
+    '/api/capabilities': { read_only: false, orders_enabled: false, telegram_delivery_enabled: false, routes: ['/ops', '/swing'], phase_b_available: true, fixture_mode: 'SYNTHETIC' },
     '/api/swing/reports': { present: true, latest: { report_id: reportId }, reports: [{ report_id: reportId }] },
     ['/api/swing/reports/' + reportId]: { present: true, report: { report_id: reportId } },
   })
   window.history.replaceState(null, '', '/ops')
   const { container } = render(<App />)
   const header = within(container.querySelector('.global-bar')!)
-  expect(header.getByText('MULTI-TRACK')).toBeTruthy()
+  expect(header.queryByText('MULTI-TRACK')).toBeNull()
   const navigation = await screen.findByRole('link', { name: '테마·스윙 & 성과' })
   fireEvent.click(navigation)
-  await screen.findByText(reportId, { selector: 'span' })
-  expect(header.getByText('UNKNOWN')).toBeTruthy()
+  expect(await header.findAllByText('테스트 데이터')).toHaveLength(1)
+  expect(await screen.findByRole('heading', { name: '테마·스윙 보고서', level: 2 })).toBeTruthy()
+  expect(screen.queryByText(reportId)).toBeNull()
+  expect(header.queryByText('UNKNOWN')).toBeNull()
   const tabs = screen.getByRole('navigation', { name: '스윙·성과 보기' })
   fireEvent.click(within(tabs).getByRole('link', { name: '사후 성과 트래커' }))
-  expect(header.getByText('MULTI-TRACK')).toBeTruthy()
+  expect(header.queryByText('MULTI-TRACK')).toBeNull()
   fireEvent.click(within(tabs).getByRole('link', { name: '스윙 보고서' }))
-  expect(header.getByText('UNKNOWN')).toBeTruthy()
+  expect(header.queryByText('UNKNOWN')).toBeNull()
 })

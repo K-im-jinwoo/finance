@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
-import { evidenceMode, useEvidenceMode, useResource } from '../api/client'
+import { useResource } from '../api/client'
 import { unavailableReason } from '../api/phaseB'
 import type { Presence, ReportList, ReportSummary } from '../api/phaseB'
 import { CandlestickChart } from '../components/CandlestickChart'
 import type { CandleBar } from '../components/CandlestickChart'
-import { Badge, Drawer, Empty, MetricGrid, Panel, Pnl, ResourceState, Table } from '../components/ui'
+import { Badge, Drawer, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, Table } from '../components/ui'
 import { finite, kst, money, numeric } from '../utils/formatters'
+import { evidenceText, labelForCode, reportName } from '../utils/labels'
 import { useRouteQuery } from '../utils/routeQuery'
 import './research.css'
 
@@ -68,12 +69,12 @@ function researchUnavailable(reason: string | undefined, fallback: string) {
 
 function Verdict({ row }: { row: Evaluation }) {
   const verdict = row.action_decision ? verdicts[row.action_decision] : undefined
-  return <Badge tone={verdict?.tone}>{row.label ?? verdict?.label ?? row.action_decision ?? '판정 확인 불가'}</Badge>
+  return <Badge tone={verdict?.tone}>{evidenceText(row.label, verdict?.label ?? labelForCode(row.action_decision, '판정 확인 불가'))}</Badge>
 }
 
 function EvidenceList({ items, empty }: { items?: string[]; empty: string }) {
   return items?.length ? <ul className="research-evidence-list">
-    {items.map((item, index) => <li key={index}>{item}</li>)}
+    {items.map((item, index) => <li key={index}>{evidenceText(item)}</li>)}
   </ul> : <Empty>{empty}</Empty>
 }
 
@@ -117,7 +118,7 @@ function ResearchChart({ row, reportId }: { row: Evaluation; reportId: string })
       : <Empty>{researchUnavailable(data.reason, missingReasons.BARS_NOT_FOUND)}</Empty>)}
     {data?.present && data.analysis_available === false && <p className="muted">상세 기술 판독에 필요한 일봉이 부족합니다.</p>}
     {plan && <div className="stack">
-      <p><strong>{plan.grade_label ?? '차트 판독'}</strong>
+      <p><strong>{evidenceText(plan.grade_label, '차트 판독')}</strong>
         {data?.analysis?.patterns?.primary?.name_ko && <> · {data.analysis.patterns.primary.name_ko}</>}
       </p>
       <MetricGrid metrics={[
@@ -136,23 +137,23 @@ function ResearchChart({ row, reportId }: { row: Evaluation; reportId: string })
   </section>
 }
 
-function ResearchDetails({ row, reportId, close }: { row: Evaluation; reportId: string; close: () => void }) {
+function ResearchDetails({ row, report, reports, close }: { row: Evaluation; report: Report; reports: ReportSummary[]; close: () => void }) {
   const financial = Object.entries(row.financial_breakdown ?? {})
   const financialSource = safeReference(row.financial_source_url)
   const coverage = (covered?: boolean) => covered === true ? '확인 완료' : covered === false ? '미완료' : '확인 불가'
   return <Drawer title={<>{row.name ? `${row.name} ` : ''}<span className="mono">{row.symbol}</span></>} onClose={close}>
-    <div className="cluster"><Verdict row={row} /><span className="muted mono">{reportId}</span></div>
+    <div className="cluster"><Verdict row={row} /><span className="muted" title={report.report_id}>{reportName(report, 'research', reports)}</span></div>
     <MetricGrid metrics={[
       { label: '재무 (70%)', value: numeric(row.financial_score) }, { label: '뉴스 (30%)', value: numeric(row.news_score) },
       { label: '리스크 차감', value: numeric(row.risk_penalty) }, { label: '총점', value: numeric(row.total_score) },
     ]} />
-    <ResearchChart row={row} reportId={reportId} />
+    <ResearchChart row={row} reportId={report.report_id} />
     <section className="stack research-detail-section" aria-label="재무 점수 분해">
       <h3>재무 점수 분해</h3>
       {financial.length ? <Table label="재무 평가 항목" columns={['항목', '점수 / 배점', '근거']}>
-        {financial.map(([key, item]) => <tr key={key}><th scope="row">{financialLabels[key] ?? key}</th>
+        {financial.map(([key, item]) => <tr key={key}><th scope="row">{financialLabels[key] ?? '재무 평가 항목'}</th>
           <td className="mono">{numeric(item.points)} / {numeric(item.maximum)}</td>
-          <td>{item.reason ?? (item.status === 'AVAILABLE' ? '근거 기록 없음' : '확인 불가')}</td>
+          <td>{evidenceText(item.reason, item.status === 'AVAILABLE' ? '근거 기록 없음' : '확인 불가')}</td>
         </tr>)}
       </Table> : <Empty>저장된 재무 평가 항목이 없습니다.</Empty>}
       {financialSource && <a className="action-link" href={financialSource} target="_blank" rel="noreferrer">재무 근거 원문</a>}
@@ -162,8 +163,8 @@ function ResearchDetails({ row, reportId, close }: { row: Evaluation; reportId: 
       <p className="muted">최근 뉴스 검토 {coverage(row.recent_news_complete)} · 과거 리스크 검토 {coverage(row.risk_history_complete)}</p>
       {row.news_events?.length ? <Table label="뉴스 이벤트 반영" columns={['이벤트', '반영', '점수', '상태']}>
         {row.news_events.map(event => <tr key={event.event_id}>
-          <th scope="row">{event.title ?? event.event_id}</th><td>{event.score_target === 'risk_penalty' ? '리스크' : '뉴스'}</td>
-          <td className="mono"><Pnl value={finite(event.points)} /></td><td>{event.status ?? '확인 불가'}</td>
+          <th scope="row"><span title={event.event_id}>{event.title ?? '뉴스 근거'}</span></th><td>{event.score_target === 'risk_penalty' ? '리스크' : '뉴스'}</td>
+          <td className="mono"><Pnl value={finite(event.points)} /></td><td>{labelForCode(event.status)}</td>
         </tr>)}
       </Table> : <Empty>저장된 뉴스 이벤트가 없습니다.</Empty>}
       <References label="최근 기사" items={row.recent_headlines} />
@@ -180,7 +181,7 @@ function ResearchDetails({ row, reportId, close }: { row: Evaluation; reportId: 
     </section>
     <section className="stack research-detail-section" aria-label="진입·무효화 조건">
       <h3>진입·무효화 조건</h3>
-      <p className="muted">{setups[row.price?.strategy ?? ''] ?? row.price?.strategy ?? '가격 셋업 확인 불가'} · {row.price?.session ?? '기준 거래일 확인 불가'}</p>
+      <p className="muted">{setups[row.price?.strategy ?? ''] ?? labelForCode(row.price?.strategy, '가격 셋업 확인 불가')} · {row.price?.session ?? '기준 거래일 확인 불가'}</p>
       <EvidenceList items={[...new Set([...(row.price?.entry_conditions ?? []), ...(row.price?.invalidation_conditions ?? [])])]}
         empty="저장된 진입·무효화 조건이 없습니다." />
     </section>
@@ -194,8 +195,8 @@ const sortValue: ((row: Evaluation) => string | number | null)[] = [
   row => setups[row.price?.strategy ?? ''] ?? row.price?.strategy ?? null, row => row.pending_checks?.length ?? null,
 ]
 
-function Evaluations({ report, symbol, setSymbol }: {
-  report: Report; symbol: string | null; setSymbol: (symbol: string | null) => void
+function Evaluations({ report, reports, symbol, setSymbol }: {
+  report: Report; reports: ReportSummary[]; symbol: string | null; setSymbol: (symbol: string | null) => void
 }) {
   const [verdict, setVerdict] = useState('')
   const [search, setSearch] = useState('')
@@ -229,7 +230,7 @@ function Evaluations({ report, symbol, setSymbol }: {
       <label className="research-field">판정
         <select value={verdict} onChange={event => { setVerdict(event.target.value); setPage(0) }}>
           <option value="">전체 판정</option>
-          {Object.entries(verdicts).map(([code, item]) => <option key={code} value={code}>{item.label} ({code})</option>)}
+          {Object.entries(verdicts).map(([code, item]) => <option key={code} value={code}>{item.label}</option>)}
         </select>
       </label>
     </div>
@@ -250,7 +251,7 @@ function Evaluations({ report, symbol, setSymbol }: {
         <td><Verdict row={row} /></td>
         <td className="mono">{numeric(row.financial_score)}</td><td className="mono">{numeric(row.news_score)}</td>
         <td className="mono">{numeric(row.risk_penalty)}</td><td className="mono">{numeric(row.total_score)}</td>
-        <td>{setups[row.price?.strategy ?? ''] ?? row.price?.strategy ?? '확인 불가'}</td>
+        <td>{setups[row.price?.strategy ?? ''] ?? labelForCode(row.price?.strategy)}</td>
         <td className="mono">{numeric(row.pending_checks?.length, '건')}</td>
       </tr>)}
       {!matches.length && <tr><td colSpan={columns.length}><Empty>
@@ -262,7 +263,7 @@ function Evaluations({ report, symbol, setSymbol }: {
       <span className="muted mono" aria-live="polite">{displayedPage + 1} / {Math.ceil(matches.length / pageSize)} 페이지</span>
       <button type="button" disabled={(displayedPage + 1) * pageSize >= matches.length} onClick={() => setPage(displayedPage + 1)}>다음</button>
     </div>}
-    {active && <ResearchDetails row={active} reportId={report.report_id} close={() => setSymbol(null)} />}
+    {active && <ResearchDetails row={active} report={report} reports={reports} close={() => setSymbol(null)} />}
   </Panel>
 }
 
@@ -276,34 +277,36 @@ export default function Research() {
   const detail = useResource<Presence & { report?: Report | null }>(list.data?.present && id
     ? reportsPath + '/' + encodeURIComponent(id) : null)
   const report = detail.data?.present && detail.data.report?.report_id === id ? detail.data.report : null
-  useEvidenceMode(evidenceMode(report?.mode))
 
   return <div className="stack research-page">
     <header className="page-heading"><h1>통합 리서치 &amp; 차트</h1></header>
-    <Panel title="통합 리서치 보고서">
-      <ResourceState loading={list.loading} error={list.error} />
+    <Panel title={report ? <span title={report.report_id}>{reportName(report, 'research', reports)}</span> : '통합 리서치 보고서'}>
+      <ResourceState loading={false} error={list.error} />
+      {list.loading && <Skeleton label="리서치 보고서 목록 불러오는 중" />}
       {list.data && !list.data.present && <Empty>{researchUnavailable(list.data.reason, '저장된 통합 리서치 보고서가 없습니다.')}</Empty>}
       {list.data?.present && <>
-        <label className="research-field">UR 보고서
+        <label className="research-field">리서치 보고서
           <select value={selection} onChange={event => updateQuery({ report: event.target.value, symbol: null })}>
-            <option value="">{latest ? `최신 · ${kst(latest.as_of)} · ${latest.report_id}` : '저장된 보고서 없음'}</option>
-            {selection && !reports.some(item => item.report_id === selection) && <option value={selection}>{selection}</option>}
-            {reports.map(item => <option key={item.report_id} value={item.report_id}>
-              {kst(item.as_of)} · {item.report_id}
+            <option value="">{latest ? '최신 · ' + reportName(latest, 'research', reports) : '저장된 보고서 없음'}</option>
+            {selection && !reports.some(item => item.report_id === selection) && <option value={selection} title={selection}>{report ? reportName(report, 'research', reports) : '선택한 보고서'}</option>}
+            {reports.map(item => <option key={item.report_id} value={item.report_id} title={item.report_id}>
+              {reportName(item, 'research', reports)}
             </option>)}
           </select>
         </label>
-        <ResourceState loading={detail.loading} error={detail.error} />
+        <ResourceState loading={false} error={detail.error} />
+        {detail.loading && <Skeleton label="선택한 리서치 보고서 불러오는 중" />}
         {detail.data && !report && <Empty>{researchUnavailable(detail.data.reason, '선택한 리서치 보고서를 찾을 수 없습니다.')}</Empty>}
         {!id && <Empty>저장된 통합 리서치 보고서가 없습니다.</Empty>}
         {report && <p className="cluster muted">
           <span>판정 기준 {kst(report.as_of)}</span>
           <span>가격 기준 거래일 {report.expected_price_session ?? '확인 불가'}</span>
-          {report.score_formula && <code>{report.score_formula}</code>}
+          {report.score_formula === 'clip(0.7*F + 0.3*N - R, 0, 100)' &&
+            <span>재무 70% + 뉴스 30% − 위험 감점 (0~100점)</span>}
         </p>}
       </>}
     </Panel>
-    {report && <Evaluations key={report.report_id} report={report} symbol={query.get('symbol')}
+    {report && <Evaluations key={report.report_id} report={report} reports={reports} symbol={query.get('symbol')}
       setSymbol={symbol => updateQuery({ symbol })} />}
   </div>
 }

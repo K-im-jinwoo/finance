@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { postJson, useCapabilities, useEvidenceMode, useRefresh, useResource } from '../api/client'
+import { postJson, useCapabilities, useRefresh, useResource } from '../api/client'
 import { AppLink } from '../components/AppLink'
 import { EquityDrawdownChart } from '../components/Charts'
-import { Badge, Empty, MetricGrid, Panel, Pnl, ResourceState, Table } from '../components/ui'
-import { finite, koreanUnit, kst, money, numeric, percent } from '../utils/formatters'
+import { Badge, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table } from '../components/ui'
+import { finite, kst, money, numeric, percent, summaryMoney } from '../utils/formatters'
+import { evidenceText, labelForCode, reportName } from '../utils/labels'
 import '../styles/longterm.css'
 
 type Scalar = string | null
@@ -96,10 +97,10 @@ function Positions({ positions }: { positions: Position[] }) {
         <td><div className="mono">{money(position.market_value)}</div><div className="mono muted">{percent(ratioPercent(position.weight))}</div></td>
         <td><Pnl value={finite(position.unrealized_pnl)} format={money} /><div><Pnl value={ratioPercent(position.return)} format={percent} /></div></td>
         <td><div className="cluster">
-          {position.decision && <Badge tone={position.decision === 'EXCLUDED' ? 'warn' : 'unknown'}>{labels[position.decision] ?? position.decision}</Badge>}
+          {position.decision && <Badge tone={position.decision === 'EXCLUDED' ? 'warn' : 'unknown'}>{labels[position.decision] ?? labelForCode(position.decision)}</Badge>}
           {position.review_status !== 'MAINTAIN' && position.review_status !== position.decision &&
             <Badge tone={position.review_status === 'HOLD_NO_EXIT_TRIGGER' ? 'unknown' : 'warn'}>
-              {labels[position.review_status] ?? position.review_status}
+              {labels[position.review_status] ?? labelForCode(position.review_status)}
             </Badge>}
         </div>
           {position.latest_report_id && position.latest_report_id !== position.entry_report_id &&
@@ -117,8 +118,8 @@ function PendingOrders({ orders }: { orders: Order[] }) {
         <th scope="row">{order.name} <span className="mono muted">{order.symbol}</span></th>
         <td className="mono">{order.signal_date}</td>
         <td><div className="cluster"><Badge tone={order.status === 'DEFER' ? 'warn' : 'unknown'}>{order.status === 'DEFER' ? '보류' : '대기'}</Badge>
-          {labels[order.signal_reason] ?? order.signal_reason}</div>
-          {order.reason !== order.signal_reason && <div className="muted">{labels[order.reason] ?? order.reason}</div>}</td>
+          {labels[order.signal_reason] ?? evidenceText(order.signal_reason)}</div>
+          {order.reason !== order.signal_reason && <div className="muted">{labels[order.reason] ?? evidenceText(order.reason)}</div>}</td>
       </tr>)}
     </Table> : <Empty>체결을 기다리는 주문이 없습니다.</Empty>}
   </Panel>
@@ -143,7 +144,7 @@ function TradeHistory({ fills, orders }: { fills: Fill[]; orders: Order[] }) {
         {cancellations.map(order => <tr key={order.id}>
           <th scope="row">{order.name} <span className="mono muted">{order.symbol}</span></th>
           <td className="mono">{order.signal_date}</td>
-          <td>{labels[order.reason] ?? order.reason}{order.cancellation_report_id &&
+          <td>{labels[order.reason] ?? evidenceText(order.reason)}{order.cancellation_report_id &&
             <div><AppLink className="action-link" href={reportLink(order.cancellation_report_id)}>취소 근거 보고서</AppLink></div>}</td>
         </tr>)}
       </Table>
@@ -155,14 +156,14 @@ function ReportAudit({ reports }: { reports: Report[] }) {
   return <Panel title="리서치 반영 이력">
     {reports.length ? <Table label="리서치 반영 이력" columns={['보고서', '판정 기준', '반영 결과']}>
       {reports.map(report => <tr key={report.report_id}>
-        <th scope="row"><AppLink className="action-link mono" href={reportLink(report.report_id)}>{report.report_id}</AppLink></th>
+        <th scope="row"><AppLink className="action-link mono" href={reportLink(report.report_id)} title={report.report_id}>{reportName(report, 'research', reports)}</AppLink></th>
         <td className="mono">{kst(report.as_of)}</td>
         <td>{report.actions.length ? <details>
           <summary>판정 {report.actions.length}건</summary>
           <ul className="reason-list">
             {report.actions.map(({ symbol, action, reason }) => <li key={symbol + action}>
               <span className="mono">{symbol}</span> {labels[action] ?? action}
-              {reason && ' · ' + (labels[reason] ?? reason)}
+              {reason && ' · ' + (labels[reason] ?? evidenceText(reason))}
             </li>)}
           </ul>
         </details> : '주문 또는 보유 변경 없음'}</td>
@@ -183,7 +184,6 @@ export default function LongTerm() {
   const data = account.data
   const metrics = data?.metrics
   const policy = data?.policy
-  useEvidenceMode(data?.latest_report?.mode)
 
   async function apply(action: Action) {
     setBusy(action)
@@ -205,11 +205,13 @@ export default function LongTerm() {
   return <div className="stack page-content longterm-page">
     <header className="page-heading"><h1>장기 모의계좌</h1></header>
     <section className="status-band longterm-status" aria-label="계좌 상태 및 제어">
-      <div className="cluster">
-        <LongTermStatus status={data?.status} />
-        {policy && <Badge>다음 거래일 종가 · 최대 {policy.max_positions}종목 · {policy.round_trip_bps}bps</Badge>}
-        {capability?.read_only && <Badge>읽기 전용</Badge>}
-      </div>
+      {account.loading ? <Skeleton label="장기 계좌 상태 불러오는 중" /> : <div className="summary-line">
+        {data && <span><LongTermStatus status={data.status} /></span>}
+        {policy && <>
+          <span>다음 거래일 종가</span><span>최대 {policy.max_positions}종목</span>
+          <span className="amount">수수료 {(policy.round_trip_bps / 100).toFixed(2)}%</span>
+        </>}
+      </div>}
       {data?.updated_at && <span className="mono muted">최근 갱신 {kst(data.updated_at)}</span>}
       {capability?.read_only === false && data && <div className="cluster longterm-actions">
         {data.status === 'NO_ACCOUNT' ? <button disabled={busy !== null} onClick={() => void apply('init')}>계좌 시작</button> : <>
@@ -220,7 +222,7 @@ export default function LongTerm() {
         </>}
       </div>}
     </section>
-    <ResourceState loading={account.loading} error={account.error} />
+    <ResourceState loading={false} error={account.error} />
     {feedback && <p className={feedback.error ? 'notice notice-danger' : 'muted'} role="status">{feedback.text}</p>}
     {data?.status === 'NO_ACCOUNT' && <Empty>생성된 장기 모의계좌가 없습니다. 첫 계좌는 생성 시점의 최신 통합 리서치부터 반영합니다.</Empty>}
     {data && data.status !== 'NO_ACCOUNT' && <>
@@ -229,11 +231,11 @@ export default function LongTerm() {
         {data.missing_close_count > 0 && <Badge tone="warn">종가 누락 {data.missing_close_count}종목</Badge>}
       </div>}
       <MetricGrid metrics={[
-        { label: '총자산', value: koreanUnit(metrics?.total_assets), detail: metrics?.date },
+        { label: '총자산', value: <SummaryMoney value={metrics?.total_assets} />, detail: metrics?.date },
         { label: '누적 수익률', value: <Pnl value={ratioPercent(metrics?.return)} format={percent} /> },
-        { label: '평가손익', value: <Pnl value={finite(metrics?.unrealized_pnl)} format={koreanUnit} /> },
-        { label: '실현손익', value: <Pnl value={finite(metrics?.realized_pnl)} format={koreanUnit} /> },
-        { label: '현금', value: koreanUnit(metrics?.cash), detail: '비중 ' + percent(ratioPercent(metrics?.cash_weight)) },
+        { label: '평가손익', value: <Pnl value={finite(metrics?.unrealized_pnl)} format={summaryMoney} /> },
+        { label: '실현손익', value: <Pnl value={finite(metrics?.realized_pnl)} format={summaryMoney} /> },
+        { label: '현금', value: <SummaryMoney value={metrics?.cash} />, detail: '비중 ' + percent(ratioPercent(metrics?.cash_weight)) },
         { label: '최대 낙폭 (MDD)', value: <Pnl value={ratioPercent(metrics?.max_drawdown)} format={percent} /> },
       ]} />
       <Panel title="일별 자산 및 낙폭">

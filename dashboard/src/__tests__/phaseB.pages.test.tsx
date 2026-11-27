@@ -83,11 +83,14 @@ it('renders native news gauges, aggregated holdings, recorded validation and dae
   const gauges = screen.getAllByRole('progressbar') as HTMLProgressElement[]
   expect(gauges.map(gauge => [gauge.value, gauge.max])).toEqual([[640, 2000], [12_340, 50_000]])
   expect(screen.getByText('제공자 차단 있음')).toBeTruthy()
-  expect(screen.getByText('무료 정책 확인 불가')).toBeTruthy()
+  expect(screen.queryByText('무료 정책 확인 불가')).toBeNull()
   expect(screen.getByText('쿨다운 중')).toBeTruthy()
   expect(within(screen.getByRole('table', { name: '보관 가격 검산' })).getByText('일치')).toBeTruthy()
-  expect(screen.getByText('OBSERVING')).toBeTruthy()
-  expect(screen.getByText('strategy_config.take_profit_bps')).toBeTruthy()
+  expect(screen.getByText('장중 모니터링')).toBeTruthy()
+  expect(screen.queryByText('OBSERVING')).toBeNull()
+  expect(screen.queryByText('strategy_config.take_profit_bps')).toBeNull()
+  expect(view.container.querySelector('main h2, .page-content h2')?.textContent).toBe('단타 자동 수집기')
+  expect(view.container.querySelector('.system-details')?.hasAttribute('open')).toBe(false)
   expect(view.container.querySelector('[style]')).toBeNull()
 })
 
@@ -97,4 +100,24 @@ it('shows a local source absence without inventing holdings or budget values', a
   await waitFor(() => expect(screen.getByText('연결할 로컬 데이터베이스 파일이 없습니다.')).toBeTruthy())
   expect(screen.queryByRole('progressbar')).toBeNull()
   expect(screen.queryByRole('table', { name: '브로커 합산 보유' })).toBeNull()
+})
+
+it('keeps confirmed limits, unavailable usage and a genuinely empty holdings list distinct', async () => {
+  useApi({ '/api/ops/overview': {
+    present: true,
+    holdings: { present: true, positions: [] },
+    news_budget: { present: false, daily_limit: 2000, monthly_limit: 50000 },
+    daytrade: { present: true, status: 'OBSERVING' },
+    verification: { present: true, data_status: 'THREE_YEAR_INCOMPLETE_ORACLE_INVENTORY',
+      checked_at_kst: '2026-09-30T12:23:35+09:00' },
+  } })
+  render(<PollProvider defaultInterval={0}><Ops /></PollProvider>)
+  expect(await screen.findByText('신규 진입 여부 확인 불가')).toBeTruthy()
+  expect(screen.getByText('등록된 보유 종목 0개')).toBeTruthy()
+  expect(screen.getByText('사용량 확인 불가')).toBeTruthy()
+  expect(screen.getByText('2,000회')).toBeTruthy()
+  expect(screen.getByText('50,000회')).toBeTruthy()
+  expect(screen.getByText('3년 백테스트 자료 일부 부족')).toBeTruthy()
+  expect(screen.getByText('9월 30일')).toBeTruthy()
+  expect(screen.queryByRole('progressbar')).toBeNull()
 })

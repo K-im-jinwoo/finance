@@ -80,7 +80,7 @@ it('loads latest and past reports, including excluded evaluations, and filters b
 
   fireEvent.change(search, { target: { value: '' } })
   fireEvent.change(verdict, { target: { value: '' } })
-  fireEvent.change(screen.getByRole('combobox', { name: 'UR 보고서' }), { target: { value: previous } })
+  fireEvent.change(screen.getByRole('combobox', { name: '리서치 보고서' }), { target: { value: previous } })
   expect(await screen.findByRole('button', { name: 'SK하이닉스 000660' })).toBeTruthy()
   expect(screen.queryByRole('button', { name: '삼성전자 005930' })).toBeNull()
 })
@@ -93,8 +93,8 @@ it('opens a report-bound drawer with recorded evidence and a keyboard-selectable
   const dialog = await screen.findByRole('dialog', { name: '삼성전자 005930' })
   const details = within(dialog)
   expect(details.getByText('연결 재무 근거')).toBeTruthy()
-  expect(details.getByText('event-1')).toBeTruthy()
-  expect(details.getByText('RISK_HISTORY_COVERAGE_UNAVAILABLE')).toBeTruthy()
+  expect(details.getByText('뉴스 근거').getAttribute('title')).toBe('event-1')
+  expect(details.getByText('저장된 위험 이력 범위 확인 불가')).toBeTruthy()
   expect(details.getByText('재무 자문 항목')).toBeTruthy()
   expect(details.getByText('가격이 20일 이동평균 아래로 이탈하면 추천 무효')).toBeTruthy()
 

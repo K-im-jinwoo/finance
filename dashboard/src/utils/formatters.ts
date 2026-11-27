@@ -1,7 +1,11 @@
 const integerFormat = new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 })
 const numberFormat = new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 4 })
-const dateFormat = new Intl.DateTimeFormat('ko-KR', {
-  timeZone: 'Asia/Seoul', dateStyle: 'short', timeStyle: 'medium', hour12: false,
+const dateFormat = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Seoul', year: '2-digit', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+})
+const dayMonthFormat = new Intl.DateTimeFormat('ko-KR', {
+  timeZone: 'Asia/Seoul', month: 'long', day: 'numeric',
 })
 
 export function finite(value: unknown): number | null {
@@ -68,7 +72,38 @@ export function percent(value: unknown): string {
   return numeric(value, '%')
 }
 
-export function kst(value: string | null | undefined): string {
+function kstParts(value?: string | null) {
   const date = value ? new Date(value) : null
-  return date && Number.isFinite(date.getTime()) ? dateFormat.format(date) + ' KST' : '시각 확인 불가'
+  return date && Number.isFinite(date.getTime())
+    ? Object.fromEntries(dateFormat.formatToParts(date).map(part => [part.type, part.value]))
+    : null
+}
+
+export function kst(value?: string | null, withSeconds = false): string {
+  const parts = kstParts(value)
+  if (!parts) return '시각 확인 불가'
+  const { year, month, day, hour, minute, second } = parts
+  return year + '.' + month + '.' + day + ' ' + hour + ':' + minute + (withSeconds ? ':' + second : '')
+}
+
+export function compactDate(value?: string | null) {
+  const parts = kstParts(value)
+  return parts ? parts.year + parts.month + parts.day : null
+}
+
+export function monthDay(value?: string | null) {
+  const date = value ? new Date(value) : null
+  return date && Number.isFinite(date.getTime()) ? dayMonthFormat.format(date) : null
+}
+
+export function summaryMoney(value: unknown, signed = false) {
+  const amount = wonValue(value)
+  if (amount === null) return '확인 불가'
+  const absolute = Math.abs(amount)
+  for (const [base, unit] of [[1e12, '조'], [1e8, '억'], [1e4, '만']] as const) {
+    if (absolute >= base) {
+      return signFor(amount, signed) + numberFormat.format(Math.round(absolute / base * 10) / 10) + unit + ' 원'
+    }
+  }
+  return money(value, signed)
 }

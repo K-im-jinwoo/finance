@@ -366,9 +366,15 @@ table .mono, table .amount, table .report-name, table time { white-space: nowrap
 
 .ops-gauge { gap: var(--space-2); }
 .ops-gauge progress { inline-size: 100%; block-size: 0.75rem; accent-color: var(--accent-primary); }
-.overview-grid, .ops-grid { align-items: start; }
+.ops-grid { align-items: start; }
 .mobile-poll { display: grid; gap: var(--space-2); margin-block-start: var(--space-4); }
 .overview-reports { display: grid; gap: var(--space-3); }
+@media (min-width: 768px) {
+  .overview-grid > .overview-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .overview-grid > .overview-card:last-child:nth-child(odd) .overview-reports {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .overview-report { padding-block: var(--space-2); border-bottom: 1px solid var(--border-default); }
 .overview-report a { min-height: auto; }
 .overview-report p { color: var(--text-secondary); font-size: 14px; }

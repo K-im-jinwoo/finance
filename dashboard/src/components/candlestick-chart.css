@@ -3,6 +3,7 @@
 .research-chart-axis-text, .research-chart-axis-title {
   fill: var(--text-secondary);
   font: 12px var(--font-ui);
+  font-variant-numeric: tabular-nums;
 }
 .research-chart-axis-title { font-weight: 600; }
 .research-candle-up { color: var(--pnl-up); }
@@ -64,6 +65,6 @@
   gap: var(--space-2) var(--space-3);
 }
 .research-chart-readout dt { color: var(--text-secondary); font-size: 14px; }
-.research-chart-readout dd { margin: 0; }
+.research-chart-readout dd { margin: 0; font-variant-numeric: tabular-nums; }
 .research-chart-data { border-block-start: 1px solid var(--border-subtle); }
 .research-chart-data > summary { min-height: 44px; align-content: center; }

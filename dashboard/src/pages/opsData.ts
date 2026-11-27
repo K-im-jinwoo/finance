@@ -1,6 +1,7 @@
 import type { Presence } from '../api/phaseB'
 import type { VerificationStatus } from './experimentModel'
 
+export type SymbolNames = Record<string, string>
 export type Quantity = string | number | null
 type RawHolding = { broker: string; symbol: string; quantity: Quantity; average_price: Quantity; acquired_on?: string | null }
 type Position = { symbol: string; quantity: Quantity; average_price: Quantity; brokers: string[] }
@@ -20,7 +21,9 @@ type Review = {
   additional_checks?: string[]
   price_date?: string
 }
-export type Holdings = Presence & { items?: RawHolding[]; positions?: Position[]; theses?: Thesis[]; reviews?: Review[] }
+export type Holdings = Presence & {
+  items?: RawHolding[]; positions?: Position[]; theses?: Thesis[]; reviews?: Review[]; symbol_names?: SymbolNames
+}
 type Cooldown = { status?: string; last_reserved_at?: string | null; available_at?: string | null }
 export type NewsBudget = Presence & {
   day?: string; month?: string
@@ -45,6 +48,7 @@ export type OpsVerification = VerificationStatus & {
 }
 export type OpsData = Presence & {
   holdings?: Holdings
+  symbol_names?: SymbolNames
   news_budget?: NewsBudget
   daytrade?: DaemonSummary
   verification?: OpsVerification

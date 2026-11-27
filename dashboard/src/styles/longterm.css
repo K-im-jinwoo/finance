@@ -5,6 +5,9 @@
   gap: var(--space-2) var(--space-4);
 }
 
+.longterm-status > .summary-line { min-inline-size: 0; }
+.longterm-page tbody th > a { white-space: nowrap; }
+
 .longterm-actions { margin-inline-start: auto; }
 
 .longterm-page :is(button, summary, .action-link) {

@@ -83,12 +83,44 @@ it('renders native news gauges, aggregated holdings, recorded validation and dae
   const gauges = screen.getAllByRole('progressbar') as HTMLProgressElement[]
   expect(gauges.map(gauge => [gauge.value, gauge.max])).toEqual([[640, 2000], [12_340, 50_000]])
   expect(screen.getByText('제공자 차단 있음')).toBeTruthy()
-  expect(screen.getByText('무료 정책 확인 불가')).toBeTruthy()
+  expect(screen.queryByText('무료 정책 확인 불가')).toBeNull()
   expect(screen.getByText('쿨다운 중')).toBeTruthy()
   expect(within(screen.getByRole('table', { name: '보관 가격 검산' })).getByText('일치')).toBeTruthy()
-  expect(screen.getByText('OBSERVING')).toBeTruthy()
-  expect(screen.getByText('strategy_config.take_profit_bps')).toBeTruthy()
+  expect(screen.getByText('장중 모니터링')).toBeTruthy()
+  expect(screen.queryByText('OBSERVING')).toBeNull()
+  expect(screen.queryByText('strategy_config.take_profit_bps')).toBeNull()
+  expect(view.container.querySelector('main h2, .page-content h2')?.textContent).toBe('단타 자동 수집기')
+  expect(view.container.querySelector('.system-details')?.hasAttribute('open')).toBe(false)
   expect(view.container.querySelector('[style]')).toBeNull()
+})
+
+it('displays saved names alongside codes in holdings and verification, with a code-only fallback', async () => {
+  const holding = { symbol: '900101', quantity: '13', average_price: '50700' }
+  useApi({ '/api/ops/overview': {
+    present: true,
+    holdings: { present: true, symbol_names: { '900101': '합성 반도체' },
+      items: [{ ...holding, broker: '합성 브로커' }],
+      positions: [{ ...holding, brokers: ['합성 브로커'] },
+        { ...holding, symbol: '900102', brokers: ['합성 브로커'] }],
+      theses: [{ symbol: '900101', thesis_id: 'TEST', status: 'APPROVED', facts: [] }],
+      reviews: [{ symbol: '900101', present: false }],
+    },
+    symbol_names: { '900103': '합성 전력', '900104': '합성 소재' },
+    verification: { present: true, actual_price_validation: { results: [
+      { symbol: '900103', start: '2026-07-01', end: '2026-11-13' },
+    ] }, actual_financial_validation: { symbol: '900104', all_equal: true } },
+  } })
+  render(<PollProvider defaultInterval={0}><Ops /></PollProvider>)
+  const aggregate = await screen.findByRole('table', { name: '브로커 합산 보유' })
+  expect(within(aggregate).getByRole('rowheader', { name: '합성 반도체 900101' })).toBeTruthy()
+  expect(within(aggregate).getByRole('rowheader', { name: '900102' })).toBeTruthy()
+  const raw = screen.getByRole('table', { name: '브로커별 원본 보유' })
+  expect(within(raw).getByText('합성 반도체 900101')).toBeTruthy()
+  expect(screen.getByText('합성 반도체 900101 · 승인', { selector: 'summary' })).toBeTruthy()
+  expect(screen.getByText('합성 반도체 900101', { selector: 'strong' })).toBeTruthy()
+  const prices = screen.getByRole('table', { name: '보관 가격 검산' })
+  expect(within(prices).getByRole('rowheader', { name: '합성 전력 900103' })).toBeTruthy()
+  expect(screen.getByText('재무 검산 합성 소재 900104 · 일치', { selector: 'summary' })).toBeTruthy()
 })
 
 it('shows a local source absence without inventing holdings or budget values', async () => {
@@ -97,4 +129,24 @@ it('shows a local source absence without inventing holdings or budget values', a
   await waitFor(() => expect(screen.getByText('연결할 로컬 데이터베이스 파일이 없습니다.')).toBeTruthy())
   expect(screen.queryByRole('progressbar')).toBeNull()
   expect(screen.queryByRole('table', { name: '브로커 합산 보유' })).toBeNull()
+})
+
+it('keeps confirmed limits, unavailable usage and a genuinely empty holdings list distinct', async () => {
+  useApi({ '/api/ops/overview': {
+    present: true,
+    holdings: { present: true, positions: [] },
+    news_budget: { present: false, daily_limit: 2000, monthly_limit: 50000 },
+    daytrade: { present: true, status: 'OBSERVING' },
+    verification: { present: true, data_status: 'THREE_YEAR_INCOMPLETE_ORACLE_INVENTORY',
+      checked_at_kst: '2026-09-30T12:23:35+09:00' },
+  } })
+  render(<PollProvider defaultInterval={0}><Ops /></PollProvider>)
+  expect(await screen.findByText('신규 진입 여부 확인 불가')).toBeTruthy()
+  expect(screen.getByText('등록된 보유 종목 0개')).toBeTruthy()
+  expect(screen.getByText('사용량 확인 불가')).toBeTruthy()
+  expect(screen.getByText('2,000회')).toBeTruthy()
+  expect(screen.getByText('50,000회')).toBeTruthy()
+  expect(screen.getByText('3년 백테스트 자료 일부 부족')).toBeTruthy()
+  expect(screen.getByText('9월 30일')).toBeTruthy()
+  expect(screen.queryByRole('progressbar')).toBeNull()
 })

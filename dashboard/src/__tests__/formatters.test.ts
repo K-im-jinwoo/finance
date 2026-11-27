@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { koreanUnit, money, spreadText, turnoverText } from '../utils/formatters'
+import { koreanUnit, kst, money, spreadText, summaryMoney, turnoverText } from '../utils/formatters'
+
+import { evidenceLabel, labelForCode, reportName } from '../utils/labels'
 
 describe('당일 단타 표시 계약', () => {
   it('반올림한 원화와 한국어 자릿수를 표시한다', () => {
@@ -19,4 +21,21 @@ describe('당일 단타 표시 계약', () => {
     expect(spreadText(null, false)).toBe('호가 수신 대기')
     expect(spreadText(-1, false)).toBe('확인 불가')
   })
+})
+
+it('formats summary money and minute timestamps while keeping fill seconds available', () => {
+  expect(summaryMoney(4_234_680_895)).toBe('42.3억 원')
+  expect(money(4_234_680_895)).toBe('4,234,680,895원')
+  expect(kst('2026-11-27T01:54:57Z')).toBe('26.11.27 10:54')
+  expect(kst('2026-11-27T01:54:57Z', true)).toBe('26.11.27 10:54:57')
+})
+
+it('distinguishes reports from the same Korean calendar day without exposing their IDs', () => {
+  const first = { report_id: 'UR-first', as_of: '2026-11-26T23:47:00Z' }
+  const second = { report_id: 'UR-second', as_of: '2026-11-27T09:15:00+09:00' }
+  expect(reportName(first, 'research')).toBe('261127 장기 리서치 보고서')
+  expect(reportName(first, 'research', [first, second])).toBe('261127 장기 리서치 보고서 (08:47)')
+  expect(reportName(second, 'research', [first, second])).toBe('261127 장기 리서치 보고서 (09:15)')
+  expect(evidenceLabel('UNKNOWN')).toBeUndefined()
+  expect(labelForCode('NEW_BACKEND_CODE')).toBe('확인 불가')
 })

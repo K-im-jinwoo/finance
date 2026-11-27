@@ -19,7 +19,9 @@ from research_dashboard import daytrade_bridge as daytrade
 from research_dashboard import ops_bridge as ops
 from stock_assistant.daytrade.daemon import open_or_resume_session
 from stock_assistant.daytrade.ledger import DaytradeLedger
-from stock_assistant.models import Decision, Holding, OHLCV, ScreeningResult, ThesisCard, ThesisStatus
+from stock_assistant.models import (
+    AssetType, CompanyKind, Decision, Holding, Market, OHLCV, ScreeningResult, Security, ThesisCard, ThesisStatus,
+)
 from stock_assistant.news_cost import NewsApiBudget
 from stock_assistant.repository import StockRepository
 
@@ -156,6 +158,8 @@ class OpsDaytradeTests(unittest.TestCase):
         result = ops.get_ops_overview(self.root, {}, now=AT)
         self.assertFalse(result["present"])
         self.assertFalse(result["holdings"]["present"])
+        self.assertEqual(result["holdings"]["symbol_names"], {})
+        self.assertEqual(result["symbol_names"], {})
         self.assertFalse(result["news_budget"]["present"])
         self.assertFalse(result["daytrade"]["present"])
         self.assertEqual(list(self.root.iterdir()), [])
@@ -174,8 +178,26 @@ class OpsDaytradeTests(unittest.TestCase):
         ])
         store.save_bars([OHLCV("005930", date(2026, 11, 25), Decimal(105), Decimal(125), Decimal(100),
                               Decimal(120), 1_000, "TEST", moment)])
-        before = db.read_bytes()
-        result = ops.get_ops_overview(self.root, {}, now=AT)["holdings"]
+        store.save_securities([
+            Security("005930", "보유 종목", Market.KOSPI, AssetType.COMMON, CompanyKind.GENERAL, None),
+            Security("035420", "가격 검산 종목", Market.KOSPI, AssetType.COMMON, CompanyKind.GENERAL, None),
+            Security("068270", "재무 검산 종목", Market.KOSPI, AssetType.COMMON, CompanyKind.GENERAL, None),
+            Security("000001", "범위 밖 종목", Market.KOSPI, AssetType.COMMON, CompanyKind.GENERAL, None),
+        ])
+        status = {
+            "actual_price_validation": {"results": [
+                {"symbol": "035420", "start": "2026-11-24", "end": "2026-11-25"},
+                {"symbol": "005930", "start": "2026-11-24", "end": "2026-11-25"},
+            ]},
+            "actual_financial_validation": {"symbol": "068270"},
+        }
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        overview = ops.get_ops_overview(self.root, status, now=AT)
+        result = overview["holdings"]
+        self.assertEqual(result["symbol_names"], {"005930": "보유 종목"})
+        self.assertEqual(overview["symbol_names"], {
+            "005930": "보유 종목", "035420": "가격 검산 종목", "068270": "재무 검산 종목",
+        })
         self.assertTrue(result["present"])
         self.assertEqual(result["positions"][1], {
             "symbol": "005930", "quantity": "5", "average_price": "96", "brokers": ["Fixture A", "Fixture B"],
@@ -184,7 +206,7 @@ class OpsDaytradeTests(unittest.TestCase):
         self.assertEqual(result["reviews"][0], {"symbol": "000660", "present": False, "reason": "THESIS_UNAVAILABLE"})
         self.assertIn("PARTIAL_PROFIT_REVIEW", result["reviews"][1]["actions"])
         self.assertEqual(result["reviews"][1]["price_date"], "2026-11-25")
-        self.assertEqual(db.read_bytes(), before)
+        self.assert_unchanged(self.root, before)
 
     def test_ops_news_cooldown_rollover_and_daemon_whitelist(self):
         self.state.mkdir(parents=True)
@@ -248,7 +270,10 @@ class OpsDaytradeTests(unittest.TestCase):
                 "checks": {"stored_periods_equal": True, "private content": False},
             },
         }
-        value = ops.get_ops_overview(self.root, source, now=AT)["verification"]
+        overview = ops.get_ops_overview(self.root, source, now=AT)
+        self.assertEqual(overview["symbol_names"], {})
+        self.assertEqual(overview["holdings"]["symbol_names"], {})
+        value = overview["verification"]
         self.assertEqual(value["oracle_inventory"]["tables"]["ohlcv"]["distinct_dates"], 2)
         self.assertEqual(value["actual_price_validation"]["results"][0]["symbol"], "005930")
         self.assertEqual(value["actual_financial_validation"]["checks"], {"stored_periods_equal": True})

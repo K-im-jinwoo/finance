@@ -1,6 +1,7 @@
 import type { PublicSettings } from './opsData'
 import type { ChartPoint } from '../components/Charts'
 import { finite } from '../utils/formatters'
+import { labelForCode, readableLog } from '../utils/labels'
 
 export type Amount = string | number | null
 type Dated = { at: string }
@@ -54,7 +55,7 @@ export const RISK_LIMIT = 15
 
 const labels: Record<string, string> = {
   BUY: '매수', SELL: '매도', HOLD: '대기', CLOSED: '마감 · 보유 없음',
-  UNFLATTENED: '미청산 보유', OBSERVING: '관측 중', OPEN: '신규 진입 가능 시간',
+  UNFLATTENED: '미청산 보유', OBSERVING: '장중 모니터링', OPEN: '신규 진입 가능 시간',
   ENTRY_CLOSED: '신규 진입 마감', TIME_EXITING: '시간 청산 중',
   LOSS_LOCKED: '일손실 한도 잠금', DATA_DEGRADED: '데이터 품질 잠금',
   RATE_LIMIT_DEGRADED: '호출 제한 잠금', PRIOR_DAY_UNFLATTENED: '전일 미청산 잠금',
@@ -67,7 +68,7 @@ const labels: Record<string, string> = {
   TURNOVER_ELIGIBLE: '거래대금 조건 충족', TURNOVER_RANKED: '거래대금 순위 편입',
   VOLUME_RANKED: '거래량 순위 편입', QUOTE_ELIGIBLE: '호가 조건 충족',
   QUOTE_UNAVAILABLE_WATCH_ONLY: '호가 미확보 · 감시만 가능', RISK_METADATA_UNAVAILABLE: '위험 메타 미확보',
-  RISK_METADATA_PROVIDED: '위험 메타 제공', ENTRY_NOT_ALLOWED: '시간·위험 상태로 신규 매수 차단',
+  RISK_METADATA_PROVIDED: '위험 메타 제공', ENTRY_NOT_ALLOWED: '시간 또는 위험 상태로 신규 매수 차단',
   STALE_RANKINGS: '랭킹 지연', STALE_ORDERBOOK: '호가 지연', STALE_CANDLES: '분봉 지연',
   STALE_TRADE: '체결 시세 지연', SOURCE_TIMESTAMP_UNAVAILABLE: '원천 시각 미제공',
   EMPTY_ORDERBOOK: '호가 없음', CROSSED_ORDERBOOK: '호가 역전', ORDERBOOK_UNAVAILABLE: '호가 미확보',
@@ -77,7 +78,7 @@ const labels: Record<string, string> = {
 }
 
 export function labelFor(value?: string | null) {
-  return value ? labels[value] ?? value : '확인 불가'
+  return value ? labels[value] ?? labelForCode(value) : '확인 불가'
 }
 
 export function reasonsFor(values?: string[]) {
@@ -87,7 +88,7 @@ export function reasonsFor(values?: string[]) {
 export function symbolLabel(names: Record<string, string>, code?: string | null, provided?: string) {
   if (!code || code === 'ALL') return '시장 전체'
   const name = names[code] || (provided && provided !== code ? provided : null)
-  return (name || '종목명 확인 중') + ' (' + code + ')'
+  return (name ? readableLog(name) : '종목명 확인 중') + ' (' + code + ')'
 }
 
 export function newest<T extends Dated>(rows: T[]) {

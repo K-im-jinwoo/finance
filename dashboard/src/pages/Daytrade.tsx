@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ApiError, getJson, postJson, useCapabilities, useEvidenceMode, useRefresh, useResource } from '../api/client'
+import { ApiError, getJson, postJson, useCapabilities, useRefresh, useResource } from '../api/client'
 import { unavailableReason } from '../api/phaseB'
 import type { Presence } from '../api/phaseB'
 import { useRouteQuery } from '../utils/routeQuery'
-import { RuntimeSettings } from './Ops'
 import { EquityDrawdownChart } from '../components/Charts'
-import { Badge, Empty, MetricGrid, Panel, Pnl, ResourceState, Table } from '../components/ui'
-import { finite, koreanUnit, kst, money, numeric, percent, spreadText, turnoverText } from '../utils/formatters'
+import { Badge, Empty, MetricGrid, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table, Select } from '../components/ui'
+import { finite, kst, money, numeric, percent, spreadText, summaryMoney, turnoverText } from '../utils/formatters'
+import { evidenceLabel, labelForCode, readableLog } from '../utils/labels'
 import { equityPoints, labelFor, newest, reasonsFor, RISK_LIMIT, SIGNAL_LIMIT, symbolLabel } from './daytradeData'
 import type { Amount, DaytradeData, DaytradeReport, Scan } from './daytradeData'
 
@@ -81,7 +81,7 @@ function Scans({ scans, names }: { scans: Scan[]; names: Record<string, string> 
       </Table>} />}
     {prior.length > 0 && <Disclosure summary={'이전 탐색 이력 보기 (최근 ' + prior.length + '건 / 전체 ' + scans.length + '회)'}
       render={() => <Table label="이전 탐색 이력" columns={['탐색 시각', '선정 종목', '제외 수']}>
-        {prior.map((item, index) => <tr key={index}><td>{kst(item.at)}</td>
+        {prior.map((item, index) => <tr key={index}><td className="amount">{kst(item.at)}</td>
           <td>{item.selected.map(row => symbolLabel(names, row.symbol, row.name)).join(' · ') || '없음'}</td>
           <td>{item.rejected_count ?? item.rejected.length}종목</td></tr>)}
       </Table>} />}
@@ -89,7 +89,7 @@ function Scans({ scans, names }: { scans: Scan[]; names: Record<string, string> 
 }
 
 function WonPnl({ amount, compact = false }: { amount: Amount; compact?: boolean }) {
-  const format = compact ? koreanUnit : money
+  const format = compact ? summaryMoney : money
   return <Pnl value={finite(amount)} format={format} signedText={format(amount, true)} />
 }
 
@@ -98,10 +98,10 @@ function DaytradeMetrics({ report }: { report: DaytradeReport }) {
   const sessionNames = Object.values(sessions).map(labelFor)
   const sessionDates = Object.keys(sessions)
   return <MetricGrid metrics={[
-    { label: '초기 자본', value: koreanUnit(account.initial_capital), detail: money(account.initial_capital) + ' · 단타 전용 모의 자본' },
-    { label: '최종 현금', value: koreanUnit(account.cash), detail: money(account.cash) + ' · 매수·매도 비용 반영' },
-    { label: '최종 평가자산', value: koreanUnit(account.final_equity),
-      detail: money(account.final_equity) + (account.valuation_status === 'MARK_UNCERTAIN' ? ' · MARK_UNCERTAIN · 평가 확인 불가' : ' · 매수호가·예상 청산 비용 기준') },
+    { label: '초기 자본', value: <SummaryMoney value={account.initial_capital} />, detail: money(account.initial_capital) + ' · 단타 전용 모의 자본' },
+    { label: '최종 현금', value: <SummaryMoney value={account.cash} />, detail: money(account.cash) + ' · 매수·매도 비용 반영' },
+    { label: '최종 평가자산', value: <SummaryMoney value={account.final_equity} />,
+      detail: money(account.final_equity) + (account.valuation_status === 'MARK_UNCERTAIN' ? ' · 평가 확인 불가' : ' · 매수호가 및 예상 청산 비용 기준') },
     { label: '총 순손익', value: <WonPnl amount={account.net_pnl} compact />,
       detail: <><WonPnl amount={account.net_pnl} /> · 비용 차감 실현 손익 <WonPnl amount={account.realized_pnl_net} /></> },
     { label: '수익률', value: <Pnl value={finite(account.return_pct)} format={percent} />, detail: '초기 자본 대비 순손익' },
@@ -109,7 +109,7 @@ function DaytradeMetrics({ report }: { report: DaytradeReport }) {
     { label: '승률', value: percent(account.win_rate_pct), detail: '완결 거래만 집계' },
     { label: '관측 최대 낙폭', value: percent(account.mdd_pct),
       detail: account.mdd_uncertain ? '평가 누락으로 MDD 확인 불가' : '기록된 평가 시점 기준' },
-    { label: '세션 상태', value: sessionNames.join(' · ') || '관측 중', detail: sessionDates.join(' · ') },
+    { label: '세션 상태', value: sessionNames.join(' · ') || '확인 불가', detail: sessionDates.join(' · ') },
   ]} />
 }
 
@@ -133,7 +133,7 @@ function Trades({ report, names }: { report: DaytradeReport; names: Record<strin
   if (!trades.length) return <Empty>완결 거래가 없습니다.</Empty>
   return <Table label="완결 거래 원장" columns={['종목', '진입 시각', '청산 시각', '수량', '평균 매수가 / 매도가', '총수수료 / 세금', '실현 순손익']}>
     {trades.map((trade, index) => <tr key={index}>
-      <th scope="row">{symbolLabel(names, trade.symbol, trade.name)}</th><td>{kst(trade.entry_at)}</td><td>{kst(trade.exit_at)}</td>
+      <th scope="row">{symbolLabel(names, trade.symbol, trade.name)}</th><td className="amount">{kst(trade.entry_at)}</td><td className="amount">{kst(trade.exit_at)}</td>
       <td className="mono">{numeric(trade.buy_quantity, '주')}</td>
       <td className="mono">{money(trade.average_buy_price)} / {money(trade.average_sell_price)}</td>
       <td className="mono">{money(trade.fees)} / {money(trade.tax)}</td>
@@ -146,7 +146,7 @@ function Fills({ report, names }: { report: DaytradeReport; names: Record<string
   if (!report.fills.length) return <Empty>모의 체결이 없습니다.</Empty>
   return <Table label="비용 반영 체결" columns={['시각', '종목', '매매', '수량', '평균 체결가', '수수료 / 세금', '실현 순손익', '신호·청산 사유']}>
     {report.fills.map((fill, index) => <tr key={fill.event_id ?? index}>
-      <td>{kst(fill.at)}</td><th scope="row">{symbolLabel(names, fill.symbol, fill.name)}</th><td>{labelFor(fill.side)}</td>
+      <td className="amount">{kst(fill.at, true)}</td><th scope="row">{symbolLabel(names, fill.symbol, fill.name)}</th><td>{labelFor(fill.side)}</td>
       <td className="mono">{numeric(fill.quantity, '주')}</td><td className="mono">{money(fill.price)}</td>
       <td className="mono">{money(fill.fee)} / {money(fill.tax)}</td>
       <td>{fill.side === 'BUY' ? '매도 후 계산' : <WonPnl amount={fill.realized_pnl} />}</td>
@@ -168,9 +168,9 @@ function Signals({ report, names }: { report: DaytradeReport; names: Record<stri
       labelFor(value) + ' ' + signals.filter(signal => signal.action === value).length + '건').join(' · ')}.
       조건 충족률과 수익 확률은 별개입니다.</p>
     <div className="toolbar">
-      <label>신호 종류 <select value={action} onChange={event => setAction(event.target.value)}>
+      <label>신호 종류 <Select value={action} onChange={event => setAction(event.target.value)}>
         <option value="">전체</option><option value="BUY">매수</option><option value="SELL">매도</option><option value="HOLD">대기</option>
-      </select></label>
+      </Select></label>
       <label>종목 검색 <input type="search" value={query} onChange={event => setQuery(event.target.value)} /></label>
     </div>
     <History rows={filtered.map(signal => ({
@@ -204,6 +204,16 @@ function Risk({ report, names }: { report: DaytradeReport; names: Record<string,
   </>
 }
 
+function archivedReport(markdown: string) {
+  let fillSection = false
+  return readableLog(markdown, labelFor).split('\n').filter(line => !line.startsWith('가정 비용:')).map(line => {
+    if (line.startsWith('## ')) fillSection = line === '## 체결 내역'
+    return line.replace(/\b(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2})(:\d{2})(?: KST)?/g,
+      (_, year: string, month: string, day: string, time: string, seconds: string) =>
+        year.slice(2) + '.' + month + '.' + day + ' ' + time + (fillSection ? seconds : ''))
+  }).join('\n')
+}
+
 function TradingReport({ report, markdown }: { report: DaytradeReport; markdown?: string | null }) {
   const names = report.symbol_names ?? {}
   const points = useMemo(() => equityPoints(report.equity_curve ?? [], report.account.initial_capital),
@@ -226,8 +236,8 @@ function TradingReport({ report, markdown }: { report: DaytradeReport; markdown?
     <Panel title="비용 반영 체결"><Fills report={report} names={names} /></Panel>
     <Panel title="매수·매도·대기 신호"><Signals report={report} names={names} /></Panel>
     <Panel title="위험·데이터 품질"><Risk report={report} names={names} /></Panel>
-    <Panel title="보고서 원문">
-      {markdown ? <Disclosure summary="한국어 마크다운 원문 보기" render={() => <pre className="report-text">{markdown}</pre>} />
+    <Panel title="저장된 보고서">
+      {markdown ? <Disclosure summary="저장된 보고서 펼치기" render={() => <pre className="report-text">{archivedReport(markdown)}</pre>} />
         : <Empty>저장된 보고서 원문이 없습니다.</Empty>}
     </Panel>
   </>
@@ -284,7 +294,7 @@ function DaytradeHistory({ dates }: { dates: string[] }) {
       <Table label="일자별 단타 성과" columns={['거래일', '데이터 출처', '완결 거래', '순실현손익', '평가 손익']}>
         {results.map(row => <tr key={row.date}>
           <th scope="row" className="mono">{row.date}</th>
-          <td>{row.source ?? '원장 확인 불가'}</td>
+          <td>{evidenceLabel(row.source) ?? '원장 확인 불가'}</td>
           <td>{numeric(row.account?.completed_trades, '건')}</td>
           <td><Pnl value={finite(row.account?.realized_pnl_net)} format={money} /></td>
           <td><Pnl value={finite(row.account?.net_pnl)} format={money} /></td>
@@ -317,7 +327,6 @@ export default function Daytrade() {
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const report = data?.report
-  useEvidenceMode(report?.data_source ?? report?.dataset_kind)
 
   async function startSample() {
     if (date !== null || busy || capability?.read_only !== false || !data?.sample_available || data.present) return
@@ -339,11 +348,11 @@ export default function Daytrade() {
       <div><h1>당일 단타</h1><p>KRX+NXT 통합 시세 · 비용 반영 모의계좌</p></div>
       <div className="toolbar">
         {sessionsSupported && (dates.length > 0 || date !== null) && <label>거래일
-          <select value={date ?? ''} onChange={event => updateQuery({ date: event.target.value })}>
+          <Select value={date ?? ''} onChange={event => updateQuery({ date: event.target.value })}>
             <option value="">기본 원장</option>
-            {date !== null && !dates.includes(date) && <option value={date}>현재 선택 · {date || '잘못된 날짜'}</option>}
+            {date !== null && !dates.includes(date) && <option value={date}>현재 선택 · {validSelection ? date : '잘못된 날짜'}</option>}
             {dates.map(day => <option key={day}>{day}</option>)}
-          </select>
+          </Select>
         </label>}
         {date === null && capability?.read_only === false && data?.sample_available && !data.present &&
           <button className="primary-button" onClick={() => void startSample()} disabled={busy}>
@@ -351,7 +360,8 @@ export default function Daytrade() {
           </button>}
       </div>
     </header>
-    <ResourceState loading={loading || sessions.loading} error={error ?? sessions.error} />
+    <ResourceState loading={false} error={error ?? sessions.error} />
+    {(loading || sessions.loading) && <Skeleton label="단타 원장 불러오는 중" />}
     {date !== null && !validSelection && <p className="notice notice-warn">거래일은 YYYY-MM-DD 형식의 유효한 날짜여야 합니다.</p>}
     {date !== null && capability && !sessionsSupported && <p className="notice">이 서버는 날짜별 원장 조회를 제공하지 않습니다.</p>}
     {actionError && <p role="status" className="notice notice-danger">{actionError}</p>}
@@ -361,15 +371,14 @@ export default function Daytrade() {
         ' 오프라인 샘플을 실행하면 모의 결과를 확인할 수 있습니다.'}</p>}
     {dates.length > 1 && <DaytradeHistory key={dates.slice(0, 5).join(',')} dates={dates} />}
     {report && <>
-      <div className="status-band stack" aria-label="단타 데이터 출처와 비용">
-        <div className="cluster"><Badge>{report.profile || 'UNKNOWN'}</Badge>
-          <Badge>{report.data_source ?? report.dataset_kind}</Badge>
-          <Badge tone={report.paper_ready ? 'ok' : 'warn'}>PAPER_READY={String(report.paper_ready)}</Badge>
-          <span className="mono">{report.mode}</span>
+      <div className="status-band stack" aria-label="단타 전략과 상태">
+        <div className="summary-line">
+          <span><strong>{labelForCode(report.profile, '전략 확인 불가')}</strong></span>
+          {evidenceLabel(report.data_source ?? report.dataset_kind) && <span>{evidenceLabel(report.data_source ?? report.dataset_kind)}</span>}
+          {[...new Set(Object.values(report.sessions))].map(state => <span key={state}>{labelFor(state)}</span>)}
         </div>
-        <p>{report.cost_policy_status ?? '비용 정책 미확인'} · {report.cost_policy_notice ?? '비용 기준 확인 불가'}</p>
+        {report.cost_policy_notice && <p className="muted">{readableLog(report.cost_policy_notice)}</p>}
       </div>
-      {data?.live_settings && <Panel title="세션 설정"><RuntimeSettings value={data.live_settings} /></Panel>}
       <TradingReport key={date ?? 'default'} report={report} markdown={data?.markdown} />
     </>}
   </div>

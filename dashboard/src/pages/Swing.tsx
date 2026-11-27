@@ -1,8 +1,9 @@
-import { evidenceMode, useEvidenceMode, useResource } from '../api/client'
+import { useResource } from '../api/client'
 import { unavailableReason } from '../api/phaseB'
-import type { Presence, ReportList } from '../api/phaseB'
-import { Badge, Empty, Panel, Pnl, ResourceState, Table } from '../components/ui'
-import { finite, koreanUnit, kst, numeric, percent } from '../utils/formatters'
+import type { Presence, ReportList, ReportSummary } from '../api/phaseB'
+import { Badge, Empty, Panel, Pnl, ResourceState, Skeleton, SummaryMoney, Table, Select } from '../components/ui'
+import { finite, kst, numeric, percent } from '../utils/formatters'
+import { evidenceLabel, evidenceText, labelForCode, reportName } from '../utils/labels'
 import { useRouteQuery } from '../utils/routeQuery'
 
 const categories: Record<string, string> = {
@@ -63,18 +64,18 @@ function SwingCandidates({ report, category }: { report: SwingReport; category: 
         <header className="section-header">
           <h3>{candidate.name ?? '종목명 확인 불가'} <span className="mono">{candidate.symbol}</span></h3>
           <div className="cluster">
-            {candidate.action_decision && <Badge>{candidate.action_decision}</Badge>}
+            {candidate.action_decision && <Badge>{labelForCode(candidate.action_decision)}</Badge>}
             <Badge tone={duration === 'POTENTIALLY_PERSISTENT' ? 'ok' : duration === 'ONE_OFF' ? 'warn' : 'unknown'}>
               지속성 {statusText[duration ?? ''] ?? '확인 필요'}
             </Badge>
           </div>
         </header>
         <div className="cluster muted">
-          <span>거래대금 {koreanUnit(candidate.turnover)}</span>
+          <span>거래대금 <SummaryMoney value={candidate.turnover} /></span>
           <span>20일 대비 {numeric(candidate.turnover_multiple, '배')}</span>
           <span>5거래일 <Pnl value={ratio(candidate.return_5d)} format={percent} /></span>
-          {candidate.price?.strategy && <span>{candidate.price.strategy}</span>}
-          {candidate.expected_holding_period && <span>{candidate.expected_holding_period}</span>}
+          {candidate.price?.strategy && <span>{labelForCode(candidate.price.strategy)}</span>}
+          {candidate.expected_holding_period && <span>{evidenceText(candidate.expected_holding_period.replace(/(\d+(?:[–~-]\d+)?) trading days?/, '$1거래일'))}</span>}
         </div>
         {evidence.length > 0 && <details open={category ? true : undefined}>
           <summary>촉매 기사 근거 ({evidence.filter(article => !category || article.category === category).length}건)</summary>
@@ -83,7 +84,7 @@ function SwingCandidates({ report, category }: { report: SwingReport; category: 
               if (category && article.category !== category) return null
               const href = safeArticleLink(article.url)
               return <li key={index} className="stack">
-                <div className="cluster"><Badge>{categories[article.category] ?? article.category}</Badge>
+                <div className="cluster"><Badge>{categories[article.category] ?? '기타 촉매'}</Badge>
                   <span className="muted">{kst(article.published_at)}</span>
                   {candidate.hermes_evidence_index === index && <Badge>지속성 판단 근거</Badge>}
                 </div>
@@ -99,7 +100,16 @@ function SwingCandidates({ report, category }: { report: SwingReport; category: 
   </ul>
 }
 
-function PerformanceTab() {
+function PerformanceTab({ swingReports }: { swingReports: ReportSummary[] }) {
+  const { data: research } = useResource<ReportList>('/api/research/reports')
+  const researchReports = research?.reports ?? []
+  const knownReports = [...swingReports, ...researchReports]
+  function performanceReportName(id: string) {
+    const kind = id.startsWith('SW-') ? 'swing' : id.startsWith('UR-') ? 'research' : 'performance'
+    return reportName(knownReports.find(report => report.report_id === id) ?? { report_id: id }, kind,
+      kind === 'swing' ? swingReports : researchReports)
+  }
+
   const { query, updateQuery } = useRouteQuery()
   const reportId = query.get('performance_report') ?? ''
   const horizon = query.get('horizon') ?? ''
@@ -118,17 +128,17 @@ function PerformanceTab() {
     <Panel title="사후 성과 원장">
       <div className="toolbar">
         <label>보고서
-          <select value={reportId} onChange={event => updateQuery({ performance_report: event.target.value })}>
+          <Select value={reportId} onChange={event => updateQuery({ performance_report: event.target.value })}>
             <option value="">저장된 전체 보고서</option>
-            {reportId && !reportIds.includes(reportId) && <option value={reportId}>{reportId}</option>}
-            {reportIds.map(id => <option key={id}>{id}</option>)}
-          </select>
+            {reportId && !reportIds.includes(reportId) && <option value={reportId} title={reportId}>{performanceReportName(reportId)}</option>}
+            {reportIds.map(id => <option key={id} value={id} title={id}>{performanceReportName(id)}</option>)}
+          </Select>
         </label>
         <label>평가 기간
-          <select value={horizon} onChange={event => updateQuery({ horizon: event.target.value })}>
+          <Select value={horizon} onChange={event => updateQuery({ horizon: event.target.value })}>
             <option value="">전체 거래일</option>
             {horizons.map(days => <option key={days} value={days}>{days}거래일</option>)}
-          </select>
+          </Select>
         </label>
       </div>
       <ResourceState loading={resource.loading} error={resource.error ?? all.error} />
@@ -144,8 +154,8 @@ function PerformanceTab() {
             </div>
             <Table label="거래일별 사후 성과" columns={['보고서 / 종목', '기간', '상태', '진입일 → 평가일', '비용 전', '왕복 비용 차감 후', '왕복 비용']}>
               {rows.map(row => <tr key={row.report_id + ':' + row.symbol + ':' + row.trading_days}>
-                <th scope="row"><span className="mono">{row.report_id}</span><br />{row.symbol}</th>
-                <td>{row.trading_days}거래일</td><td>{statusText[row.status] ?? row.status}</td>
+                <th scope="row"><span className="report-name" title={row.report_id}>{performanceReportName(row.report_id)}</span><br />{row.symbol}</th>
+                <td>{row.trading_days}거래일</td><td>{statusText[row.status] ?? labelForCode(row.status)}</td>
                 <td className="mono">{row.entry_date ?? '—'} → {row.exit_date ?? '—'}</td>
                 <td><Pnl value={ratio(row.gross_return)} format={percent} /></td>
                 <td><Pnl value={ratio(row.net_return)} format={percent} /></td>
@@ -159,7 +169,7 @@ function PerformanceTab() {
     {summaries.length > 0 && <Panel title="완료 표본의 평균과 승률">
       <Table label="사후 성과 집계" columns={['규칙', '판정 / 셋업', '기간', '표본', '평균 순수익률', '승률']}>
         {summaries.map(row => <tr key={JSON.stringify([row.ruleset_version, row.decision, row.strategy, row.trading_days])}>
-          <th scope="row">{row.ruleset_version}</th><td>{row.decision} / {row.strategy}</td>
+          <th scope="row">{labelForCode(row.ruleset_version, '저장된 평가 기준')}</th><td>{labelForCode(row.decision)} / {labelForCode(row.strategy)}</td>
           <td>{row.trading_days}거래일</td><td>{row.sample_count}건</td>
           <td><Pnl value={ratio(row.average_net_return)} format={percent} /></td><td>{percent(ratio(row.win_rate))}</td>
         </tr>)}
@@ -172,12 +182,12 @@ export default function Swing() {
   const { query, updateQuery } = useRouteQuery()
   const performance = query.get('view') === 'performance'
   const category = query.get('catalyst') ?? ''
-  const list = useResource<ReportList>(performance ? null : '/api/swing/reports')
+  const list = useResource<ReportList>('/api/swing/reports')
   const selected = query.get('report') ?? list.data?.latest?.report_id ?? ''
   const detail = useResource<Presence & { report?: SwingReport }>(!performance && selected
     ? '/api/swing/reports/' + encodeURIComponent(selected) : null)
   const report = detail.data?.report
-  useEvidenceMode(performance ? 'MULTI-TRACK' : report?.mode)
+  const reports = list.data?.reports ?? []
 
   function tabLink(next: boolean) {
     const params = new URLSearchParams(query)
@@ -197,29 +207,33 @@ export default function Swing() {
           updateQuery({ view: next ? 'performance' : null })
         }}>{next ? '사후 성과 트래커' : '스윙 보고서'}</a>)}
     </nav>
-    {performance ? <PerformanceTab /> : <Panel title="일일 스윙 후보">
-      <ResourceState loading={list.loading || detail.loading} error={list.error ?? detail.error} />
+    {performance ? <PerformanceTab swingReports={reports} /> : <Panel title={report ? <span title={report.report_id}>{reportName(report, 'swing', reports)}</span> : '테마·스윙 보고서'}>
+      <ResourceState loading={false} error={list.error ?? detail.error} />
+      {(list.loading || detail.loading) && <Skeleton label="스윙 보고서 불러오는 중" />}
       {list.data?.present && <div className="toolbar">
         <label>스윙 보고서
-          <select value={selected} onChange={event => updateQuery({ report: event.target.value })}>
+          <Select value={selected} onChange={event => updateQuery({ report: event.target.value })}>
             {!selected && <option value="">저장된 보고서 없음</option>}
-            {selected && !list.data.reports?.some(row => row.report_id === selected) && <option value={selected}>{selected}</option>}
-            {list.data.reports?.map(row => <option key={row.report_id} value={row.report_id}>
-              {row.price_session ?? row.as_of?.slice(0, 10) ?? '날짜 확인 불가'} · {row.report_id}
+            {selected && !list.data.reports?.some(row => row.report_id === selected) && <option value={selected} title={selected}>{report ? reportName(report, 'swing', reports) : '선택한 보고서'}</option>}
+            {list.data.reports?.map(row => <option key={row.report_id} value={row.report_id} title={row.report_id}>
+              {reportName(row, 'swing', reports)}
             </option>)}
-          </select>
+          </Select>
         </label>
         <label>촉매 분류
-          <select value={category} onChange={event => updateQuery({ catalyst: event.target.value })}>
+          <Select value={category} onChange={event => updateQuery({ catalyst: event.target.value })}>
             <option value="">전체</option>
             {Object.entries(categories).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select>
+          </Select>
         </label>
       </div>}
       {list.data && !list.data.present && <Empty>{unavailableReason(list.data.reason, '저장된 스윙 보고서가 없습니다.')}</Empty>}
       {detail.data && !detail.data.present && <Empty>{unavailableReason(detail.data.reason, '선택한 스윙 보고서를 확인할 수 없습니다.')}</Empty>}
-      {report && <><div className="cluster"><span className="mono">{report.report_id}</span><Badge>{evidenceMode(report.mode)}</Badge>
-        {report.status && <Badge>{report.status}</Badge>}<span className="muted">{kst(report.as_of)}</span>
+      {report && <><div className="summary-line">
+        {report.status && report.status !== 'UNKNOWN' && <span>{labelForCode(report.status)}</span>}
+        {report.policy_version && <span>{labelForCode(report.policy_version, '스윙 전략')}</span>}
+        {evidenceLabel(report.mode) && <span>{evidenceLabel(report.mode)}</span>}
+        {report.as_of && <span className="muted">{kst(report.as_of)}</span>}
       </div><SwingCandidates report={report} category={category} /></>}
     </Panel>}
   </div>

@@ -7,9 +7,10 @@ bid depth); score is their unweighted completion percentage, not a probability.
 """
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass, field, replace
-from datetime import time
-from decimal import Decimal
+from datetime import datetime, time
+from decimal import Decimal, localcontext
 from statistics import median
 import re
 
@@ -38,6 +39,11 @@ class StrategyConfig:
     weak_exit_min_vwap_gap_bps: str | Decimal | None = None
     trailing_stop_activation_bps: str | Decimal | None = None
     trailing_stop_retrace_bps: str | Decimal | None = None
+    weak_exit_enabled: bool = True
+    partial_take_profit_bps: str | Decimal | None = None
+    partial_take_profit_ratio: str | Decimal | None = None
+    post_partial_breakeven_bps: str | Decimal | None = None
+    post_partial_trailing_retrace_bps: str | Decimal | None = None
 
     def __post_init__(self):
         if self.profile != "SYNTHETIC_PAPER_V1":
@@ -73,6 +79,22 @@ class StrategyConfig:
                 raise ValueError('entry start must precede the market entry cutoff')
         if self.min_hold_seconds_for_weak_exit is not None and (type(self.min_hold_seconds_for_weak_exit) is not int or self.min_hold_seconds_for_weak_exit < 0):
             raise ValueError('nonnegative weak-exit grace required')
+        if type(self.weak_exit_enabled) is not bool:
+            raise ValueError("weak_exit_enabled must be boolean")
+        if (self.partial_take_profit_bps is None) != (self.partial_take_profit_ratio is None):
+            raise ValueError("partial take profit bps and ratio must be configured together")
+        if self.partial_take_profit_bps is not None:
+            object.__setattr__(self, "partial_take_profit_bps", number(self.partial_take_profit_bps, positive=True))
+            ratio = number(self.partial_take_profit_ratio, positive=True)
+            if ratio >= 1:
+                raise ValueError("partial_take_profit_ratio must be less than one")
+            object.__setattr__(self, "partial_take_profit_ratio", ratio)
+        for key in ("post_partial_breakeven_bps", "post_partial_trailing_retrace_bps"):
+            value = getattr(self, key)
+            if value is not None:
+                if self.partial_take_profit_bps is None:
+                    raise ValueError(f"{key} requires partial take profit")
+                object.__setattr__(self, key, number(value, positive=key == "post_partial_trailing_retrace_bps"))
 
 
 @dataclass(frozen=True)
@@ -83,6 +105,7 @@ class StrategySignal:
     exit_reason: str | None
     reference_price: Decimal | None
     indicators: dict
+    sell_quantity: int | None = None
 
 
 @dataclass
@@ -91,6 +114,13 @@ class _SymbolState:
     session_id: str
     latest: dict[str, MarketEvent] = field(default_factory=dict)
     bars: dict[str, dict] = field(default_factory=dict)
+    bid_peaks: list[tuple[datetime, Decimal]] = field(default_factory=list)
+
+    def peak_bid_since(self, entered, bid):
+        if entered is None:
+            return bid
+        index = bisect_left(self.bid_peaks, instant(entered), key=lambda peak: peak[0])
+        return max(bid, self.bid_peaks[index][1]) if index < len(self.bid_peaks) else bid
 
 
 def _position(positions, code):
@@ -150,6 +180,15 @@ class StrategyEngine:
                     raise ValueError("conflicting completed candle version")
                 bars[key] = bar
             state.bars = {key: bars[key] for key in sorted(bars)[-200:]}
+        elif event.kind == "orderbook":
+            book = orderbook_metrics(event, now=received,
+                max_age_seconds=self.config.quote_max_age_seconds, issuer=event.symbol)
+            bid = book["bid"]
+            if not book["issues"] and bid is not None:
+                # A later bid of equal or greater value dominates every suffix containing the older bid.
+                while state.bid_peaks and state.bid_peaks[-1][1] <= bid:
+                    state.bid_peaks.pop()
+                state.bid_peaks.append((received, bid))
         state.latest[event.kind] = event
         self._states[event.symbol] = state
         self._seen[event.event_id] = event.fingerprint
@@ -186,11 +225,14 @@ class StrategyEngine:
         if book["spread_bps"] is not None and book["spread_bps"] > config.max_spread_bps:
             quote_issues.append("WIDE_SPREAD")
 
-        def signal(action="HOLD", reasons=(), exit_reason=None, score=0):
+        def signal(action="HOLD", reasons=(), exit_reason=None, score=0, sell_quantity=None):
             # Bad/stale quotes never become an executable reference, even on exit.
             reference = None if book["issues"] else book["ask" if action == "BUY" else "bid"]
             return StrategySignal(action, score, tuple(dict.fromkeys(reasons)), exit_reason, reference,
-                                  dict(indicators))
+                                  dict(indicators), sell_quantity)
+
+        def exit_signal(reason, sell_quantity=None):
+            return signal("SELL", (reason, *quote_issues), reason, 100, sell_quantity)
 
         local = at.astimezone(KST)
         clock = local.time().replace(tzinfo=None)
@@ -198,19 +240,38 @@ class StrategyEngine:
         # caller must wait for a valid quote to fill; this module never fills.
         if quantity:
             if risk_state.phase in {Phase.TIME_EXITING, Phase.CLOSED} or clock >= time(15, 15):
-                return signal("SELL", ("TIME_EXIT", *quote_issues), "TIME_EXIT", 100)
+                return exit_signal("TIME_EXIT")
             if "LOSS_LOCKED" in risk_state.locks:
-                return signal("SELL", ("LOSS_EXIT", *quote_issues), "LOSS_EXIT", 100)
+                return exit_signal("LOSS_EXIT")
             if not book["issues"] and basis is not None:
                 pnl = (book["bid"] - basis) * 10000 / basis
                 indicators["pnl_bps_gross"] = pnl
                 if pnl <= -config.stop_loss_bps:
-                    return signal("SELL", ("STOP_LOSS", *quote_issues), "STOP_LOSS", 100)
+                    return exit_signal("STOP_LOSS")
+                entry = positions[symbol] if isinstance(positions[symbol], dict) else {}
+                entered = entry.get("entry_at")
+                if config.partial_take_profit_bps is not None:
+                    if entry.get("partial_tp_done") is True:
+                        if config.post_partial_breakeven_bps is not None and pnl <= config.post_partial_breakeven_bps:
+                            return exit_signal("BREAKEVEN_STOP")
+                        if config.post_partial_trailing_retrace_bps is not None:
+                            peak_bid = state.peak_bid_since(entered, book["bid"])
+                            indicators["peak_bid_pnl_bps_gross"] = (peak_bid - basis) * 10000 / basis
+                            retrace = (peak_bid - book["bid"]) * 10000
+                            if retrace >= basis * config.post_partial_trailing_retrace_bps:
+                                return exit_signal("TRAILING_STOP")
+                    elif pnl >= config.partial_take_profit_bps:
+                        ratio = config.partial_take_profit_ratio
+                        # Keep the product exact before dropping the fractional share.
+                        with localcontext() as context:
+                            context.prec = Decimal(quantity).adjusted() + 1 + len(ratio.as_tuple().digits)
+                            shares = int(quantity * ratio)
+                        if 0 < shares < quantity:
+                            return exit_signal("PARTIAL_TAKE_PROFIT", shares)
+                        return exit_signal("TAKE_PROFIT")
                 if pnl >= config.take_profit_bps:
-                    return signal("SELL", ("TAKE_PROFIT", *quote_issues), "TAKE_PROFIT", 100)
+                    return exit_signal("TAKE_PROFIT")
                 if config.trailing_stop_activation_bps is not None and state is not None:
-                    entry = positions.get(symbol, {})
-                    entered = entry.get("entry_at") if isinstance(entry, dict) else None
                     post_highs = [number(b["high"]) for b in state.bars.values()
                                   if entered is not None and instant(b["timestamp"]) > instant(entered)]
                     peak_price = max([book["bid"], *post_highs])
@@ -283,7 +344,7 @@ class StrategyEngine:
             vwap_gap_bps = (vwap - price) * 10000 / vwap
             weak_vwap = (vwap_gap_bps >= config.weak_exit_min_vwap_gap_bps and last_close < vwap
                          if config.weak_exit_min_vwap_gap_bps is not None else price < vwap)
-            if weak_vwap and last_close < prior_close:
+            if config.weak_exit_enabled and weak_vwap and last_close < prior_close:
                 entry=positions.get(symbol,{})
                 entered=entry.get('entry_at') if isinstance(entry,dict) else None
                 if config.min_hold_seconds_for_weak_exit and (entered is None or

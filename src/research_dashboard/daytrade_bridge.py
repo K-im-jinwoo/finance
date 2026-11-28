@@ -35,7 +35,9 @@ CONFIG_KEYS = {
                         "candle_max_age_seconds", "entry_start_hhmm", "min_hold_seconds_for_weak_exit",
                         "volume_spike_ratio", "max_ask_bid_volume_ratio", "breakout_lookback_bars", "max_spread_bps",
                         "take_profit_bps", "stop_loss_bps", "weak_exit_min_vwap_gap_bps",
-                        "trailing_stop_activation_bps", "trailing_stop_retrace_bps"),
+                        "trailing_stop_activation_bps", "trailing_stop_retrace_bps", "weak_exit_enabled",
+                        "partial_take_profit_bps", "partial_take_profit_ratio",
+                        "post_partial_breakeven_bps", "post_partial_trailing_retrace_bps"),
 }
 
 
@@ -60,7 +62,7 @@ def _public_setting(key, value):
         return value == MODE
     if key == "entry_start_hhmm":
         return isinstance(value, str) and re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value) is not None
-    if key == "require_common_stock":
+    if key in {"require_common_stock", "weak_exit_enabled"}:
         return type(value) is bool
     return (type(value) is int and 0 <= value <= 10**20
             or isinstance(value, str) and re.fullmatch(r"[0-9]{1,20}(?:\.[0-9]{1,12})?", value) is not None)

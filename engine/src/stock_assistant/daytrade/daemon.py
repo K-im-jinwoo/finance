@@ -213,33 +213,46 @@ def _resume(root, send_fn, live_settings=None):
         summary = ledger.meta.get('_bot_summary', {})
         s._runner.meta.update(summary)
         s._runner.trim_live_history()
-        s._runner.sequence = ledger.state()['last_sequence']
+        state = ledger.state()
+        s._runner.sequence = state['last_sequence']
         s._runner.inactive = set(summary.get('inactive_intents', []))
+        for keys, in ledger.connection.execute("""
+            SELECT json_extract(payload, '$.data.superseded_partial_intents')
+            FROM events WHERE sequence > ? AND kind='INTENT'
+                AND json_type(payload, '$.data.superseded_partial_intents')='array'
+        """, (summary.get('_checkpoint_sequence', 0),)):
+            s._runner.inactive.update(json.loads(keys))
         # Stale partial BUY remainders must never execute on a new connection.
-        s._runner.inactive.update(k for k,v in ledger.state()['intents'].items() if v['side'] == 'BUY')
+        s._runner.inactive.update(k for k,v in state['intents'].items() if v['side'] == 'BUY')
         history = s._runner.meta.get('scan_history', [])
         if history:
             s._runner.watches = {r['symbol']: r for r in history[-1]['selected']}
         if scanner.require_common_stock:
             # Yesterday's/old-policy watch set is not fresh reference validation.
             s._runner.watches={}
-        # Restore all rolling candle observations to preserve the strategy's
-        # 200-bar indicator window; the newest snapshot alone contains only 20.
-        # This feeds the pure strategy cache, never ledger intents or fills.
-        latest = {}
-        for raw, in ledger.connection.execute('SELECT o.payload FROM observations o JOIN events e ON e.id=o.event_id ORDER BY e.sequence'):
+        # Candles rebuild the rolling bar window; held orderbooks rebuild the bid peaks.
+        # Replay those histories and the remaining latest snapshots in one sequence.
+        held = [code for code, quantity in state['positions'].items() if quantity > 0]
+        for raw, in ledger.connection.execute("""
+            WITH history AS (
+                SELECT e.sequence, o.payload, json_extract(o.payload, '$.kind') AS kind,
+                       json_extract(o.payload, '$.symbol') AS symbol
+                FROM observations o JOIN events e ON e.id=o.event_id
+            ),
+            latest AS (
+                SELECT max(sequence) FROM history WHERE kind IN ('trade', 'orderbook')
+                GROUP BY kind, symbol
+            )
+            SELECT payload FROM history
+            WHERE kind='candles'
+                OR (kind='orderbook' AND symbol IN (SELECT value FROM json_each(?)))
+                OR sequence IN (SELECT * FROM latest)
+            ORDER BY sequence
+        """, (json.dumps(held),)):
             value = json.loads(raw)
-            if value['kind'] == 'candles':
-                value['issues'] = tuple(value['issues'])
-                s._runner.strategy.on_event(MarketEvent(**value))
-            else:
-                latest[(value['kind'], value['symbol'])] = value
-        for value in sorted(latest.values(), key=lambda v: instant(v['received_at_utc'])):
             value['issues'] = tuple(value['issues'])
-            event = MarketEvent(**value)
-            if event.kind in {'candles', 'trade', 'orderbook'}:
-                s._runner.strategy.on_event(event)
-        s.input_sequence = max(ledger.state()['last_sequence'], summary.get('daemon_input_sequence', 0))
+            s._runner.strategy.on_event(MarketEvent(**value))
+        s.input_sequence = max(state['last_sequence'], summary.get('daemon_input_sequence', 0))
         s.send_fn, s.delivery_results, s.notification_errors = send_fn, [], 0
         s._checkpoint_interval=4 if scanner.require_common_stock else 0
         s._checkpoint_clock=time.monotonic
@@ -247,8 +260,8 @@ def _resume(root, send_fn, live_settings=None):
         s._checkpoint_fills=ledger.connection.execute('SELECT count(*) FROM paper_fills').fetchone()[0]
         s._checkpoint_critical=0
         s.set_meta('daemon_settings',s.settings)
-        if ledger.state()['risk']['last_at'] is not None:
-            s._runner.checkpoint(ledger.state()['risk']['last_at'],latest_only=True)
+        if state['risk']['last_at'] is not None:
+            s._runner.checkpoint(state['risk']['last_at'],latest_only=True)
         return s
     except Exception:
         ledger.close()

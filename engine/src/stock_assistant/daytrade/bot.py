@@ -161,8 +161,24 @@ class _PaperSession:
                 if key not in self.inactive and intent["filled"] < intent["quantity"]
                 and (code is None or intent["symbol"] == code) and (side is None or intent["side"] == side)}
 
+    def _is_partial_tp_intent(self, intent_id):
+        return self.ledger.connection.execute("""
+            SELECT 1 FROM events WHERE id=? AND kind='INTENT'
+                AND json_extract(payload, '$.data.strategy_signal.exit_reason')='PARTIAL_TAKE_PROFIT'
+        """, (intent_id,)).fetchone() is not None
+
     def fill_pending(self, book, at):
-        for key, intent in self.pending(code=book.symbol).items():
+        pending = self.pending(code=book.symbol)
+        sells = [key for key, intent in pending.items() if intent["side"] == "SELL"]
+        if sells and all(self._is_partial_tp_intent(key) for key in sells):
+            risk = RiskState.restore(self.ledger.state()["risk"])
+            positions, _ = self._strategy_positions(at)
+            signal = self.strategy.evaluate(book.symbol, at, risk, positions, self.watches.get(book.symbol))
+            if signal.action == "SELL" and signal.sell_quantity is None:
+                # Leave this book unconsumed. evaluate() replaces the partial
+                # intent, and the new full exit waits for a post-intent book.
+                return
+        for key, intent in pending.items():
             risk = RiskState.restore(self.ledger.state()["risk"])
             if intent["side"] == "BUY" and not risk.candidate_entry_allowed:
                 self.inactive.add(key)
@@ -243,17 +259,27 @@ class _PaperSession:
         return quantity
 
     def entry_history(self, at):
-        """Reconstruct entry reservations and full exits from committed paper data."""
-        day=instant(at).astimezone(KST).date()
+        """Reconstruct entry reservations and exit progress from committed paper data."""
+        cutoff=instant(at)
+        day=cutoff.astimezone(KST).date()
         filled,quantities,entered,last_flat=set(),{},{},{}
-        for raw, in self.ledger.connection.execute('SELECT f.payload FROM paper_fills f JOIN events e ON e.id=f.event_id ORDER BY e.sequence'):
+        partial_tp_done, partial_fills = set(), {}
+        for raw, partial_target in self.ledger.connection.execute("""
+            SELECT f.payload, json_extract(i.payload, '$.data.quantity')
+            FROM paper_fills f
+            JOIN events e ON e.id=f.event_id
+            LEFT JOIN events i ON i.id=f.intent_id AND i.kind='INTENT' AND f.side='SELL'
+                AND json_extract(i.payload, '$.data.strategy_signal.exit_reason')='PARTIAL_TAKE_PROFIT'
+            ORDER BY e.sequence
+        """):
             fill=json.loads(raw)
-            if instant(fill['at'])>instant(at):
+            filled_at=instant(fill['at'])
+            if filled_at>cutoff:
                 continue
             code,qty=fill['symbol'],fill['quantity']
             previous=quantities.get(code,0)
             if fill['side']=='BUY':
-                if instant(fill['at']).astimezone(KST).date()==day:
+                if filled_at.astimezone(KST).date()==day:
                     filled.add(fill['intent_id'])
                 if previous==0:
                     entered[code]=fill['at']
@@ -263,11 +289,19 @@ class _PaperSession:
                 if quantities[code]==0:
                     last_flat[code]=fill['at']
                     entered.pop(code,None)
+                    partial_tp_done.discard(code)
+                    partial_fills.pop(code, None)
+                elif partial_target is not None:
+                    progress = partial_fills.setdefault(code, Counter())
+                    intent_id = fill['intent_id']
+                    progress[intent_id] += qty
+                    if progress[intent_id] == partial_target:
+                        partial_tp_done.add(code)
         reserved={key for key,value in self.pending(side='BUY').items()
-            if instant(value['at']).astimezone(KST).date()==day and instant(value['at'])<=instant(at)}
+            if instant(value['at']).astimezone(KST).date()==day and instant(value['at'])<=cutoff}
         return {'filled_entries':len(filled),'filled_intents':sorted(filled),
             'reserved_intents':sorted(reserved-filled),'used_entries':len(filled|reserved),
-            'entered_at':entered,'last_flat_at':last_flat}
+            'entered_at':entered,'last_flat_at':last_flat,'partial_tp_done':sorted(partial_tp_done)}
 
     def entry_block_reason(self, code, at, *, reserved_intent=None):
         issues=self.watches.get(code,{}).get('issues',())
@@ -288,7 +322,7 @@ class _PaperSession:
                 return 'DAILY_ENTRY_LIMIT'
         return None
 
-    def evaluate(self, at):
+    def _strategy_positions(self, at):
         # Strategy positions require fills only; avoid copying the entire event
         # history into memory on every tick in a long-running live session.
         fills = [json.loads(row[0]) for row in self.ledger.connection.execute("SELECT payload FROM paper_fills ORDER BY event_id")]
@@ -296,8 +330,14 @@ class _PaperSession:
         positions = {code: {"quantity": item["quantity"], "average_price": item["cost"] / item["quantity"]}
                      for code, item in inventory.items() if item["quantity"]}
         history=self.entry_history(at)
+        partial_tp_done = set(history['partial_tp_done'])
         for code,position in positions.items():
             position['entry_at']=history['entered_at'].get(code)
+            position['partial_tp_done'] = code in partial_tp_done
+        return positions, history
+
+    def evaluate(self, at):
+        positions, history = self._strategy_positions(at)
         if self.config.max_daily_entries is not None or self.config.reentry_cooldown_seconds is not None:
             self.meta['entry_controls']={**history,'max_daily_entries':self.config.max_daily_entries,
                 'reentry_cooldown_seconds':self.config.reentry_cooldown_seconds}
@@ -320,13 +360,18 @@ class _PaperSession:
             if risk.phase == Phase.CLOSED:
                 self.decision(at, code, "SKIPPED", "SESSION_CLOSED")
                 continue
+            superseded = []
             if signal.action == "SELL":
                 for key in self.pending(code=code, side="BUY"):
                     self.inactive.add(key)
                     self.decision(at, code, "SKIPPED", "BUY_REMAINDER_CANCELLED_FOR_EXIT", intent_id=key)
-                if self.pending(code=code, side="SELL"):
-                    continue
-                quantity = positions[code]["quantity"]
+                pending_sells = self.pending(code=code, side="SELL")
+                if pending_sells:
+                    if signal.sell_quantity is not None or not all(map(self._is_partial_tp_intent, pending_sells)):
+                        continue
+                    superseded = sorted(pending_sells)
+                held = positions[code]["quantity"]
+                quantity = held if signal.sell_quantity is None else min(held, signal.sell_quantity)
             else:
                 if self.pending(code=code, side="BUY") or self.pending(code=code, side="SELL"):
                     continue
@@ -338,8 +383,14 @@ class _PaperSession:
                 if quantity < 1:
                     self.decision(at, code, "SKIPPED", "CAPITAL_OR_POSITION_LIMIT")
                     continue
-            _, result = self.emit("INTENT", {"symbol": code, "side": signal.action,
-                "quantity": quantity, "strategy_signal": asdict(signal)}, at)
+            data = {"symbol": code, "side": signal.action, "quantity": quantity, "strategy_signal": asdict(signal)}
+            if superseded:
+                # Persist replacement and cancellation together, even before the next summary checkpoint.
+                data["superseded_partial_intents"] = superseded
+            self.emit("INTENT", data, at)
+            self.inactive.update(superseded)
+            for key in superseded:
+                self.decision(at, code, "SKIPPED", "PARTIAL_TAKE_PROFIT_CANCELLED_FOR_EXIT", intent_id=key)
             self.decision(at, code, "INTENT", signal.exit_reason or "VWAP_BREAKOUT", quantity=quantity)
         self.trim_live_history()
 
